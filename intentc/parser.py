@@ -1674,6 +1674,10 @@ class Parser:
         if name in self.prog.collections and name != coll.name and ftype is None and name not in coll.fields:
             return self.make_ref(coll, self.prog.collections[name], ws)      # "each order has a customer"
         dec, ftype = ftype == 'dec', ('int' if ftype == 'dec' else ftype)
+        if name in self.state.fields and coll is not self.state:
+            raise self.p('error', ws, f'"{name.replace("_", " ")}" is already a single value',
+                         f'line {self.state.fields[name].line} declares it; "set the {name.replace("_", " ")}" '
+                         f'could then mean either', 'give the property or the value another name')
         f = coll.fields.get(name)
         if f is None:
             f = coll.fields[name] = Field(name, ftype, line=ws[0].line)
