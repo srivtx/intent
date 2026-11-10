@@ -2377,6 +2377,63 @@ class TestNetwork(TestNativeAgainstReference):
         self.assertEqual(from_path('/count'), 'count')
 
 
+MATHS = (
+    'Sin: take an angle and return the sine of angle.\n'
+    'Cos: take an angle and return the cosine of angle.\n'
+    'Root: take n and return the square root of n if n is at least 0, otherwise 0.\n'
+    'Hyp: take a and b and return the square root of (a times a plus b times b).\n'
+    'Wave: take a turn and return 12 times the sine of turn plus 3.\n'
+    'Price root: take a price and return the square root of price if price is at least 0.00, otherwise 0.00.\n'
+    'Size: take n and return the absolute value of n.\n'
+    'Near: take an angle and return the nearest whole number to (12 times the sine of angle).\n'
+    'Part: take an angle and return the whole part of (12 times the cosine of angle).\n'
+    'Half: take a price and return the nearest whole number to (price plus 0.00).\n'
+)
+
+
+class TestMaths(unittest.TestCase):
+    """Square roots, sines and cosines, worked out in whole numbers so every machine gives the same digits."""
+    setUpClass = classmethod(TestNativeAgainstReference.setUpClass.__func__)
+    tearDownClass = classmethod(TestNativeAgainstReference.tearDownClass.__func__)
+    script = TestLive.script
+
+    def test_values(self):
+        from intentc.ir import droot, root, sine
+        self.assertEqual([sine(a * 100) for a in (0, 30, 90, 150, 180, 210, 270, 360, -30, 720 + 45)],
+                         [0, 50, 100, 50, 0, -50, -100, 0, -50, 71])
+        self.assertEqual(sine(4550), 71)            # 45.5 degrees: 0.713... between the table's whole degrees
+        self.assertEqual([root(n) for n in (0, 1, 8, 9, 10, 10 ** 18, -4)], [0, 1, 2, 3, 3, 10 ** 9, 0])
+        self.assertEqual([droot(n) for n in (225, 200, 100, 1, 0)], [150, 141, 100, 10, 0])
+
+    def test_native_matches_reference(self):
+        rng = random.Random(7)
+        cmds = []
+        for _ in range(400):
+            a = rng.choice([rng.randint(-1000, 1000), rng.randint(-10 ** 9, 10 ** 9), rng.randint(0, 90)])
+            cmds += [f'sin {a}', f'cos {a}', f'root {abs(a) * rng.choice([1, 7919, 10 ** 6])}',
+                     f'hyp {rng.randint(-3000, 3000)},{rng.randint(-3000, 3000)}', f'wave {a}',
+                     f'price-root {rng.randint(0, 10 ** 6)}.{rng.randint(0, 99):02d}', f'size {a}', f'near {a}',
+                     f'part {a}', f'half {rng.randint(-999, 999)}.{rng.choice([0, 49, 50, 51, 99]):02d}']
+        _, out = self.script('maths', MATHS, cmds + ['sin 9223372036854775807', 'cos -9223372036854775807',
+                                                     'root 9223372036854775807', 'size -9223372036854775807',
+                                                     'half 2.50', 'half -2.50', 'near 30', 'part 210'])
+        self.assertEqual(out[-4:], ['3', '-3', '6', '-10'])     # halves away from zero; the whole part toward it
+
+    def test_a_root_of_something_that_can_be_negative_is_a_question(self):
+        level, _, d = problem('Bad: take n and return the square root of n.\n', '')
+        self.assertEqual((level, d.msg), ('question', 'what should happen when the given n is below 0?'))
+        self.assertIn('"the square root of n if n is at least 0, otherwise 0"', d.hint)
+        for ok in ['Ok: take n and return the square root of (n times n).\n',
+                   'Ok: take n and return the square root of n if n is over 5, otherwise 1.\n',
+                   'Ok: take n and return 0 if n is under 0, otherwise the square root of n.\n']:
+            with self.subTest(ok):
+                self.assertEqual(understand(ok, '')[1], [])
+
+    def test_the_sine_of_text_is_an_error(self):
+        level, _, d = problem('Bad: take a name (text) and return the sine of name.\n', '')
+        self.assertEqual(level, 'error')
+
+
 class TestCrowdedNames(unittest.TestCase):
     """Programs with many short names, like the trig values of a 3D scene: no name may silently become another."""
 
