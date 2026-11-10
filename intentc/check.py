@@ -36,9 +36,13 @@ class Checker:
             return 'text'
         if k == 'field':
             return coll.fields[e[1]].type
+        if k == 'pfield':
+            return self.prog.collections[coll.fields[e[1]].ref].fields[e[2]].type
         return t.ptypes.get(e[1])
 
     def name_of(self, e):
+        if e[0] == 'pfield':
+            return f'"{e[1]}\'s {e[2]}"'
         return {'field': f'"{e[1]}"', 'param': f'the given {e[1]}', 'num': str(e[1]),
                 'str': f'"{e[1]}"', 'bin': 'a calculation'}[e[0]] if e[0] != 'num' else str(e[1])
 
@@ -46,7 +50,10 @@ class Checker:
         k = e[0]
         cur = self.ty(e, coll, t)
         if cur is None:
-            if k == 'field':
+            if k == 'pfield':
+                f = self.prog.collections[coll.fields[e[1]].ref].fields[e[2]]
+                f.type, f.how = typ, 'inferred'
+            elif k == 'field':
                 f = coll.fields[e[1]]
                 f.type, f.how = typ, 'inferred'
             else:
@@ -99,10 +106,24 @@ class Checker:
             ch |= self.need(('field', t.field), 'int', coll, t)
         return ch
 
-    def infer(self):
-        for _ in range(8):
-            if not any([self.constrain(t) for t in self.prog.tasks]):
+    def link(self):
+        """A linking property has the type of the unique property it points at."""
+        ch = False
+        for c in self.prog.collections.values():
+            for f in c.fields.values():
+                k = self.prog.key_of(f.ref) if f.ref else None
+                if k is not None and k.type != f.type and None in (k.type, f.type):
+                    k.type = f.type = k.type or f.type
+                    ch = True
+        return ch
+
+    def settle(self):
+        for _ in range(12):
+            if not any([self.constrain(t) for t in self.prog.tasks] + [self.link()]):
                 break
+
+    def infer(self):
+        self.settle()
         assumed = False
         for c in self.prog.collections.values():
             for f in c.fields.values():
@@ -112,12 +133,16 @@ class Checker:
                     self.d('note', f.line, f'assuming "{f.name}" is {TYPE_NAME[f.type]}, from its name',
                            hint=f'write "{f.name} ({"number" if f.type == "text" else "text"})" if that is wrong')
         if assumed:
-            for _ in range(8):
-                if not any([self.constrain(t) for t in self.prog.tasks]):
-                    break
+            self.settle()
         for c in self.prog.collections.values():
             for f in c.fields.values():
-                if f.type is None:
+                if f.ref and self.prog.key_of(f.ref) is None:
+                    p = self.prog.collections[f.ref]
+                    f.type = f.type or 'text'
+                    self.d('question', f.line, f'how is a {p.name} identified?',
+                           f'each {c.name} has to say which {p.name} it belongs to',
+                           f'declare exactly one unique property of {p.label}, e.g. "Names are unique."')
+                elif f.type is None:
                     self.d('question', f.line, f'is "{f.name}" text or a number?',
                            'nothing in the program decides this',
                            f'write "{f.name} (text)" or "{f.name} (number)"')
@@ -142,6 +167,25 @@ class Checker:
         if not P.tasks and P.collections:
             line = max(c.line for c in P.collections.values())
             self.d('note', line, 'this program describes information but nothing to do with it yet')
+        for c in P.collections.values():
+            for f in c.fields.values():
+                if not f.ref:
+                    continue
+                p = P.collections[f.ref]
+                removers = [t for t in P.tasks if t.coll == p.name and t.kind in ('remove_key', 'remove_where')]
+                if removers and f.on_removed is None:
+                    self.d('question', removers[0].line,
+                           f'what happens to the {c.label.lower()} of a removed {p.name}?',
+                           f'line {f.line} says each {c.name} belongs to a {p.name}',
+                           f'add a sentence: "When a {p.name} is removed, remove its {c.label.lower()}." or '
+                           f'"A {p.name} with {c.label.lower()} cannot be removed."')
+                if f.on_removed == 'cascade':
+                    for d, g in P.children_of(c.name):
+                        if g.on_removed == 'restrict':
+                            self.d('question', g.on_removed_line,
+                                   f'removing a {p.name} removes its {c.label.lower()}, but a {c.name} with '
+                                   f'{d.label.lower()} cannot be removed: which wins?',
+                                   'two rules meet here', 'make both rules remove, or both refuse')
         for t in P.tasks:
             coll = P.collections.get(t.coll)
             exprs = [e for _, e in t.assigns] + list(walk_cond_exprs(t.where)) + ([t.expr] if t.expr else [])
@@ -156,6 +200,8 @@ class Checker:
                             self.d('note', t.line, 'whole-number division drops the remainder (7 / 2 is 3)')
             if t.kind == 'update':
                 for f, _ in t.assigns:
+                    if coll.fields[f].ref:
+                        self.d('error', t.line, f'moving a {coll.name} to another {f} is not supported yet')
                     if coll.fields[f].unique:
                         self.d('error', t.line, f'changing "{f}" in bulk is not supported yet because it is unique',
                                f'line {coll.fields[f].unique_line} says so; a bulk change could create duplicates')
