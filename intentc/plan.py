@@ -143,8 +143,9 @@ def make_plan(prog, no_index=False):
     for t in prog.tasks:
         if t.kind == 'calc':
             plan.tasks[t.name] = ('O(1)', 'straight-line arithmetic')
-        elif t.kind in ('add', 'remove_key', 'remove_where', 'update') and prog.rules:
+    for t in prog.tasks + prog.events:
+        if t.kind in ('add', 'remove_key', 'remove_where', 'update') and prog.rules:
             cost, how = plan.tasks[t.name]
             n = len(prog.rules)
-            plan.tasks[t.name] = (cost, how + f'; then the {n} rule{"s" if n > 1 else ""} are applied until nothing changes')
+            plan.tasks[t.name] = (cost, how + f'; then the {n} rule{"s are" if n > 1 else " is"} applied until nothing changes')
     return plan

@@ -6,7 +6,7 @@ import sys
 
 from .check import check
 from .interp import Machine
-from .ir import STATE
+from .ir import STATE, builtins, fmt_event
 from .llvm import emit
 from .parser import parse
 from .plan import make_plan
@@ -98,6 +98,18 @@ def cmd_explain(a):
         cost, how = plan.tasks[t.name]
         print(f'  {usage(prog, t):<{w}}   {cost:<14} {how}')
         print(f'  {"":<{w}}   line {t.line}: {t.text}')
+    for _, u in builtins(prog):
+        print(f'  {u}')
+    if prog.events:
+        print('\nWhat happens by itself:\n')
+        for t in prog.events:
+            cost, how = plan.tasks[t.name]
+            print(f'  {fmt_event(t)}')
+            print(f'      {cost}, {how}; line {t.line}')
+    if prog.board:
+        w, h = prog.board
+        print(f'\nThe board: {w} wide, {h} high, {w * h} bytes, redrawn whole after every event.')
+        print('Run the program in a terminal to play it; q, Esc or Ctrl-C stops.')
     return 0
 
 
@@ -131,7 +143,9 @@ def cmd_build(a):
     if prog is None:
         return 1
     print(f'built {out}  (LLVM IR in {out}.ll)')
-    print('commands: ' + ' | '.join(usage(prog, t) for t in prog.tasks))
+    print('commands: ' + ' | '.join([usage(prog, t) for t in prog.tasks] + [u for _, u in builtins(prog)]))
+    if prog.board:
+        print(f'play it: run {out} in a terminal (q, Esc or Ctrl-C stops)')
     return 0
 
 
@@ -140,6 +154,10 @@ def cmd_run(a):
     if not report(diags, p, quiet_notes=True):
         return 1
     m = Machine(prog)
+    if prog.board and sys.stdin.isatty() and sys.stdout.isatty():
+        from .play import play          # at a terminal the program is played; over a pipe it takes commands
+        play(m)
+        return 0
     for line in sys.stdin:
         for o in m.run(line):
             print(o)
