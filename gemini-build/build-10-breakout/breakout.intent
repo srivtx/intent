@@ -1,0 +1,103 @@
+# Breakout, in Intent v0.6.0.
+#   ./intent build gemini-build/build-10-breakout/breakout.intent -o build/breakout && build/breakout
+# Left/right move the paddle. Clear all bricks for the next level. q quits, enter plays again.
+#
+# The ball is four single values (where it is, which way it goes). Bricks are a collection
+# that is only ever compared with single values, which Intent 0.6 can do.
+# Each brick is 3 cells wide: it is stored by its left edge and drawn three times.
+
+The board is 30 wide and 18 high.
+
+The paddle starts at 15.
+The ball x starts at 15.
+The ball y starts at 14.
+The dx starts at 1.
+The dy starts at -1.
+The next x starts at 0.
+The next y starts at 0.
+The broke starts at 0.
+The score starts at 0.
+The lives start at 3.
+The level starts at 1.
+The refill starts at 0.
+
+Bricks is a collection where each brick has an x (number), a y (number) and a toughness (number).
+
+Start with a brick at x 2, y 3, toughness 2.
+Start with a brick at x 6, y 3, toughness 2.
+Start with a brick at x 10, y 3, toughness 2.
+Start with a brick at x 14, y 3, toughness 2.
+Start with a brick at x 18, y 3, toughness 2.
+Start with a brick at x 22, y 3, toughness 2.
+Start with a brick at x 26, y 3, toughness 2.
+Start with a brick at x 2, y 5, toughness 1.
+Start with a brick at x 6, y 5, toughness 1.
+Start with a brick at x 10, y 5, toughness 1.
+Start with a brick at x 14, y 5, toughness 1.
+Start with a brick at x 18, y 5, toughness 1.
+Start with a brick at x 22, y 5, toughness 1.
+Start with a brick at x 26, y 5, toughness 1.
+
+# --- the paddle is 5 wide, centred on the paddle value
+When the left key is pressed, the paddle decreases by 2 if the paddle is over 3.
+When the right key is pressed, the paddle increases by 2 if the paddle is under 28.
+
+# --- one step of the ball, in order
+# 1. where would it go?
+Every 70 milliseconds, the next x becomes the ball x plus the dx.
+Every 70 milliseconds, the next y becomes the ball y plus the dy.
+# 2. walls turn it
+Every 70 milliseconds, if the next x is under 1 or the next x is over 30, the dx becomes 0 minus the dx.
+Every 70 milliseconds, if the next y is under 1, the dy becomes 0 minus the dy.
+Every 70 milliseconds, the next x becomes the ball x plus the dx.
+Every 70 milliseconds, the next y becomes the ball y plus the dy.
+# 3. a brick in the way: wear it down, bounce
+Every 70 milliseconds, if any brick has an x at most the next x and an x at least the next x minus 2 and a y equal to the next y, the broke becomes 1.
+Every 70 milliseconds, decrease the toughness of the bricks whose x is at most the next x and whose x is at least the next x minus 2 and whose y is the next y by 1.
+Every 70 milliseconds, remove the bricks whose toughness is under 1.
+Every 70 milliseconds, if the broke is 1, the score increases by the level.
+Every 70 milliseconds, if the broke is 1, the dy becomes 0 minus the dy.
+Every 70 milliseconds, if the broke is 1, the broke becomes 0.
+# 4. the paddle sends it back up, and the side it lands on steers it
+Every 70 milliseconds, if the next y is 18 and the next x is at least the paddle minus 2 and the next x is at most the paddle plus 2, the dy becomes -1.
+Every 70 milliseconds, if the next y is 18 and the next x is at least the paddle minus 2 and the next x is under the paddle, the dx becomes -1.
+Every 70 milliseconds, if the next y is 18 and the next x is over the paddle and the next x is at most the paddle plus 2, the dx becomes 1.
+# 5. move
+Every 70 milliseconds, the ball x increases by the dx.
+Every 70 milliseconds, the ball y increases by the dy.
+# 6. missed: lose a life, serve again
+Every 70 milliseconds, if the ball y is over 18, the lives decrease by 1.
+Every 70 milliseconds, if the ball y is over 18, the ball x becomes the paddle.
+Every 70 milliseconds, if the ball y is over 18, the dy becomes -1.
+Every 70 milliseconds, if the ball y is over 18, the ball y becomes 16.
+
+# --- a cleared wall: next level, tougher bricks
+Every 100 milliseconds, if no brick has a y over 0, the refill becomes 1.
+Every 100 milliseconds, if the refill is 1, the level increases by 1.
+Every 100 milliseconds, if the refill is 1, add a brick whose x is 2, whose y is 2 and whose toughness is the level.
+Every 100 milliseconds, if the refill is 1, add a brick whose x is 8, whose y is 3 and whose toughness is the level.
+Every 100 milliseconds, if the refill is 1, add a brick whose x is 14, whose y is 2 and whose toughness is the level.
+Every 100 milliseconds, if the refill is 1, add a brick whose x is 20, whose y is 3 and whose toughness is the level.
+Every 100 milliseconds, if the refill is 1, add a brick whose x is 26, whose y is 2 and whose toughness is the level.
+Every 100 milliseconds, if the refill is 1, add a brick whose x is 5, whose y is 5 and whose toughness is 1.
+Every 100 milliseconds, if the refill is 1, add a brick whose x is 11, whose y is 6 and whose toughness is 1.
+Every 100 milliseconds, if the refill is 1, add a brick whose x is 17, whose y is 5 and whose toughness is 1.
+Every 100 milliseconds, if the refill is 1, add a brick whose x is 23, whose y is 6 and whose toughness is 1.
+Every 100 milliseconds, if the refill is 1, the refill becomes 0.
+
+The game is over when the lives are under 1.
+
+# --- what you see
+Draw each brick whose toughness is 1 at its x and its y as a green "=".
+Draw each brick whose toughness is 1 at its x plus 1 and its y as a green "=".
+Draw each brick whose toughness is 1 at its x plus 2 and its y as a green "=".
+Draw each brick whose toughness is over 1 at its x and its y as a red "#".
+Draw each brick whose toughness is over 1 at its x plus 1 and its y as a red "#".
+Draw each brick whose toughness is over 1 at its x plus 2 and its y as a red "#".
+Draw a white "=" at the paddle minus 2 and 18.
+Draw a white "=" at the paddle minus 1 and 18.
+Draw a white "=" at the paddle and 18.
+Draw a white "=" at the paddle plus 1 and 18.
+Draw a white "=" at the paddle plus 2 and 18.
+Draw a yellow "o" at the ball x and the ball y.
+Show the score, the lives and the level above the board.
