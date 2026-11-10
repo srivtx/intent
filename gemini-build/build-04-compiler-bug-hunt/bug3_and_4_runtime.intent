@@ -1,0 +1,14 @@
+# Bug 3 & Bug 4:
+#   - Bug 3: Calling a 1-arg text command with NO argument ("find-user") does not
+#     report "error: missing email"; strsep on "" silently passes email=""!
+#   - Bug 4: Failed mutating commands ("add-user bob,not_an_int" or duplicate key)
+#     still return 1 from @dispatch and get appended to the persistence journal file!
+
+Users is a collection.
+Each user has an email (text) and an age (number).
+Emails are unique.
+Reject duplicates.
+
+add-user: add a user.
+find-user: find a user by email.
+remove-user: remove a user by email.

@@ -1,0 +1,3 @@
+add-user ,25
+add-user bob@x.com,not_a_number
+add-user ,99

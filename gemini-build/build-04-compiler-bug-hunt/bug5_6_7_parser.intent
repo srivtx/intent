@@ -1,0 +1,27 @@
+# Bug 5, Bug 6, Bug 7: Compile-time parser bugs in normalize() and task()
+
+Customers is a collection.
+Each customer has a handle (text) and a score (number).
+No two customers share the same handle.
+If a customer already exists, reject it.
+
+Bookings is a collection.
+# Bug 5: Field "customer" on Bookings globally shadows the "Customers" collection!
+Each booking has a booking_id (number) and a customer (text).
+No two bookings share the same booking_id.
+If a booking already exists, reject it.
+
+# Fails because "customer" is now normalized as ('FIELD', 'customer'), not ('COLL', 'customer')!
+add-customer: add a customer.
+
+Orders is a collection.
+Each order has an id (number) and a price (number).
+No two orders share the same id.
+If an order already exists, reject it.
+
+# Bug 6: "order by" matches 2-word SORTBY in lexicon.py:90, hiding collection "order"!
+find-order: find an order by id.
+
+# Bug 7: Taught phrase with "is" instead of CMP fails without "whose"
+"cheap" means price is 10.
+cheap-orders: show the orders cheap.

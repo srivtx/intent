@@ -1,0 +1,41 @@
+How I read this program:
+
+   3  Customers is a collection                                     ->  collection customer
+   4  Each customer has a handle (text) and a score (number)        ->  customer has handle: text, score: int
+   5  No two customers share the same handle                        ->  customer: handle unique
+   6  If a customer already exists, reject it                       ->  customer: on duplicate, reject
+   8  Bookings is a collection                                      ->  collection booking
+  10  Each booking has a booking_id (number) and a customer (text)  ->  booking has booking_id: int, customer: text
+  11  No two bookings share the same booking_id                     ->  booking: booking_id unique
+  12  If a booking already exists, reject it                        ->  booking: on duplicate, reject
+  17  Orders is a collection                                        ->  collection order
+  18  Each order has an id (number) and a price (number)            ->  order has id: int, price: int
+  19  No two orders share the same id                               ->  order: id unique
+  20  If an order already exists, reject it                         ->  order: on duplicate, reject
+  26  "cheap" means price is 10                                     ->  "cheap" means: price is 10
+
+question: which collection is this about?
+  --> /Users/zen/Desktop/project-10nov/gemini-build/build-04-compiler-bug-hunt/bug5_6_7_parser.intent:15
+   |
+15 | add-customer: add a customer.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ could be: Customers, Bookings
+
+note: this program describes information but nothing to do with it yet
+  --> /Users/zen/Desktop/project-10nov/gemini-build/build-04-compiler-bug-hunt/bug5_6_7_parser.intent:17
+   |
+17 | Orders is a collection.
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+question: which collection is this about?
+  --> /Users/zen/Desktop/project-10nov/gemini-build/build-04-compiler-bug-hunt/bug5_6_7_parser.intent:23
+   |
+23 | find-order: find an order by id.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ could be: Customers, Bookings, Orders
+
+error: I don't see how "is" fits in
+  --> /Users/zen/Desktop/project-10nov/gemini-build/build-04-compiler-bug-hunt/bug5_6_7_parser.intent:27
+   |
+27 | cheap-orders: show the orders cheap.
+   |                               ^^^^^ I understood the rest of the sentence, but not this part
+
+not compiled: 2 questions to answer, 1 thing I could not read
