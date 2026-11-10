@@ -6,6 +6,10 @@ Expressions are tuples:
     ('value', name)         a single value the program keeps ("the score")
     ('if', cond, a, b)      a when cond holds, otherwise b
     ('rand', lo, hi)        a whole number from lo to hi, drawn by chance (see CHANCE_*)
+    ('dec', n)              a decimal number, kept as n hundredths: 12.50 is ('dec', 1250)
+    ('cents', e)            put in by the checker: the whole number e as hundredths (e * 100)
+                            the checker also turns * and / on decimals into the operators dmul
+                            (a * b / 100) and rdiv (a / b), both rounded to the nearest hundredth
     ('agg', fn, coll, field, cond)   fn in count sum max min, over the records of coll that satisfy cond
                             (field is None for count; the largest or smallest of nothing is 0)
     ('outer', name)         inside a condition about other records: a property of the record the
@@ -31,6 +35,7 @@ class Field:
     on_removed: str = None      # what happens to these records when that one is removed: cascade | restrict
     on_removed_line: int = 0
     init: object = None         # a single value's starting value
+    dec: bool = False           # a number with two decimal places, kept in hundredths (type stays 'int')
 
 
 @dataclass
@@ -71,6 +76,8 @@ class Task:
     at: tuple = None                                # draw: (x, y), counted from 1 at the top left
     glyph: str = None                               # draw: the one character shown there
     colour: str = None                              # draw: the name of its colour, or None
+    dec: bool = False                               # calc: the result is a decimal number
+    pdec: set = _f(default_factory=set)          # the parameters that are decimal numbers
 
 
 STATE = '(values)'              # the hidden one-record collection that holds the program's single values
@@ -137,7 +144,18 @@ class Diag:
     hint: str = ''
 
 
-OPSYM = {'mul': '*', 'add': '+', 'sub': '-', 'div': '/', 'rem': 'mod'}
+OPSYM = {'mul': '*', 'add': '+', 'sub': '-', 'div': '/', 'rem': 'mod', 'dmul': '*', 'rdiv': '/'}
+
+
+def fmt_dec(n):
+    """Hundredths as they are written and printed: 1250 -> 12.50, -5 -> -0.05."""
+    return f'{"-" if n < 0 else ""}{abs(n) // 100}.{abs(n) % 100:02d}'
+
+
+def rdiv(a, b):
+    """a / b rounded to the nearest whole number, halves away from zero (b is not 0)."""
+    q = (abs(a) + abs(b) // 2) // abs(b)
+    return -q if (a < 0) != (b < 0) else q
 CMPSYM = {'gt': '>', 'ge': '>=', 'lt': '<', 'le': '<=', 'eq': '==', 'ne': '!=',
           'has': 'contains', 'nhas': 'does not contain', 'starts': 'starts with',
           'nstarts': 'does not start with', 'ends': 'ends with', 'nends': 'does not end with'}
@@ -181,6 +199,10 @@ def fmt_expr(e, top=True):
         return f'random({e[1]}..{e[2]})'
     if k == 'outer':
         return f'its {e[1]}'
+    if k == 'dec':
+        return fmt_dec(e[1])
+    if k == 'cents':
+        return fmt_expr(e[1], top)
     if k == 'agg':
         what = f'{e[2]}s' if e[1] == 'count' else f'{e[3]} of {e[2]}s'
         return f'{e[1]}({what}{" where " + fmt_cond(e[4]) if e[4] else ""})'
@@ -235,7 +257,9 @@ def canon(t):
 def walk_expr(e):
     """Every value inside e, including those inside the condition of an "if"."""
     yield e
-    if e[0] == 'bin':
+    if e[0] == 'cents':
+        yield from walk_expr(e[1])
+    elif e[0] == 'bin':
         yield from walk_expr(e[2])
         yield from walk_expr(e[3])
     elif e[0] == 'if':
