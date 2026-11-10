@@ -1,0 +1,61 @@
+# A tour of everything Intent can say today. Every sentence here compiles.
+#   ./intent check examples/tour.intent
+
+# --- describing information
+Members have a name, an email, an age (number), points and several badges (text).
+Emails are unique.
+If a member already exists, reject it.
+Keep members in the order they were added.
+
+Visits is a collection.
+Each visit has a ticket (number), a member and a cost (number).
+Tickets are unique. Replace duplicates.
+When a member is removed, remove its visits.
+
+# --- teaching it words
+"older than" means age over.
+An adult is a member whose age is at least 18.
+A regular is an adult whose points is over 100.
+"oldest" means with the largest age.
+
+# --- adding, finding, removing
+join: add a member.
+Find a member by email.
+leave: remove a member by email.
+check-in: add a visit.
+award: add a badge to a given member.
+
+# --- showing
+everyone: show the members.
+Show the names and ages of the adults.
+Show the members sorted by age, largest first.
+podium: show the top 3 members by points.
+eldest: show the name of the oldest member.
+Show the first 5 members.
+Show the members whose name starts with a given prefix.
+Show the members whose email does not contain "@".
+Show the members whose age is between 18 and 30 and whose points is even.
+Show the members older than a given age.
+
+# --- summaries
+How many members are there?
+What is the average age of the regulars?
+What is the largest cost?
+
+# --- changing
+For every member, increase the points by 10.
+Double the points of members whose age is under 18.
+Increase the cost by 10 percent for visits whose cost is over a given limit.
+reset: set the points to 0.
+Remove the members whose points is under a given floor.
+Keep only the visits whose cost is at least 1.
+
+# --- across collections
+Show the visits of a given member.
+spent: what is the sum of the cost of visits for a given member?
+Show the ticket and the member's name of visits sorted by ticket.
+Show the visits whose member's age is under 18.
+Show the badges of a given member.
+
+# --- plain calculations
+double: take a number n and return n times 2.
