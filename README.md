@@ -128,6 +128,29 @@ What flexibility does *not* mean: it will not act on a sentence it only half und
 `Show the first 5 customers.` on a collection with no declared order is a question
 ("first in what order?"), not a guess.
 
+## Collections that belong to each other
+
+```
+Each order belongs to a customer.            (or: Each order has a number and a customer.)
+Each line belongs to an order.
+When a customer is removed, remove its orders.
+
+Show the orders of a given customer.
+Show the number and the customer's name of orders.
+Decrease the total by 10 percent for orders whose customer's city is a given city.
+Show the lines whose order's customer is a given customer.
+```
+
+An order stores its customer's unique property (so customers need exactly one; otherwise the
+compiler asks how a customer is identified). Adding an order for a customer that does not
+exist answers `no such customer`. If the program can remove customers, the compiler **asks
+what happens to their orders** and accepts either rule:
+`When a customer is removed, remove its orders.` or `A customer with orders cannot be removed.`
+
+The planner indexes the owner's key because of the link, and `explain` says so.
+Not yet: asking about owners through what they own (`customers with more than 3 orders`) —
+that is refused with an explanation, not misread.
+
 ## Small programs written in it
 
 | file | what it is |
@@ -135,6 +158,7 @@ What flexibility does *not* mean: it will not act on a sentence it only half und
 | [examples/leaderboard.intent](examples/leaderboard.intent) | game leaderboard: join, award points, podium, champions |
 | [examples/todo.intent](examples/todo.intent) | to-do list: open / finished / urgent tasks, what to do next |
 | [examples/shop.intent](examples/shop.intent) | shop stock: sell, restock, sale, what is running low |
+| [examples/store.intent](examples/store.intent) | customers, their orders and order lines, with cascading removal |
 
 ```bash
 ./intent build examples/leaderboard.intent -o build/leaderboard
@@ -193,21 +217,22 @@ dicts). It is the definition of meaning. The tests build native programs and fee
 the same random command streams — unordered and ordered collections, text and numeric keys,
 reject and replace, with and without indexes, including malformed input and 64-bit overflow
 — and require identical output (as a multiset where order is not part of the meaning).
-71 tests pass, including the three example apps run against the reference on random commands.
+100 tests pass, including the example apps and three-collection relationship programs run
+against the reference on random commands.
 
 This shows the backend agrees with the reference. It does not show the reference agrees
 with what you meant; that is what `check` is for — read the right-hand column.
 
 ## What this version cannot do
 
-- One collection per sentence; no relationships between collections.
+- Relationships go one way: from a record to its owner. No summaries per owner, no grouping.
 - Whole numbers (64-bit, wrapping) and text only. No decimals, dates, or missing values.
 - Text may not contain commas (the command format is comma-separated).
 - Conditions are a flat list of `and` or of `or`; no grouping.
 - No constraints other than uniqueness; a unique property cannot be changed in bulk.
 - Division only by a fixed non-zero number.
-- No text operations (`starts with`, `contains`), no summaries of a calculation
-  (`total of price times stock`), no grouping (`average salary per city`).
+- No summaries of a calculation (`total of price times stock`), no grouping
+  (`average salary per city`), no "if ... otherwise ..." values, no repeating until done.
 - A change applies to the records a condition selects; there is no "do this, then that"
   within one capability, and capabilities cannot call each other.
 - Remembering is a growing command log, never compacted. Nothing else touches files or the network.
@@ -234,22 +259,35 @@ Where this build departs from that discussion:
   capabilities with source-line reasons, straight to LLVM. That is a combination claim,
   not a claim that any single piece is new.
 
+## Stress-tested by a second model
+
+[gemini-build/](gemini-build/README.md) holds eight experiments another model wrote *against*
+the language without touching the compiler: an exchange, a Collatz machine, a ledger, a
+time-series store, a fractal renderer, a pipe server. It found eight real bugs; all are fixed
+and pinned by tests (`TestStressFindings`, `TestService`). My reading of what those
+experiments say about the language is in [gemini-build/REVIEW.md](gemini-build/REVIEW.md).
+Its `build-04` test now fails on purpose: it asserts the old buggy behaviour.
+
 ## Where it can go next
 
-Done since the first version: definitions, spelling tolerance, rankings, remembering.
-What would open the most new programs, in order:
+Done so far: definitions, spelling tolerance, rankings, remembering, text tests, relationships.
+The stress experiments show the same thing from eight directions: people fall back to
+arithmetic tricks when the language cannot *say* something. So, in order:
 
-1. **Relationships.** `Each order belongs to a customer.` Joins and foreign indexes are where
-   representation choice gets much richer, and where real applications start.
-2. **Constraints that follow the data.** `Age is never negative.` checked on every add and
-   change; then report exactly which capabilities a tightened constraint affects.
-3. **More kinds of value.** Decimals and money, dates, yes/no, "may be missing", text
-   operations.
-4. **Multi-step capabilities.** `To check out: decrease the stock, then add an order.`
-5. **Grouping.** `The average salary for each city.`
-6. **Better structures.** An ordered index for ranges and top-N, tombstones so ordered
-   removal stops being O(n), counters so the choice follows the real workload.
-7. **Other front doors.** The same capabilities served over HTTP; a model that turns loose
+1. **Say what a value depends on.** `The status is "late" if the due date has passed, otherwise
+   "ok".` and `A line's cost is its price times its quantity.` (derived properties, so nothing
+   has to be stored and kept in step by hand).
+2. **Summaries per owner and per group.** `customers with more than 3 orders`,
+   `the total of the lines of each order`, `the average salary for each city`.
+3. **Rules on data.** `Stock is never under 0.` checked on every add and change, with the
+   refusal reported, so a guarded change no longer fails silently.
+4. **Capabilities made of steps.** `To check out: decrease the stock, then add an order.` and
+   `repeat until nothing changes`.
+5. **More kinds of value.** Decimals and money, dates, yes/no, "may be missing"; division by a
+   value that might be zero, by asking what should happen then.
+6. **Better structures.** An index on linking properties, an ordered index for ranges and
+   top-N, tombstones so ordered removal stops being O(n).
+7. **Other front doors.** The same capabilities over HTTP; drawing; a model that turns loose
    speech into Intent text, with `check` showing the reading before anything is compiled.
 
 ## Layout
@@ -266,5 +304,5 @@ intentc/interp.py       reference interpreter (the meaning)
 intentc/llvm.py         Intent IR + plan -> LLVM IR
 tests/                  phrasings, questions, planner, spelling, definitions, apps, native-vs-reference
 bench/bench.py          the table above
-examples/               customers, questions, leaderboard, todo, shop
+examples/               customers, questions, leaderboard, todo, shop, store
 ```
