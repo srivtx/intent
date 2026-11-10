@@ -156,8 +156,7 @@ def cmd_run(a):
     m = Machine(prog)
     if prog.board and sys.stdin.isatty() and sys.stdout.isatty():
         from .play import play          # at a terminal the program is played; over a pipe it takes commands
-        play(m)
-        return 0
+        return play(m)
     for line in sys.stdin:
         for o in m.run(line):
             print(o)

@@ -6,7 +6,9 @@ for I/O, memory and sorting; everything else (records, hash indexes, loops, filt
 aggregates) is emitted here.
 """
 from .interp import ROUNDS, UNSETTLED
-from .ir import (BAD_WAIT, KEY_CODES, LONGEST_STEP, LONGEST_WAIT, MUTATING, OVER, STATE, TEXT_OPS, builtins, canon,
+import sys
+
+from .ir import (BAD_WAIT, ENTER_PLAY, LEAVE_PLAY, TOO_SMALL, room, KEY_CODES, LONGEST_STEP, LONGEST_WAIT, MUTATING, OVER, STATE, TEXT_OPS, builtins, canon,
                  fmt_event, usage)
 
 LL = {'int': 'i64', 'text': 'ptr'}
@@ -52,6 +54,9 @@ declare i32 @gettimeofday(ptr, ptr)
 declare ptr @signal(i32, ptr)
 declare void @exit(i32)
 declare i32 @fprintf(ptr, ptr, ...)
+declare i32 @tcgetattr(i32, ptr)
+declare i32 @tcsetattr(i32, i32, ptr)
+declare i32 @ioctl(i32, i64, ...)
 '''
 
 
@@ -954,13 +959,16 @@ class Gen:
         us = f.r(f'sext i32 {f.load("i32", f.r(f"getelementptr i8, ptr {tv}, i64 8"))} to i64')
         f.e(f'ret i64 {f.r(f"add i64 {f.r(f"mul i64 {sec}, 1000")}, {f.r(f"sdiv i64 {us}, 1000")}")}')
 
-        f = self.fn('@leave', comment='give the terminal back the way it was')
-        self.printf(f, '\x1b[?25h')
+        # The terminal's settings are saved and put back as one opaque block, so nothing here
+        # depends on how a particular system lays them out.
+        self.globals.append('@terminal = internal global [512 x i8] zeroinitializer   ; its settings before playing')
+        f = self.fn('@leave', comment='give the terminal back exactly the way it was')
+        self.printf(f, LEAVE_PLAY)
         f.e('call i32 @fflush(ptr null)')
-        f.e(f'call i32 @system(ptr {self.cstr("stty sane")})')
+        f.e('call i32 @tcsetattr(i32 0, i32 0, ptr @terminal)')
         f.e('ret void')
 
-        f = self.fn('@quit', params='i32 %sig', comment='Ctrl-C while playing')
+        f = self.fn('@quit', params='i32 %sig', comment='Ctrl-C, or the terminal went away, while playing')
         f.e('call void @leave()')
         f.e('call void @exit(i32 0)')
         f.e('ret void')
@@ -1021,15 +1029,34 @@ class Gen:
         f.e('ret i32 0')
 
         timers = P.timers()
-        f = self.fn('@play', params='ptr %jf',
+        f = self.fn('@play', 'i32', 'ptr %jf',
                     comment='play: draw, wait for a key or for the next thing due, let that much time pass, repeat')
-        f.e('call ptr @signal(i32 2, ptr @quit)')
-        f.e(f'call i32 @system(ptr {self.cstr("stty -icanon -echo min 0 time 0")})')
-        self.printf(f, '\x1b[2J\x1b[?25l')
-        last = f.var('i64', f.r('call i64 @now()'))
         buf, pfd = f.var('[16 x i8]'), f.var('{ i32, i16, i16 }')
         loop, wait, typed, decode, tick, adv, log, end, lost, bye = (
             f.lab(x) for x in ('loop', 'wait', 'typed', 'decode', 'tick', 'advance', 'log', 'end', 'lost', 'bye'))
+        size = {'darwin': 0x40087468, 'linux': 0x5413}.get(sys.platform)     # "how big is this terminal?"
+        if size:
+            cols, rows = room(P)
+            ws = f.var('[8 x i8]')
+            asked, small, fits = f.lab('asked'), f.lab('small'), f.lab('fits')
+            got = f.r(f'call i32 (i32, i64, ...) @ioctl(i32 1, i64 {size}, ptr {ws})')
+            f.cbr(f.r(f'icmp eq i32 {got}, 0'), asked, fits)
+            f.at(asked)
+            r = f.r(f'zext i16 {f.load("i16", ws)} to i32')
+            c = f.r(f'zext i16 {f.load("i16", f.r(f"getelementptr i8, ptr {ws}, i64 2"))} to i32')
+            known = f.r(f'and i1 {f.r(f"icmp sgt i32 {r}, 0")}, {f.r(f"icmp sgt i32 {c}, 0")}')
+            tight = f.r(f'or i1 {f.r(f"icmp slt i32 {r}, {rows}")}, {f.r(f"icmp slt i32 {c}, {cols}")}')
+            f.cbr(f.r(f'and i1 {known}, {tight}'), small, fits)
+            f.at(small)
+            self.printf(f, TOO_SMALL + '\n', f'i32 {cols}, i32 {rows}, i32 {c}, i32 {r}')
+            f.e('ret i32 1')
+            f.at(fits)
+        f.e('call i32 @tcgetattr(i32 0, ptr @terminal)')
+        for sig in (1, 2, 15):          # hang-up, Ctrl-C, asked to stop: always give the terminal back
+            f.e(f'call ptr @signal(i32 {sig}, ptr @quit)')
+        f.e(f'call i32 @system(ptr {self.cstr("stty -icanon -echo min 0 time 0")})')
+        self.printf(f, ENTER_PLAY)
+        last = f.var('i64', f.r('call i64 @now()'))
         f.br(loop)
         f.at(loop)
         f.e('call void @screen(i1 true)')
@@ -1048,9 +1075,24 @@ class Gen:
         ready = f.r(f'call i32 @poll(ptr {pfd}, i64 1, i32 {f.r(f"trunc i64 {d} to i32")})')
         f.cbr(f.r(f'icmp sgt i32 {ready}, 0'), typed, tick)
         f.at(typed)
-        n = f.r(f'call i64 @read(i32 0, ptr {buf}, i64 16)')
-        f.cbr(f.r(f'icmp sgt i64 {n}, 0'), decode, end)
+        nv = f.var('i64', f.r(f'call i64 @read(i32 0, ptr {buf}, i64 16)'))
+        some, lone, more, rest = f.lab('some'), f.lab('lone'), f.lab('more'), f.lab('rest')
+        f.cbr(f.r(f'icmp sgt i64 {f.load("i64", nv)}, 0'), some, end)
+        f.at(some)                      # an arrow key is three bytes; if only the first came, give the rest a moment
+        only = f.r(f'and i1 {f.r(f"icmp eq i64 {f.load("i64", nv)}, 1")}, '
+                   f'{f.r(f"icmp eq i8 {f.load("i8", buf)}, 27")}')
+        f.cbr(only, lone, decode)
+        f.at(lone)
+        f.store('i16', '0', f.r(f'getelementptr {{ i32, i16, i16 }}, ptr {pfd}, i32 0, i32 2'))
+        f.cbr(f.r(f'icmp sgt i32 {f.r(f"call i32 @poll(ptr {pfd}, i64 1, i32 25)")}, 0'), more, decode)
+        f.at(more)
+        extra = f.r(f'call i64 @read(i32 0, ptr {f.r(f"getelementptr i8, ptr {buf}, i64 1")}, i64 15)')
+        f.cbr(f.r(f'icmp sgt i64 {extra}, 0'), rest, decode)
+        f.at(rest)
+        f.store('i64', f.r(f'add i64 {extra}, 1'), nv)
+        f.br(decode)
         f.at(decode)
+        n = f.load('i64', nv)
         f.cbr(f.r(f'icmp ne i32 {f.r(f"call i32 @keys(ptr {buf}, i64 {n}, ptr %jf)")}, 0'), end, tick)
         f.at(tick)
         now = f.r('call i64 @now()')
@@ -1067,13 +1109,14 @@ class Gen:
         f.br(loop)
         f.at(end)
         f.e('call void @leave()')
+        f.e('call void @screen(i1 false)')      # what it looked like when it stopped stays on the terminal
         f.cbr(f.r('call i1 @over()'), lost, bye)
         f.at(lost)
         self.puts(f, OVER)
         f.br(bye)
         f.at(bye)
         f.e('call i32 @fflush(ptr null)')
-        f.e('ret void')
+        f.e('ret i32 0')
 
     def live(self):
         P = self.prog
@@ -1295,8 +1338,7 @@ class Gen:
             play, commands = f.lab('play'), f.lab('commands')
             f.cbr(f.r(f'icmp ne i32 {both}, 0'), play, commands)
             f.at(play)
-            f.e(f'call void @play(ptr {jf})')
-            f.e('ret i32 0')
+            f.e(f'ret i32 {f.r(f"call i32 @play(ptr {jf})")}')
             f.at(commands)
         fp = f.r(f'call ptr @fdopen(i32 0, ptr {self.cstr("r")})')
         loop, got, done = f.lab('loop'), f.lab('got'), f.lab('done')

@@ -288,6 +288,17 @@ KEY_CODES = {'left': 256 + 68, 'right': 256 + 67, 'up': 256 + 65, 'down': 256 + 
 KEY_CODES.update({k: ord(k) for k in KEYS if len(k) == 1})      # an arrow is ESC [ A..D; the rest are themselves
 LONGEST_WAIT = 3600000          # one hour, in milliseconds
 OVER = 'the game is over'
+ENTER_PLAY = '\x1b[?1049h\x1b[?7l\x1b[2J\x1b[?25l'     # a screen of its own, no line wrap, no cursor
+LEAVE_PLAY = '\x1b[?7h\x1b[?25h\x1b[?1049l'
+TOO_SMALL = 'this board needs a terminal at least %d wide and %d high; this one is %d wide and %d high'
+
+
+def room(prog):
+    """(columns, rows) the terminal needs to show the board with its frame and status lines."""
+    w, h = prog.board
+    return w + 2, h + 3 + bool(prog.above) + bool(prog.below)
+
+
 LONGEST_STEP = 250              # while playing, time never jumps further than this at once
 BAD_WAIT = f'error: wait takes a number of milliseconds, from 0 to {LONGEST_WAIT}'
 
