@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/srivtx/intent/discussions
+    about: How would I say ...? Proposals for new phrasings.
+  - name: Language guide
+    url: https://intent.srivtx.xyz/guide/
+    about: Every kind of sentence the compiler understands today.
