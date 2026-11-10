@@ -38,6 +38,7 @@ class Checker:
         self.prog, self.src = prog, src
         self.diags = []
         self.seen = set()
+        self.div_noted = False      # the note on whole-number division is given once
         self.outer = None           # while a condition about other records is checked: where it is asked from
 
     def d(self, level, line, msg, label='', hint=''):
@@ -344,8 +345,10 @@ class Checker:
                     self.d('question', t.line, f'what should happen when {name} is zero?',
                            'dividing by zero has no answer, and I will not invent one',
                            f'say it, e.g. "... divided by {name} if {name} is not 0, otherwise 0"')
-                elif e[1] == 'div' and not self.isdec(e, self.prog.collections.get(t.coll), t):
-                    self.d('note', t.line, 'whole-number division drops the remainder (7 / 2 is 3)')
+                elif e[1] == 'div' and not self.isdec(e, self.prog.collections.get(t.coll), t) and not self.div_noted:
+                    self.div_noted = True       # said once: it holds for every whole-number division
+                    self.d('note', t.line, 'whole-number division drops the remainder (7 / 2 is 3)',
+                           hint='this holds for every division of whole numbers in the program')
             self.divisions(e[2], safe, t)
             self.divisions(d, safe, t)
         elif e[0] == 'if':
