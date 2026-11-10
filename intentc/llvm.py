@@ -9,7 +9,7 @@ from .interp import ROUNDS, UNSETTLED
 import sys
 
 from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, ENTER_PLAY, INK_LETTER, KEY_CODES, LEAVE_PLAY, LONGEST_STEP,
-                 LONGEST_WAIT, MUTATING, OVER, OVER_HINT, STATE, TEXT_OPS, TOO_SMALL, builtins, canon, decides_first,
+                 LONGEST_WAIT, MUTATING, OVER, OVER_HINT, SINE, STATE, TEXT_OPS, TOO_SMALL, builtins, canon, decides_first,
                  fmt_cond, fmt_event, fmt_expr, room, usage, uses_chance, walk_cond_exprs)
 from .plan import narrow_settle
 from .web import HTML, MOST, PLAIN, ROOM, page, title_of
@@ -36,6 +36,7 @@ declare i64 @strtoll(ptr, ptr, i32)
 declare i32 @snprintf(ptr, i64, ptr, ...)
 declare ptr @memmove(ptr, ptr, i64)
 declare void @qsort(ptr, i64, i64, ptr)
+declare double @llvm.sqrt.f64(double)
 declare ptr @strstr(ptr, ptr)
 declare i32 @strncmp(ptr, ptr, i64)
 declare i64 @strlen(ptr)
@@ -222,6 +223,18 @@ class Gen:
             return str(e[1]), 'int'
         if k == 'cents':
             return f.r(f'mul i64 {self.expr(f, e[1], c, rec, vals)[0]}, 100'), 'int'
+        if k == 'fn':
+            a = self.expr(f, e[2], c, rec, vals)[0]
+            if e[1] == 'cos':
+                return f.r(f'call i64 @sine(i64 {f.r(f"add i64 {a}, 9000")})'), 'int'
+            if e[1] == 'abs':
+                return f.r(f'select i1 {f.r(f"icmp slt i64 {a}, 0")}, i64 {f.r(f"sub i64 0, {a}")}, i64 {a}'), 'int'
+            if e[1] == 'dround':
+                return f.r(f'call i64 @rdiv(i64 {a}, i64 100)'), 'int'
+            if e[1] == 'dtrunc':
+                return f.r(f'sdiv i64 {a}, 100'), 'int'
+            name = {'sin': '@sine', 'sqrt': '@root', 'dsqrt': '@droot'}[e[1]]
+            return f.r(f'call i64 {name}(i64 {a})'), 'int'
         if k == 'if':                   # only the chosen side is worked out (the other may divide by zero)
             yes, no, done = f.lab('then'), f.lab('else'), f.lab('fi')
             f.cbr(self.cond(f, e[1], c, rec, vals), yes, no)
@@ -463,6 +476,62 @@ class Gen:
             return v, ty
         buf = f.var('[32 x i8]')
         return f.r(f'call ptr @decstr(i64 {v}, ptr {buf})'), 'text'
+
+    def maths(self):
+        """Square roots and sines, in whole numbers only, so they come out the same everywhere (see ir.sine)."""
+        self.globals.append(f'@sines = internal constant [91 x i64] [{", ".join(f"i64 {v}" for v in SINE)}]')
+        f = self.fn('@sine', 'i64', 'i64 %a', 'the sine of a hundredths of a degree, in hundredths')
+        r0 = f.r('srem i64 %a, 36000')
+        r0 = f.r(f'select i1 {f.r(f"icmp slt i64 {r0}, 0")}, i64 {f.r(f"add i64 {r0}, 36000")}, i64 {r0}')
+        q, r = f.r(f'udiv i64 {r0}, 9000'), f.r(f'urem i64 {r0}, 9000')
+        odd = f.r(f'icmp ne i64 {f.r(f"and i64 {q}, 1")}, 0')
+        r = f.r(f'select i1 {odd}, i64 {f.r(f"sub i64 9000, {r}")}, i64 {r}')
+        k, fr = f.r(f'udiv i64 {r}, 100'), f.r(f'urem i64 {r}, 100')
+        k1 = f.r(f'select i1 {f.r(f"icmp eq i64 {k}, 90")}, i64 90, i64 {f.r(f"add i64 {k}, 1")}')
+        tk = f.load('i64', f.r(f'getelementptr [91 x i64], ptr @sines, i64 0, i64 {k}'))
+        tk1 = f.load('i64', f.r(f'getelementptr [91 x i64], ptr @sines, i64 0, i64 {k1}'))
+        v = f.r(f'add i64 {f.r(f"mul i64 {tk}, 100")}, {f.r(f"mul i64 {f.r(f"sub i64 {tk1}, {tk}")}, {fr}")}')
+        v = f.r(f'udiv i64 {f.r(f"add i64 {v}, 500000")}, 1000000')
+        f.e(f'ret i64 {f.r(f"select i1 {f.r(f"icmp uge i64 {q}, 2")}, i64 {f.r(f"sub i64 0, {v}")}, i64 {v}")}')
+
+        f = self.fn('@isqrt', 'i64', 'i64 %a, i64 %scale',
+                    'the whole square root of a * scale, rounded down: a first guess in floating point, then made exact')
+        pos, zero = f.lab('pos'), f.lab('zero')
+        f.cbr(f.r('icmp sgt i64 %a, 0'), pos, zero)
+        f.at(zero)
+        f.e('ret i64 0')
+        f.at(pos)
+        n = f.r(f'mul i128 {f.r("sext i64 %a to i128")}, {f.r("sext i64 %scale to i128")}')
+        d = f.r(f'fmul double {f.r("sitofp i64 %a to double")}, {f.r("sitofp i64 %scale to double")}')
+        s = f.var('i128', f.r(f'sext i64 {f.r(f"fptosi double {f.r(f"call double @llvm.sqrt.f64(double {d})")} to i64")} to i128'))
+        down, dbody, up, ubody, done = f.lab('down'), f.lab('lower'), f.lab('up'), f.lab('raise'), f.lab('done')
+        f.br(down)
+        f.at(down)
+        sv = f.load('i128', s)
+        f.cbr(f.r(f'icmp sgt i128 {f.r(f"mul i128 {sv}, {sv}")}, {n}'), dbody, up)
+        f.at(dbody)
+        f.store('i128', f.r(f'sub i128 {sv}, 1'), s)
+        f.br(down)
+        f.at(up)
+        sv = f.load('i128', s)
+        nx = f.r(f'add i128 {sv}, 1')
+        f.cbr(f.r(f'icmp sle i128 {f.r(f"mul i128 {nx}, {nx}")}, {n}'), ubody, done)
+        f.at(ubody)
+        f.store('i128', nx, s)
+        f.br(up)
+        f.at(done)
+        f.e(f'ret i64 {f.r(f"trunc i128 {sv} to i64")}')
+
+        f = self.fn('@root', 'i64', 'i64 %a', 'the whole square root, rounded down')
+        f.e(f'ret i64 {f.r("call i64 @isqrt(i64 %a, i64 1)")}')
+
+        f = self.fn('@droot', 'i64', 'i64 %a', 'the square root of hundredths, in hundredths, rounded to the nearest')
+        sq = f.r('call i64 @isqrt(i64 %a, i64 100)')
+        n = f.r(f'mul i128 {f.r("sext i64 %a to i128")}, 100')
+        s2 = f.r(f'sext i64 {sq} to i128')
+        over = f.r(f'icmp sgt i128 {f.r(f"sub i128 {n}, {f.r(f"mul i128 {s2}, {s2}")}")}, {s2}')
+        nonpos = f.r('icmp sle i64 %a, 0')
+        f.e(f'ret i64 {f.r(f"select i1 {nonpos}, i64 0, i64 {f.r(f"add i64 {sq}, {f.r(f"zext i1 {over} to i64")}")}")}')
 
     def decimals(self):
         f = self.fn('@rdiv', 'i64', 'i64 %a, i64 %b',
@@ -2213,6 +2282,7 @@ class Gen:
                 if rf.ref:
                     self.relation(d, rf)
         self.decimals()
+        self.maths()
         for t in self.prog.tasks:
             self.task(t)
         for r in self.prog.rules:
