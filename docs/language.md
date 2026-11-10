@@ -403,6 +403,56 @@ What is drawn is the first character of the text, if it is a plain one (`!` to `
 text, a space or any other character draws nothing there. A colour is given by its name, as
 text (`"red"`, `"cyan"`, ...); a text that names no colour draws without one.
 
+### Any colour
+
+A colour can be any of the web's 148 colour names, written with or without spaces and capitals
+(`salmon`, `light blue`, `"Dark Orange"`), or `"#rrggbb"`:
+
+```
+Draw each tile as "#" in olive at its x and its y.
+Draw each tile as its look in "#ff8800" at its x and its y.
+```
+
+The nine terminal colours (red, green, yellow, blue, magenta, cyan, white, grey and purple/pink)
+are shown as the terminal shows them; every other colour is exact, in a window and in a picture,
+and in any terminal that shows 24-bit colour.
+
+### Pictures drawn by hand
+
+A picture can be drawn by hand, as rows of characters, and given a legend:
+
+```
+A tulip looks like this, where r is crimson, p is hot pink and g is forest green:
+    r.r.r
+    rrprr
+    .rrr.
+    g.g.g
+    .ggg.
+
+Draw a tulip at 5 and 3.
+Draw each spot as a tulip at its x times 10 and its y.
+```
+
+The rows are read exactly as written (a `#` in them is part of the picture, not a comment). A
+character in the legend is a filled cell in its colour; `x is nothing` makes one draw nothing; a
+space or `.` draws nothing; any other character is drawn as itself, so a picture can also be
+ASCII art. The picture's top left corner goes where the drawing says, and whatever falls off the
+board is not drawn.
+
+### Words and a background
+
+```
+Write "spring, in sentences" at 3 and 35 in dark olive green.
+Write the title at 2 and 1.
+The background is light yellow.
+```
+
+`Write` puts every character of a text on the board, one cell each, rightward; a space leaves the
+cell as it was. The background is the colour of the board where nothing is drawn, in a window and
+in a picture. A board can be up to 400 wide and 200 high (to be played, it has to fit the terminal).
+
+### Saving a picture
+
 `./intent svg` saves the board as a picture, after any events:
 
 ```
