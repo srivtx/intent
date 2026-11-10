@@ -6,10 +6,11 @@ knows nothing about the planner or the LLVM backend. Compiled programs are teste
 Numbers are 64-bit and wrap on overflow. Division truncates toward zero.
 """
 import functools
+import itertools
 import re
 
 from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, INK_LETTER, LONGEST_WAIT, MUTATING, OVER, STATE, builtins,
-                 decides_first, fmt_dec, rdiv, usage)
+                 decides_first, draw_char, droot, fmt_dec, rdiv, root, sine, usage)
 
 UNSETTLED = 'error: the rules keep changing each other'
 ROUNDS = 100
@@ -72,6 +73,14 @@ def ev(e, row, args, m=None):
         return e[1]
     if k == 'cents':
         return wrap(ev(e[1], row, args, m) * 100)
+    if k == 'fn':
+        a = ev(e[2], row, args, m)
+        k = e[1]
+        if k == 'abs':
+            return wrap(abs(a))
+        if k in ('dround', 'dtrunc'):
+            return rdiv(a, 100) if k == 'dround' else (abs(a) // 100) * (-1 if a < 0 else 1)
+        return sine(a) if k == 'sin' else sine(wrap(a + 9000)) if k == 'cos' else root(a) if k == 'sqrt' else droot(a)
     if k == 'agg':
         rows = among(e[2], e[4], row, args, m)
         if e[1] == 'count':
