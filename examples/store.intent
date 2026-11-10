@@ -1,0 +1,39 @@
+# A small store: customers, the orders they place, and the lines on each order.
+#   ./intent build examples/store.intent -o build/store
+#   ./build/store store.log
+
+Customers is a collection.
+Each customer has an email, a name and a city (text).
+Emails are unique. Reject duplicates.
+
+Orders is a collection.
+Each order has a number (number), a customer and a total (number).
+Numbers are unique. Reject duplicates.
+Keep orders in the order they were added.
+
+Lines is a collection.
+Each line has a sku (text), a quantity (number) and a price (number).
+Each line belongs to an order.
+
+When a customer is removed, remove its orders.
+When an order is removed, remove its lines.
+
+"big" means with a total of at least 10000.
+
+signup: add a customer.
+place: add an order.
+add-line: add a line.
+close-account: remove a customer by email.
+cancel: remove an order by number.
+
+orders-of: show the orders of a given customer.
+spent: what is the sum of the total of orders for a given customer?
+lines-of: show the sku, quantity and price of lines for a given order.
+receipt: show the number, the total and the customer's name of orders sorted by number.
+from-city: show the numbers of orders whose customer's city is a given city.
+big-orders: show the number and the customer's name of the big orders.
+discount: decrease the total by 10 percent for orders whose customer's city is a given city.
+who-bought: show the order's customer of lines whose sku is a given sku.
+How many customers are there?
+How many orders are there?
+How many lines are there?
