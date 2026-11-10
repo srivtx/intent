@@ -8,8 +8,9 @@ The pipeline for one sentence:
   5. read what is left as one action; every remaining token must be accounted for
 Any step that cannot proceed raises a Problem pointing at the exact words.
 """
+import copy
 import difflib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .ir import Collection, Diag, Field, Program, Task, binop, canon, negate
 from .lexicon import (CONVENTION, MAX_PHRASE, PHRASES, SYMS, TYPE_WORDS, UNSUPPORTED_TYPES, all_known_words,
@@ -22,8 +23,22 @@ SCALE_NAME = {2: 'double', 3: 'triple', 4: 'quadruple'}
 
 
 class Problem(Exception):
-    def __init__(self, diag):
+    def __init__(self, diag, unk=None):
         self.diag = diag
+        self.unk = unk              # the unknown word token, when that is what went wrong
+
+
+def edit_distance(a, b):
+    """Damerau-Levenshtein distance: a swapped pair of neighbouring letters counts as one slip."""
+    prev2, prev = None, list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        prev2, prev = prev, cur
+    return prev[-1]
 
 
 @dataclass
@@ -94,8 +109,59 @@ class Parser:
         close = [w for w in difflib.get_close_matches(word, pool, n=3, cutoff=0.8) if w != word]
         hint = (f'did you mean "{close[0]}"? ' if close else '') + \
             "I never drop a word I don't understand, because it might change the meaning."
-        return self.p('error', c, f'I don\'t know the word "{c.text}"',
-                      'not a concept I know, and not a name this program declared', hint)
+        e = self.p('error', c, f'I don\'t know the word "{c.text}"',
+                   'not a concept I know, and not a name this program declared', hint)
+        e.unk = c.toks[0]
+        return e
+
+    # ------------------------------------------------------------------ spelling
+    def vocabulary(self):
+        names = set(self.prog.collections)
+        for f in self.prog.field_names():
+            names.update(f.split('_'))
+        words = set(all_known_words()) | names | {n + 's' for n in names}
+        return {w for w in words if w.isalpha()}
+
+    def spellings(self, word):
+        """Known words a slip of the fingers away from `word`. Short words are never corrected."""
+        if len(word) < 3:
+            return []
+        if len(word) == 3:          # only two swapped letters: "teh" -> "the"
+            return sorted(w for w in self.vocabulary() if sorted(w) == sorted(word) and edit_distance(word, w) == 1)
+        limit = 1 if len(word) < 8 else 2
+        found = [(edit_distance(word, w), w) for w in self.vocabulary()
+                 if len(w) >= 3 and abs(len(w) - len(word)) <= limit]
+        return [w for d, w in sorted(found) if d <= limit]
+
+    def snapshot(self):
+        return copy.deepcopy(self.prog), list(self.diags), list(self.readings)
+
+    def restore(self, snap):
+        self.prog, self.diags, self.readings = copy.deepcopy(snap[0]), list(snap[1]), list(snap[2])
+
+    def respell(self, toks, problem, depth=0):
+        """Every way of correcting the unknown word(s) that makes the whole sentence readable.
+
+        Returns [(tokens, reading, [(original token, correction), ...])].
+        """
+        out = []
+        snap = self.snapshot()
+        for cand in self.spellings(problem.unk.text):
+            trial = [replace(t, text=cand) if t is problem.unk else t for t in toks]
+            fix = (problem.unk, cand)
+            self.cur = trial
+            try:
+                reading = self._sentence(trial)
+                if reading:
+                    out.append((trial, reading, [fix]))
+            except Problem as e:
+                if e.unk is not None and depth < 4:
+                    self.restore(snap)
+                    out += [(t, r, [fix] + fx) for t, r, fx in self.respell(trial, e, depth + 1)]
+            finally:
+                self.restore(snap)
+        self.cur = toks
+        return out
 
     def sent_text(self, toks):
         by_line = {}
@@ -141,12 +207,34 @@ class Parser:
         if not toks:
             return
         self.cur = toks
+        snap = self.snapshot()
         try:
             reading = self._sentence(toks)
-            if reading:
-                self.readings.append((toks[0].line, self.sent_text(toks), reading))
         except Problem as e:
-            self.diags.append(e.diag)
+            self.restore(snap)
+            if e.unk is None:
+                self.diags.append(e.diag)
+                return
+            ways = self.respell(toks, e)
+            readings = sorted({r for _, r, _ in ways})
+            if not ways:
+                self.diags.append(e.diag)
+                return
+            if len(readings) > 1:
+                d = e.diag
+                self.diags.append(Diag('question', f'I don\'t know the word "{e.unk.raw}", and it could be a '
+                                       f'slip for more than one word', d.line, d.start, d.end,
+                                       'could be: ' + ', '.join(sorted({fx[0][1] for _, _, fx in ways})),
+                                       'the sentence reads differently for each: ' + ' / '.join(readings)))
+                return
+            toks, _, fixes = min(ways, key=lambda w: sum(edit_distance(t.text, c) for t, c in w[2]))
+            self.cur = toks
+            reading = self._sentence(toks)
+            for tok, word in fixes:
+                self.note(tok, f'read "{tok.raw}" as "{word}"',
+                          'the only known word this close that makes the sentence make sense')
+        if reading:
+            self.readings.append((toks[0].line, self.sent_text(toks), reading))
 
     def _sentence(self, toks):
         cts = self.normalize(toks)
