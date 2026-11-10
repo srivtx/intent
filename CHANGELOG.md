@@ -5,8 +5,9 @@ always shows the current reading.
 
 ## Unreleased
 
-Pictures and maths: a grid of records from one sentence, sines and square roots, records that
-choose their own look, colour and drawing order, and `./intent svg`. Plus four fixes from
+Pictures and maths: a grid of records from one sentence, sines and square roots, any colour,
+pictures drawn by hand, words, records that choose their own look, colour and drawing order, and
+`./intent svg`. Plus four fixes from
 building a 3D torus and a spinning cube in pure Intent.
 
 ### Added
@@ -26,6 +27,16 @@ building a 3D torus and a spinning cube in pure Intent.
   dots or blocks, on dark or light paper.
 - **`examples/art/`**: a cross-stitch egg, a halftone sun, a ripple, orbits and rings; and a
   [gallery](https://intent.srivtx.xyz/gallery/) on the website, drawn from them at build time.
+- **Any colour.** The web's 148 colour names (with or without spaces and capitals) and
+  `"#rrggbb"`, in drawings, legends and text properties; exact in windows, pictures and 24-bit
+  terminals, the nine terminal colours unchanged. `picture` writes such a cell as `#rrggbb`.
+- **Pictures drawn by hand.** `A tulip looks like this, where r is crimson and g is green:` and
+  its rows below; `Draw a tulip at 5 and 3.` or `Draw each spot as a tulip at ...`. One painting
+  function per picture natively, from tables of its cells.
+- **Words.** `Write "spring" at 3 and 35 in dark olive green.` and `Write the title at 2 and 1.`
+- **A background.** `The background is light yellow.`, for windows and pictures. Boards can be up
+  to 400 by 200.
+- More art: a meadow of sprites, computed textile motifs and a poster.
 - A note for a single value that nothing uses: it is usually a slip in its name.
 
 ### Fixed
