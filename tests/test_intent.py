@@ -4,6 +4,11 @@
   2. Never guess: ask, pointing at the words (TestQuestions)
   3. Representation follows declared behaviour (TestPlanner)
   4. Native code means what the reference interpreter says (TestNativeAgainstReference)
+and for the flexibility added after the first version:
+  5. Slips of spelling are corrected only when one correction fits (TestSpelling)
+  6. Programs can teach the compiler words                         (TestDefinitions)
+  7. Word order, rankings, ranges, percentages                     (TestFlexibility)
+  8. The example apps, and remembering between runs                (TestApps)
 """
 import os
 import random
@@ -362,7 +367,9 @@ class TestNativeAgainstReference(unittest.TestCase):
                 pos += len(exp)
                 t = tasks.get(c.split(' ')[0])
                 ordered = t is None or t.coll is None or prog.collections[t.coll].ordered
-                if not ordered and t.kind in ('list', 'find'):
+                if not ordered and t.kind == 'list' and t.limit is not None:
+                    exp, act = len(exp), len(act)           # ties are broken by storage order
+                elif not ordered and t.kind in ('list', 'find'):
                     exp, act = sorted(exp), sorted(act)     # order is not part of the meaning
                 self.assertEqual(act, exp, f'seed {seed}, command {c!r}')
             self.assertEqual(pos, len(lines), f'seed {seed}: native printed extra lines')
@@ -402,6 +409,187 @@ class TestNativeAgainstReference(unittest.TestCase):
         expected = [o for c in cmds for o in m.run(c)]
         got = subprocess.run([exe], input='\n'.join(cmds) + '\n', capture_output=True, text=True, timeout=120)
         self.assertEqual(got.stdout.split('\n')[:-1], expected)
+
+def notes(text, base=BASE):
+    prog, diags, p = parse(base + text)
+    return [d.msg for d in diags if d.level == 'note' and d.line > base.count('\n')]
+
+
+class TestSpelling(unittest.TestCase):
+    def test_one_slip(self):
+        for typo, right in [('Doubel the age.', 'double'), ('Find a customer by emial.', 'email'),
+                            ('What is the avrage age?', 'average'), ('Show the custmers.', 'customers')]:
+            with self.subTest(typo):
+                self.assertTrue(meaning(typo))
+                self.assertEqual(len(notes(typo)), 1)
+                self.assertIn(f'as "{right}"', notes(typo)[0])
+
+    def test_same_meaning_as_the_correct_spelling(self):
+        self.assertEqual(meaning('Shwo teh customres sroted by aeg.'), meaning('Show the customers sorted by age.'))
+        self.assertEqual(meaning('Remove the customers whos age is under 18.'),
+                         meaning('Remove the customers whose age is under 18.'))
+
+    def test_every_correction_is_reported(self):
+        self.assertEqual(len(notes('Shwo teh customres sroted by aeg.')), 5)
+
+    def test_a_far_off_word_is_still_an_error(self):
+        level, where, _ = problem('Show the largest positive age.')
+        self.assertEqual((level, where), ('error', 'positive'))
+
+    def test_two_possible_corrections_is_a_question(self):
+        base = ('Items is a collection.\nEach item has a cost (number) and a coat (number).\n')
+        level, where, d = problem('Show the items sorted by coxt.', base)
+        self.assertEqual((level, where), ('question', 'coxt'))
+        self.assertIn('coat', d.label)
+        self.assertIn('cost', d.label)
+
+    def test_new_names_in_declarations_are_not_corrected(self):
+        prog, diags, _ = understand('', 'Custmers is a collection.\nEach custmer has a nme.\n')
+        self.assertIn('custmer', prog.collections)
+        self.assertIn('nme', prog.collections['custmer'].fields)
+
+
+DEFS = BASE + ('"older than" means age over.\n'
+               'An adult is a customer whose age is at least 18.\n'
+               'A senior is an adult older than 64.\n'
+               'A rich customer is a customer whose salary is over 9000.\n'
+               '"oldest" means with the largest age.\n')
+
+
+class TestDefinitions(unittest.TestCase):
+    def test_phrase(self):
+        self.assertEqual(meaning('Show the customers older than 30.', DEFS), 'list all of customer where age > 30')
+
+    def test_noun(self):
+        self.assertEqual(meaning('How many adults are there?', DEFS), 'count() of customer where age >= 18')
+        self.assertEqual(meaning('Remove the adults.', DEFS), 'remove customer where age >= 18')
+
+    def test_definitions_build_on_each_other(self):
+        self.assertEqual(meaning('Show the names of seniors.', DEFS),
+                         'list name of customer where age >= 18 and age > 64')
+
+    def test_noun_plus_more_conditions(self):
+        self.assertEqual(meaning('Double the salary of adults whose salary is under 100.', DEFS),
+                         'update customer: salary = salary * 2 where age >= 18 and salary < 100')
+
+    def test_adjective(self):
+        self.assertEqual(meaning('Show the rich customers sorted by name.', DEFS),
+                         'list all of customer where salary > 9000 sorted by name ascending')
+
+    def test_superlative(self):
+        self.assertEqual(meaning('Show the oldest customer.', DEFS),
+                         'list all of customer sorted by age descending, first 1')
+        self.assertEqual(meaning('Show the 3 oldest adults.', DEFS),
+                         'list all of customer where age >= 18 sorted by age descending, first 3')
+
+    def test_label_or_scope(self):
+        prog, diags, _ = understand('seniors: show the names of the seniors.\nAdults: double the salary.\n', DEFS)
+        self.assertEqual(diags, [])
+        self.assertEqual(prog.tasks[0].name, 'seniors')
+        self.assertEqual(canon(prog.tasks[1]), 'update customer: salary = salary * 2 where age >= 18')
+
+    def test_a_word_means_one_thing(self):
+        level, where, _ = problem('"over" means under.')
+        self.assertEqual((level, where), ('error', '"over"'))
+
+    def test_meaning_must_be_understood(self):
+        level, where, _ = problem('"posh" means fancy.')
+        self.assertEqual((level, where), ('error', 'fancy'))
+
+    def test_taught_words_are_spell_checked_too(self):
+        self.assertEqual(meaning('Show the adluts.', DEFS), 'list all of customer where age >= 18')
+
+
+class TestFlexibility(unittest.TestCase):
+    def same(self, expected, phrasings, base=BASE):
+        for ph in phrasings:
+            with self.subTest(ph):
+                self.assertEqual(meaning(ph, base), expected)
+
+    def test_word_order(self):
+        self.same('update customer: age = age * 2', [
+            'Double the age of every customer.', 'The age of every customer, double it.',
+            'For each customer, the age becomes twice the age.'])
+        self.same('remove customer where age < 18', [
+            'Remove the customers whose age is under 18.', 'Customers whose age is under 18: remove them.',
+            'If the age is under 18, delete the customer.', 'Wipe out every customer with an age below 18.'])
+        self.same('find customer by email', ['Find a customer by email.', 'By email, find a customer.',
+                                             'Look up a customer using their email.'])
+        self.same('list all of customer sorted by age descending', [
+            'Show the customers sorted by age, largest first.', 'Sorted by age, largest first, show the customers.',
+            'The customers, sorted by age, show them largest first.'])
+
+    def test_ranking(self):
+        self.same('list all of customer sorted by salary descending, first 3', [
+            'Show the top 3 customers by salary.', 'Show the 3 customers with the highest salary.',
+            'the top three customers by salary'])
+        self.assertEqual(meaning('Show the name of the customer with the lowest age.'),
+                         'list name of customer sorted by age ascending, first 1')
+
+    def test_first_needs_an_order(self):
+        level, where, _ = problem('Show the first 5 customers.')
+        self.assertEqual((level, where), ('question', 'the first 5'))
+        self.assertEqual(meaning('Show the first 5 customers.', BASE + 'Keep customers in the order they were added.\n'),
+                         'list all of customer, first 5')
+
+    def test_range(self):
+        self.same('list all of customer where age >= 18 and age <= 30', [
+            'Show customers whose age is between 18 and 30.', 'Show customers with an age between 18 and 30.',
+            'Show customers whose age is at least 18 and at most 30.'])
+
+    def test_percent(self):
+        self.same('update customer: salary = salary + ((salary * 10) / 100)', [
+            'Increase every salary by 10 percent.', 'Raise the salary by 10%.'])
+
+    def test_remove_everything_only_when_said(self):
+        self.same('remove customer', ['Remove all customers.', 'Delete everyone.'])
+        self.assertEqual(problem('Remove a customer.')[0], 'question')
+
+    def test_question_is_not_a_declaration(self):
+        self.assertEqual(meaning('Which customers have a salary over 5000?'), 'list all of customer where salary > 5000')
+
+
+@unittest.skipUnless(shutil.which('clang'), 'clang is needed to build native code')
+class TestApps(TestNativeAgainstReference):
+    def app(self, name):
+        with open(os.path.join(ROOT, 'examples', name + '.intent')) as fh:
+            self.differential(name, fh.read(), seeds=4, n=300)
+
+    def test_leaderboard(self):
+        self.app('leaderboard')
+
+    def test_todo(self):
+        self.app('todo')
+
+    def test_shop(self):
+        self.app('shop')
+
+    def test_help_lists_capabilities(self):
+        src, exe = os.path.join(self.dir, 'h.intent'), os.path.join(self.dir, 'h')
+        with open(src, 'w') as fh:
+            fh.write('Pets is a collection. Each pet has a name. Add a pet. Show the pets.')
+        prog = build(src, exe, quiet=True)
+        got = subprocess.run([exe], input='help\n', capture_output=True, text=True)
+        self.assertEqual(got.stdout, 'add <name>\nlist\n')
+        self.assertEqual(Machine(prog).run('help'), ['add <name>', 'list'])
+
+    def test_remembers_between_runs(self):
+        src, exe = os.path.join(self.dir, 'r.intent'), os.path.join(self.dir, 'r')
+        log = os.path.join(self.dir, 'r.log')
+        with open(src, 'w') as fh:
+            fh.write('Pets is a collection. Each pet has a name and an age (number). Names are unique. '
+                     'Reject duplicates. Keep pets in the order they were added. Add a pet. '
+                     'Remove a pet by name. Double the age. Show the pets.')
+        build(src, exe, quiet=True)
+
+        def run(text):
+            return subprocess.run([exe, log], input=text, capture_output=True, text=True).stdout
+
+        self.assertEqual(run('add rex,3\nadd tom,5\nlist\n'), 'rex,3\ntom,5\n')
+        self.assertEqual(run('double-age\nremove-by-name rex\nadd ivy,1'), '')      # last line has no newline
+        self.assertEqual(run('list\n'), 'tom,10\nivy,1\n')
+        with open(log) as fh:                                       # queries are not recorded
+            self.assertEqual(fh.read(), 'add rex,3\nadd tom,5\ndouble-age\nremove-by-name rex\nadd ivy,1\n')
 
 
 if __name__ == '__main__':
