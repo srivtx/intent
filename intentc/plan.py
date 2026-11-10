@@ -7,6 +7,8 @@ source lines that caused it.
 """
 from dataclasses import dataclass, field
 
+from .ir import walk_cond_exprs, walk_expr
+
 
 @dataclass
 class CollPlan:
@@ -20,6 +22,13 @@ class CollPlan:
 class Plan:
     colls: dict = field(default_factory=dict)
     tasks: dict = field(default_factory=dict)         # task name -> (cost, how)
+
+
+def reaches(t, ref):
+    """Does this task read a property of the record its rows belong to?"""
+    exprs = [e for _, e in t.assigns] + list(walk_cond_exprs(t.where))
+    return any(e[0] == 'pfield' and e[1] == ref for top in exprs for e in walk_expr(top)) or \
+        any(n.startswith(ref + '.') for n in t.fields or [])
 
 
 def make_plan(prog, no_index=False):
@@ -38,6 +47,15 @@ def make_plan(prog, no_index=False):
             for t in tasks:
                 if t.kind in ('find', 'remove_key') and t.key == f.name:
                     why.append((t.line, f'"{t.name}" picks one {c.name} by {f.name} on every call'))
+            if prog.key_of(c.name) is f:
+                for d, rf in prog.children_of(c.name):
+                    for t in prog.tasks:
+                        if t.coll != d.name:
+                            continue
+                        if t.kind == 'add':
+                            why.append((rf.line, f'every new {d.name} must check that its {c.name} exists'))
+                        elif reaches(t, rf.name):
+                            why.append((t.line, f'"{t.name}" looks up the {c.name} of each {d.name}'))
             if not why:
                 continue
             if no_index:
@@ -97,6 +115,27 @@ def make_plan(prog, no_index=False):
                     plan.tasks[t.name] = ('O(n)', 'one pass; filter and output fused, nothing copied')
             elif t.kind == 'agg':
                 plan.tasks[t.name] = ('O(n)', 'one pass, constant extra memory')
+    for c in prog.collections.values():
+        for f in c.fields.values():
+            if f.ref:
+                k = prog.key_of(f.ref)
+                plan.colls[c.name].decisions.append((
+                    f'each {c.name} stores the {k.name if k else "key"} of its {f.ref}',
+                    'a value, not a pointer, so rows on both sides can move freely', [(f.line, 'the relationship')]))
+    for t in prog.tasks:
+        c = prog.collections.get(t.coll)
+        if c is None:
+            continue
+        cost, how = plan.tasks[t.name]
+        if t.kind == 'add' and any(f.ref for f in c.fields.values()):
+            how += ', after checking that what it belongs to exists'
+        if t.kind in ('remove_key', 'remove_where'):
+            for d, rf in prog.children_of(c.name):
+                if rf.on_removed == 'cascade':
+                    how += f'; then one pass over {d.label.lower()} to drop those left without a {c.name}'
+                elif rf.on_removed == 'restrict':
+                    how += f'; first a pass over {d.label.lower()} to see that none belong to it'
+        plan.tasks[t.name] = (cost, how)
     for t in prog.tasks:
         if t.kind == 'calc':
             plan.tasks[t.name] = ('O(1)', 'straight-line arithmetic')
