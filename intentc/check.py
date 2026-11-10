@@ -38,6 +38,7 @@ class Checker:
         self.prog, self.src = prog, src
         self.diags = []
         self.seen = set()
+        self.div_noted = False      # the note on whole-number division is given once
         self.outer = None           # while a condition about other records is checked: where it is asked from
 
     def d(self, level, line, msg, label='', hint=''):
@@ -229,6 +230,7 @@ class Checker:
                        f'e.g. "Each {c.name} has a name and an age."')
             if c.on_dup == 'replace' and len(c.unique_fields()) > 1:
                 self.d('error', c.on_dup_line, 'replacing duplicates with more than one unique property is not supported yet')
+        self.unused_values()
         if not P.tasks and not P.events and P.collections:
             line = max(c.line for c in P.collections.values())
             self.d('note', line, 'this program describes information but nothing to do with it yet')
@@ -332,6 +334,41 @@ class Checker:
                        f'"{t.key}" is not declared unique, so this can match several {coll.label} and has to look at all of them',
                        hint=f'say "{t.key} is unique" if it is; then I can index it')
 
+    def unused_values(self):
+        """A single value nothing reads or changes is most likely a slip in its name ("The hurtt starts at 5.")."""
+        P = self.prog
+        S = P.collections.get(STATE)
+        if S is None:
+            return
+        used = set(P.above) | set(P.below)
+        for t in P.work() + P.looks():
+            used |= {e[1] for e in task_exprs(t) if e[0] == 'value'}
+            if t.coll == STATE:
+                used |= {f for f, _ in t.assigns} | set(t.fields if t.fields is not None else S.fields)
+                used |= {e[1] for e in task_exprs(t) if e[0] == 'field'}
+            used |= {x[1] for x in (t.glyph, t.colour) if isinstance(x, tuple) and x[0] == 'value'}
+        for f in S.fields.values():
+            if f.name not in used:
+                self.d('note', f.line, f'"{f.name.replace("_", " ")}" is never used',
+                       hint='if it is a slip for another name, correct it; a value is declared once')
+
+    def roots(self, e, known, t):
+        """A square root must be of something that cannot be below zero where it happens."""
+        if e[0] == 'fn':
+            if e[1] == 'sqrt' and not nonneg(e[2], known):
+                name = self.name_of(e[2]).strip('"')
+                said = e[2][1].replace('_', ' ') if e[2][0] in ('param', 'field', 'value') else 'it'
+                self.d('question', t.line, f'what should happen when {name} is below 0?',
+                       'a number below zero has no square root, and I will not invent one',
+                       f'say it, e.g. "the square root of {said} if {said} is at least 0, otherwise 0"')
+            self.roots(e[2], known, t)
+        elif e[0] == 'bin':
+            self.roots(e[2], known, t)
+            self.roots(e[3], known, t)
+        elif e[0] == 'if':
+            self.roots(e[2], known + notneg(e[1], True), t)
+            self.roots(e[3], known + notneg(e[1], False), t)
+
     def divisions(self, e, safe, t):
         """Every division must be by something that cannot be zero where it happens."""
         if e[0] == 'bin':
@@ -344,8 +381,10 @@ class Checker:
                     self.d('question', t.line, f'what should happen when {name} is zero?',
                            'dividing by zero has no answer, and I will not invent one',
                            f'say it, e.g. "... divided by {name} if {name} is not 0, otherwise 0"')
-                elif e[1] == 'div' and not self.isdec(e, self.prog.collections.get(t.coll), t):
-                    self.d('note', t.line, 'whole-number division drops the remainder (7 / 2 is 3)')
+                elif e[1] == 'div' and not self.isdec(e, self.prog.collections.get(t.coll), t) and not self.div_noted:
+                    self.div_noted = True       # said once: it holds for every whole-number division
+                    self.d('note', t.line, 'whole-number division drops the remainder (7 / 2 is 3)',
+                           hint='this holds for every division of whole numbers in the program')
             self.divisions(e[2], safe, t)
             self.divisions(d, safe, t)
         elif e[0] == 'if':
