@@ -1235,6 +1235,15 @@ class Gen:
         inked = any(d.colour for d in self.prog.draws)
         if inked:
             self.globals.append(f'@ink = internal global [{w * h} x i8] zeroinitializer   ; the colour of each cell')
+        if any(isinstance(d.colour, tuple) for d in self.prog.draws):
+            f = self.fn('@colourof', 'i8', 'ptr %s', 'the colour a text names, 0 if it names none')
+            for name, code in COLOURS.items():
+                yes, no = f.lab('is'), f.lab('not')
+                f.cbr(f.r(f'icmp eq i32 {f.r(f"call i32 @strcmp(ptr %s, ptr {self.cstr(name)})")}, 0'), yes, no)
+                f.at(yes)
+                f.e(f'ret i8 {code}')
+                f.at(no)
+            f.e('ret i8 0')
         f = self.fn('@screen', params='i1 %live',
                     comment='draw the board as text: later sentences draw over earlier ones')
         home, clear, body = f.lab('home'), f.lab('clear'), f.lab('body')
@@ -1257,11 +1266,35 @@ class Gen:
                 iny = f.r(f'and i1 {f.r(f"icmp sge i64 {y}, 1")}, {f.r(f"icmp sle i64 {y}, {h}")}')
                 self.guard(f, f.r(f'and i1 {inx}, {iny}'), cont)
                 cell = f.r(f'add i64 {f.r(f"mul i64 {f.r(f"sub i64 {y}, 1")}, {w}")}, {f.r(f"sub i64 {x}, 1")}')
-                f.store('i8', str(ord(d.glyph)), f.r(f'getelementptr i8, ptr @grid, i64 {cell}'))
-                if inked:
+                if isinstance(d.glyph, str):
+                    ch = str(ord(d.glyph))
+                else:                       # the first character of a text, if it is a plain one (! to ~)
+                    text, _ = self.expr(f, d.glyph, c, rec, {})
+                    ch = f.r(f'load i8, ptr {text}')
+                    plain = f.r(f'icmp ult i8 {f.r(f"sub i8 {ch}, 33")}, 94')
+                    self.guard(f, plain, cont)
+                f.store('i8', ch, f.r(f'getelementptr i8, ptr @grid, i64 {cell}'))
+                if inked and isinstance(d.colour, tuple):       # a colour named by a text: 0 if it names none
+                    name, _ = self.expr(f, d.colour, c, rec, {})
+                    f.store('i8', f.r(f'call i8 @colourof(ptr {name})'), f.r(f'getelementptr i8, ptr @ink, i64 {cell}'))
+                elif inked:
                     f.store('i8', str(COLOURS[d.colour] if d.colour else 0),
                             f.r(f'getelementptr i8, ptr @ink, i64 {cell}'))
-            if c:
+            if c and d.order:               # drawn in this order, so the last one drawn is the one on top
+                self.comparator(d, c)
+                n = f.load('i64', g(c.name, 'len'))
+                idx = f.r(f'call ptr @malloc(i64 {f.r(f"add i64 {f.r(f"shl i64 {n}, 3")}, 8")})')
+
+                def collect(i, cont, idx=idx, c=c):
+                    f.store('i64', i, f.r(f'getelementptr i64, ptr {idx}, i64 {i}'))
+                self.rows(f, c, collect)
+                f.e(f'call void @qsort(ptr {idx}, i64 {n}, i64 8, ptr {g("task", d.name, "cmp")})')
+
+                def emit(j, cont, idx=idx, put=put, c=c):
+                    put(self.rec(f, c, f.load('i64', f.r(f'getelementptr i64, ptr {idx}, i64 {j}'))), cont)
+                self.rows(f, c, emit, count=n)
+                f.e(f'call void @free(ptr {idx})')
+            elif c:
                 self.rows(f, c, lambda i, cont, put=put, c=c: put(self.rec(f, c, i), cont))
             else:
                 skip = f.lab('skip')
