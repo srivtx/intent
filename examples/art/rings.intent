@@ -1,0 +1,15 @@
+# Rings that move outward, like a stone dropped in still water, in three colours.
+#   ./intent svg examples/art/rings.intent --after "wait 300" --style blocks
+# The distance from the middle picks the ring; the ring picks the colour.
+
+The board is 41 wide and 41 high.
+Cells have an x (number), a y (number), a ring (number), a look (text) and a hue (text).
+At the start there is a cell for every x from 1 to 41 and every y from 1 to 41, whose ring is 0, whose look is " " and whose hue is "red".
+The tick starts at 0.
+
+Every 100 milliseconds, the tick increases by 1.
+Every 100 milliseconds, set the ring of each cell to the square root of ((its x minus 21) times (its x minus 21) plus (its y minus 21) times (its y minus 21)) minus the tick.
+Every 100 milliseconds, set the look of each cell to "#" if (its ring plus 300) modulo 3 is 0, otherwise " ".
+Every 100 milliseconds, set the hue of each cell to "red" if (its ring plus 300) modulo 9 is 0, otherwise "yellow" if (its ring plus 300) modulo 9 is 3, otherwise "magenta".
+
+Draw each cell as its look in its hue at its x and its y.

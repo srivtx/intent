@@ -1,0 +1,20 @@
+# Planets on their orbits, worked out with sine and cosine every tick.
+#   ./intent svg examples/art/orbits.intent --after "wait 3000" --style glyphs
+# Each planet keeps its own distance, speed and look; nothing about circles is built in.
+
+The board is 85 wide and 43 high.
+Planets have a far (number), a speed (number), an angle (number), an x (number), a y (number), a look (text) and a hue (text).
+At the start there is a planet whose far is 5, whose speed is 12, whose angle is 0, whose x is 0, whose y is 0, whose look is "o" and whose hue is "red".
+At the start there is a planet whose far is 10, whose speed is 7, whose angle is 90, whose x is 0, whose y is 0, whose look is "O" and whose hue is "cyan".
+At the start there is a planet whose far is 15, whose speed is 4, whose angle is 200, whose x is 0, whose y is 0, whose look is "@" and whose hue is "green".
+At the start there is a planet whose far is 20, whose speed is 2, whose angle is 300, whose x is 0, whose y is 0, whose look is "*" and whose hue is "magenta".
+Rings have an x (number) and a y (number).
+At the start there is a ring for every x from 1 to 85 and every y from 1 to 43.
+
+Every 100 milliseconds, increase the angle of each planet by its speed.
+Every 100 milliseconds, set the x of each planet to 43 plus the nearest whole number to (its far times 2 times the cosine of its angle).
+Every 100 milliseconds, set the y of each planet to 22 plus the nearest whole number to (its far times the sine of its angle).
+
+Draw each ring as "." in grey at its x and its y if the nearest whole number to (the square root of ((its x minus 43) times (its x minus 43) plus (its y minus 22) times (its y minus 22) times 4) divided by 2) modulo 5 is 0 and the square root of ((its x minus 43) times (its x minus 43) plus (its y minus 22) times (its y minus 22) times 4) is at most 42.
+Draw "@" in yellow at 43 and 22.
+Draw each planet as its look in its hue at its x and its y.

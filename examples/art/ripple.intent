@@ -1,0 +1,14 @@
+# A ripple that travels: a sine wave, drawn as a thin line on a dot-matrix.
+#   ./intent svg examples/art/ripple.intent --after "wait 500" --style dots
+# A dot lights up when it is within one row of the wave; the wave moves as the phase turns.
+
+The board is 60 wide and 21 high.
+Dots have an x (number), a y (number), a look (text) and a hue (text).
+At the start there is a dot for every x from 1 to 60 and every y from 1 to 21, whose look is "." and whose hue is "blue".
+The phase starts at 0.
+
+Every 50 milliseconds, the phase increases by 9.
+Every 50 milliseconds, set the look of each dot to "@" if the absolute value of (its y minus 11 minus 8 times the sine of (its x times 12 plus the phase)) is under 1, otherwise "." .
+Every 50 milliseconds, set the hue of each dot to "cyan" if its look is "@", otherwise "blue".
+
+Draw each dot as its look in its hue at its x and its y.
