@@ -32,7 +32,7 @@ sys.path.insert(0, ROOT)
 from intentc.check import check                 # noqa: E402
 from intentc.cli import build                   # noqa: E402
 from intentc.interp import Machine              # noqa: E402
-from intentc.ir import canon, fmt_cond          # noqa: E402
+from intentc.ir import STATE, canon, fmt_cond   # noqa: E402
 from intentc.parser import parse                # noqa: E402
 from intentc.plan import make_plan              # noqa: E402
 
@@ -307,6 +307,25 @@ by-label: sort the items by label in descending order.
 Remove the items whose price is over a given price and label is not "keep".
 average price of items whose id is above 10
 ''',
+    'decimal_money': '''
+Products is a collection. Each product has a code (number), a name, a price (money) and a stock (number).
+Codes are unique. Reject duplicates.
+The till starts at 0.00. The rate is a decimal starting at 1.08.
+Add a product. Find a product by code. Remove a product by code. Show all products.
+sale: decrease the price by a given discount for products whose stock is over 3.
+markup: multiply the price by the rate for products whose price is under a given limit.
+halve: set the price to price divided by 2 for every product.
+cheap: show the names of products whose price is at most 10.5.
+total price
+average price
+largest price
+smallest price of products whose stock is over 2
+by-price: show products sorted by price, lowest first.
+sell: increase the till by a given amount.
+share: take a decimal bill and a number n and return bill divided by n if n is not 0, otherwise 0.
+tax: take a decimal p and return p times 0.2 plus 1.
+show the till.
+''',
     'no_unique_fields': '''
 People is a collection. Each person has a name, a city (text) and a score (number).
 Add a person. Find people by city. Remove people by city. Show all people.
@@ -327,7 +346,11 @@ def commands(prog, rng, n):
             t = rng.choice([x for x in prog.tasks if x.kind == 'add'])
         args = []
         for p in t.params:
-            if t.ptypes[p] == 'int' and p in small and rng.random() < 0.85:
+            if p in t.pdec:
+                args.append(rng.choice([f'{rng.randint(0, 40)}.{rng.randint(0, 99):02d}', str(rng.randint(-5, 30)),
+                                        f'-{rng.randint(0, 3)}.{rng.randint(0, 9)}', '0.05', '-0.05', '99999999999999999',
+                                        '-92233720368547758.08', '1.234', '.5', ' 2.5', '3.', '12.50']))
+            elif t.ptypes[p] == 'int' and p in small and rng.random() < 0.85:
                 args.append(str(rng.randint(0, 12)))        # keys and links: make hits likely
             elif t.ptypes[p] == 'int':
                 args.append(str(rng.choice([rng.randint(-20, 120), rng.randint(0, 30),
@@ -399,6 +422,9 @@ class TestNativeAgainstReference(unittest.TestCase):
 
     def test_no_unique_fields(self):
         self.differential('c', PROGRAMS['no_unique_fields'])
+
+    def test_decimal_money(self):
+        self.differential('d', PROGRAMS['decimal_money'])
 
     def test_index_survives_growth_and_churn(self):
         text = ('Customers is a collection. Each customer has a name and an email. Emails are unique. '
@@ -892,6 +918,69 @@ class TestDescribing(TestNativeAgainstReference):
 
 
 
+class TestDecimals(TestNativeAgainstReference):
+    """Decimal numbers (money): kept exactly as hundredths, rounded half away from zero."""
+    SHOP = ('Products is a collection. Each product has a code (text), a price (money) and a stock (number).\n'
+            'Codes are unique. Reject duplicates.\n')
+
+    def run_ref(self, text, cmds):
+        prog, diags, _ = understand('', text)
+        self.assertEqual([d.msg for d in diags], [])
+        m = Machine(prog)
+        return [o for c in cmds for o in m.run(c)]
+
+    def test_declaring_decimals(self):
+        for words in ['a price (money)', 'a price (decimal)', 'a price (decimal number)', 'a price (currency)',
+                      'a decimal price', 'a price as money']:
+            prog, diags, _ = understand('', f'Products is a collection. Each product has a code (text) and {words}.')
+            self.assertEqual(diags, [])
+            self.assertTrue(prog.collections['product'].fields['price'].dec, words)
+        prog, diags, _ = understand('', 'The till starts at 0.00. The rate is a decimal starting at 1.08. Show the till.')
+        S = prog.collections[STATE].fields
+        self.assertEqual((S['till'].dec, S['till'].init, S['rate'].init), (True, 0, 108))
+
+    def test_exact_arithmetic(self):
+        text = self.SHOP + ('Add a product. Find a product by code.\n'
+                            'sale: decrease the price by a given discount for products whose stock is over 3.\n'
+                            'What is the total price? What is the average price?\n'
+                            'share: take a decimal bill and a number n and return bill divided by n if n is not 0, otherwise 0.\n'
+                            'tax: take a decimal p and return p times 0.08.\n')
+        self.assertEqual(self.run_ref(text, ['add a,12.50,10', 'add b,0.1,1', 'add c,0.2,1', 'sale 1.25',
+                                             'find-by-code a', 'total-price', 'average-price',
+                                             'share 100,3', 'share 0.05,2', 'share -0.05,2', 'share 1,0',
+                                             'tax 0.10', 'tax 9.99', 'add d,1.234,1', 'add e,.5,1']),
+                         ['a,11.25,10', '11.55', '3.85', '33.33', '0.03', '-0.03', '0.00', '0.01', '0.80',
+                          'error: price must be a number like 12.50', 'error: price must be a number like 12.50'])
+
+    def test_a_given_amount_takes_the_kind_it_meets(self):
+        prog, diags, _ = understand('', self.SHOP + 'Add a product. sale: decrease the price by a given discount '
+                                                    'for every product. bump: increase the stock by a given n for every product.')
+        tasks = {t.name: t for t in prog.tasks}
+        self.assertEqual((tasks['sale'].pdec, tasks['bump'].pdec), ({'discount'}, set()))
+
+    def test_what_decimals_cannot_do(self):
+        for line, msg in [('bump: increase the stock by 0.5 for every product.',
+                           '"stock" is a whole number, and this would give it a decimal one'),
+                          ('r: take a decimal p and return p mod 3.', 'the remainder of a decimal number is not supported yet'),
+                          ('bad: show the codes of products whose price is over 1.234.',
+                           'a decimal number has one or two digits after the point')]:
+            prog, diags, _ = understand('', self.SHOP + 'Add a product. ' + line)
+            self.assertEqual([d.msg for d in diags], [msg], line)
+
+    def test_decimal_division_has_no_remainder_note(self):
+        prog, diags, p = parse('Products is a collection. Each product has a price (money). Add a product. '
+                               'h: set the price to price divided by 2 for every product.')
+        diags += check(prog, p.src)
+        self.assertFalse(any('drops the remainder' in d.msg for d in diags))
+
+    def test_native_prints_and_parses_the_same(self):
+        self.differential('money', self.SHOP + (
+            'The till starts at 0.00. Add a product. Find a product by code. Show all products.\n'
+            'sell: increase the till by a given amount. Show the till.\n'
+            'markup: multiply the price by 1.15 for products whose price is under a given limit.\n'
+            'What is the largest price? What is the smallest price?\n'), seeds=4, n=300)
+
+
 class TestThinking(TestNativeAgainstReference):
     """Calculations that decide, single values, and rules that apply by themselves."""
 
@@ -1109,7 +1198,7 @@ class TestLive(TestNativeAgainstReference):
                            'this happens by itself, so it needs no name'),
                           ('When the banana key is pressed, the score becomes 0.',
                            'I don\'t know a key called "banana"'),
-                          ('Every 0.5 seconds, the score increases by 1.', 'decimal numbers are not supported yet'),
+                          ('Every 0.0005 seconds, the score increases by 1.', 'this is not a whole number of milliseconds'),
                           ('Every 90 minutes, the score increases by 1.',
                            'this has to be between one millisecond and one hour'),
                           ('The game is over.', 'when is the game over?'),
