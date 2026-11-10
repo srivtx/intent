@@ -33,6 +33,11 @@ def render(d, src, color=False):
     return '\n'.join(out)
 
 
+def forbid(a):
+    """--no-index forbids every index; --no-order only the ordered ones (an experiment's control)."""
+    return True if a.no_index else 'order' if a.no_order else False
+
+
 def load(path, no_index=False):
     with open(path) as fh:
         text = fh.read()
@@ -75,7 +80,7 @@ def cmd_check(a):
 
 
 def cmd_explain(a):
-    prog, diags, p, plan = load(a.file, a.no_index)
+    prog, diags, p, plan = load(a.file, forbid(a))
     if not report(diags, p, quiet_notes=True):
         return 1
     for c in prog.collections.values():
@@ -114,7 +119,7 @@ def cmd_explain(a):
 
 
 def cmd_ir(a):
-    prog, diags, p, plan = load(a.file, a.no_index)
+    prog, diags, p, plan = load(a.file, forbid(a))
     if not report(diags, p, quiet_notes=True):
         return 1
     print(emit(prog, plan, a.file))
@@ -139,7 +144,7 @@ def build(path, out, no_index=False, quiet=False):
 
 def cmd_build(a):
     out = a.output or os.path.splitext(a.file)[0]
-    prog = build(a.file, out, a.no_index)
+    prog = build(a.file, out, forbid(a))
     if prog is None:
         return 1
     print(f'built {out}  (LLVM IR in {out}.ll)')
@@ -242,7 +247,8 @@ def main(argv=None):
         sp.add_argument('file')
         sp.set_defaults(fn=fn)
         if name in ('explain', 'ir', 'build'):
-            sp.add_argument('--no-index', action='store_true', help='experiment: forbid hash indexes')
+            sp.add_argument('--no-index', action='store_true', help='experiment: forbid every index')
+            sp.add_argument('--no-order', action='store_true', help='experiment: forbid ordered indexes only')
         if name in ('build', 'svg'):
             sp.add_argument('-o', '--output')
         if name == 'svg':
