@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "python3 -m pip install markdown==3.9",
-  "buildCommand": "python3 site/build.py",
+  "installCommand": "python3 -m pip install --target .pydeps markdown==3.9",
+  "buildCommand": "PYTHONPATH=.pydeps python3 site/build.py",
   "outputDirectory": "_site",
   "cleanUrls": true,
   "trailingSlash": true,
