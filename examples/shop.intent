@@ -1,0 +1,25 @@
+# Stock for a small shop. Prices are in cents because this version has whole numbers only.
+
+Products is a collection.
+Each product has a code (text), a name, a price (number) and a stock (number).
+Codes are unique. Reject duplicates.
+
+"running low" means stock under 5.
+"sold out" means stock equal to 0.
+"cheaper than" means price under.
+
+Add a product.
+Find a product by code.
+discontinue: remove a product by code.
+
+sell: decrease the stock by a given quantity for the product whose code is a given code.
+restock: increase the stock by a given quantity for the product whose code is a given code.
+sale: decrease the price by a given discount percent for products whose stock is over a given level.
+
+low: show the names of products running low.
+gone: show the names of products sold out.
+budget: show the products cheaper than a given price sorted by price.
+dearest: show the top 5 products by price.
+How many products are there?
+What is the total stock?
+clearance: remove the products sold out.
