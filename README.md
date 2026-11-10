@@ -223,6 +223,23 @@ numbers are decimal is worked out from how they meet (`a given discount` taken o
 money), and a whole number is never given a fraction silently: `increase the stock by 0.5` is
 an error that names the line declaring the stock.
 
+## Pictures, from sines and square roots
+
+```
+Dots have an x (number), a y (number), a look (text) and a hue (text).
+At the start there is a dot for every x from 1 to 60 and every y from 1 to 21, whose look is "." and whose hue is "blue".
+Every 50 milliseconds, set the look of each dot to "@" if the absolute value of
+  (its y minus 11 minus 8 times the sine of (its x times 12 plus the phase)) is under 1, otherwise ".".
+Draw each dot as its look in its hue at its x and its y.
+```
+
+One sentence makes a grid of records; each record says what it looks like and in which colour;
+`the sine of`, `the square root of` and `the absolute value of` are worked out in whole numbers,
+so the native program and the reference agree on every dot. It animates in a terminal or a
+window, and `./intent svg` saves a frame as a picture (as characters, halftone dots or blocks).
+[`examples/art/`](examples/art) has a cross-stitch egg, a halftone sun, orbits and rings, and the
+[gallery](https://intent.srivtx.xyz/gallery/) shows what each one draws.
+
 ## Values, decisions and rules
 
 Three things every language needs, said the same way as everything else.

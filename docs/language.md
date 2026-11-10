@@ -184,6 +184,37 @@ kept **exactly**, as a whole number of hundredths, so `0.1 + 0.2` is `0.30` and 
 - Typed in as a command (`add a1,apple,12.50,10`), `1.234` and `.5` are refused:
   `price must be a number like 12.50`.
 
+## Maths
+
+```
+Hyp: take a and b and return the square root of (a times a plus b times b).
+Every 100 milliseconds, set the y of each dot to 10 plus the nearest whole number to (8 times the sine of (its x times 12)).
+Size: take n and return the absolute value of n.
+Row: take an angle and return the nearest whole number to (12 times the cosine of angle).
+```
+
+| Phrase | Gives |
+|---|---|
+| `the square root of x` | for a whole number, the whole root rounded down (`the square root of 10` is 3); for a decimal, the root to the nearest hundredth |
+| `the sine of a`, `the cosine of a` | `a` in degrees (whole or decimal); the answer is a decimal number, to the nearest hundredth |
+| `the absolute value of x` | `x` without its sign |
+| `the nearest whole number to x` | a decimal rounded to a whole number, halves away from zero |
+| `the whole part of x` | a decimal with its hundredths dropped, toward zero |
+
+Everything is worked out in whole numbers, so every machine gives the same digits: a sine comes
+from a table of whole degrees, written into the compiler, with straight-line steps in between.
+A function applies to the value right after it; use brackets for more, as in
+`the sine of (its x times 12)`.
+
+A number below zero has no square root, so, as with dividing by zero, the compiler asks what
+should happen unless it can see that the value is never below zero (a square, a sum of squares,
+a count, or a condition that says so):
+
+```
+question: what should happen when the given n is below 0?
+  = say it, e.g. "the square root of n if n is at least 0, otherwise 0"
+```
+
 ## Standing rules
 
 A capability runs when someone calls it. A rule is never called: it is applied after every
@@ -348,6 +379,40 @@ still ordinary names.
 While playing, the program uses a screen of its own and gives the terminal back exactly as it
 was, however it stops; the last board stays visible. A terminal too small for the board is
 refused with the size it needs.
+
+## Pictures
+
+A picture is a grid of records. One sentence makes the whole grid, one record for every
+combination:
+
+```
+Dots have an x (number), a y (number), a look (text) and a hue (text).
+At the start there is a dot for every x from 1 to 60 and every y from 1 to 21, whose look is "." and whose hue is "blue".
+```
+
+Each record can say how it looks and in which colour, and a drawing can say in which order the
+records are drawn, so that the last one drawn is on top:
+
+```
+Draw each dot as its look in its hue at its x and its y.
+Draw each planet sorted by depth descending as its look at its x and its y.
+Draw the marker at 1 and 1.                     # a text value: its first character is drawn
+```
+
+What is drawn is the first character of the text, if it is a plain one (`!` to `~`); an empty
+text, a space or any other character draws nothing there. A colour is given by its name, as
+text (`"red"`, `"cyan"`, ...); a text that names no colour draws without one.
+
+`./intent svg` saves the board as a picture, after any events:
+
+```
+./intent svg examples/art/ripple.intent --after "wait 500" --style dots -o ripple.svg
+```
+
+`--style glyphs` draws each cell as its character, `dots` as a halftone dot whose size follows
+how much ink the character carries (`.` small, `@` full) and `blocks` as a filled square;
+`--paper light` draws on paper instead of a dark screen. `examples/art/` has complete programs, and
+the [gallery](https://intent.srivtx.xyz/gallery/) shows what they draw.
 
 ## What happens when it does not understand
 

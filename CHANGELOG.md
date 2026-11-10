@@ -3,6 +3,41 @@
 Intent is experimental. Until 1.0, any version may change what a sentence means; `./intent check`
 always shows the current reading.
 
+## Unreleased
+
+Pictures and maths: a grid of records from one sentence, sines and square roots, records that
+choose their own look, colour and drawing order, and `./intent svg`. Plus four fixes from
+building a 3D torus and a spinning cube in pure Intent.
+
+### Added
+- **Maths.** `the square root of`, `the sine of`, `the cosine of` (degrees),
+  `the absolute value of`, `the nearest whole number to`, `the whole part of`. Worked out in
+  whole numbers (a sine table written into the compiler), so native code and the reference agree
+  on every digit; tested on random inputs and the 64-bit edges. A square root of something that
+  could be below zero is a question, like dividing by something that could be zero.
+- **A grid in one sentence.** `At the start there is a dot for every x from 1 to 40 and every
+  y from 1 to 20, whose look is "."`: one record for each combination.
+- **Records choose how they look.** `Draw each dot as its look in its hue at its x and its y.`
+  draws the first character of a text property, in the colour it names. A single text value can
+  be drawn too: `Draw the marker at 1 and 1.`
+- **Drawing order.** `Draw each patch sorted by depth descending as ...`: the last one drawn is
+  on top, so the nearest thing hides what is behind it.
+- **`./intent svg`** saves the board as an SVG picture after any events, as glyphs, halftone
+  dots or blocks, on dark or light paper.
+- **`examples/art/`**: a cross-stitch egg, a halftone sun, a ripple, orbits and rings; and a
+  [gallery](https://intent.srivtx.xyz/gallery/) on the website, drawn from them at build time.
+- A note for a single value that nothing uses: it is usually a slip in its name.
+
+### Fixed
+- A new single value whose name was one letter away from an existing one (`cosp` next to
+  `cosy`) was read as a slip and merged into it. A value starts once, so a name that would start
+  it a second time is a new value. Starting the same value twice is now an error.
+- A property could take the name of a single value declared before it, and `set the sy to ...`
+  then silently changed the property of every record. That is now an error at the property.
+- Reading a program took time proportional to the square of its length (the whole program was
+  copied before every sentence). A 1,000-line program now reads in under a second, not 26.
+- "whole-number division drops the remainder" is said once per program, not once per line.
+
 ## 0.8.0 — 2026-11-11
 
 Decimal numbers and money, the first piece of making a small business back end possible.
