@@ -1,0 +1,70 @@
+Stones  —  id: number (unique), seed: number, val: number, rem: number, peak: number, step: number
+  order: not part of the meaning
+
+  storage: one growable array of stone records, 48 bytes each
+  index on id: open-addressing hash table from the property to the row number
+      because line 20: id is unique, so every add must look for an existing id
+      because line 29: "find-stone" picks one stone by id on every call
+
+Particles  —  pid: number (unique), label: text, mass: number, px: number, py: number, vx: number, vy: number, ke: number, pe: number, hamiltonian: number, bounce: number, tick: number
+  order: not part of the meaning
+
+  storage: one growable array of particle records, 96 bytes each
+  index on pid: open-addressing hash table from the property to the row number
+      because line 46: pid is unique, so every add must look for an existing pid
+      because line 50: "inspect-particle" picks one particle by pid on every call
+
+Registers  —  reg_id: number (unique), reg_name: text, reg_a: number, reg_b: number, scratch: number, cycle: number
+  order: not part of the meaning
+
+  storage: one growable array of register records, 48 bytes each
+  index on reg_id: open-addressing hash table from the property to the row number
+      because line 68: reg_id is unique, so every add must look for an existing reg_id
+      because line 72: "read-register" picks one register by reg_id on every call
+
+Commands the compiled program accepts (one per line on stdin):
+
+  add-stone <id>,<seed>,<val>,<rem>,<peak>,<step>                                                   O(1) expected  probe the index for a clash, then append
+                                                                                                    line 28: add-stone: add a stone
+  find-stone <id>                                                                                   O(1) expected  one index probe
+                                                                                                    line 29: find-stone: find a stone by id
+  step-collatz                                                                                      O(n)           one pass, changed in place
+                                                                                                    line 32: step-collatz: for every active stone, set rem to val - (val / 2) * 2, then set val to (1 - rem) * (val / 2) + rem * (val * 3 + 1), then increase steps by 1
+  update-stone-peaks                                                                                O(n)           one pass, changed in place
+                                                                                                    line 33: update-stone-peaks: for every stone whose val is over peak, set peak to val
+  active-stone-count                                                                                O(n)           one pass, constant extra memory
+                                                                                                    line 35: active-stone-count: how many active stones are there
+  converged-stone-count                                                                             O(n)           one pass, constant extra memory
+                                                                                                    line 36: converged-stone-count: how many converged stones are there
+  hardest-stones                                                                                    O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                    line 37: hardest-stones: show the top 5 stones by steps
+  highest-peak-stones                                                                               O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                    line 38: highest-peak-stones: show the top 5 stones by peak
+  show-even-stones                                                                                  O(n)           one pass; filter and output fused, nothing copied
+                                                                                                    line 39: show-even-stones: show the id and val of even stones
+  show-odd-stones                                                                                   O(n)           one pass; filter and output fused, nothing copied
+                                                                                                    line 40: show-odd-stones: show the id and val of odd stones
+  spawn-particle <pid>,<label>,<mass>,<px>,<py>,<vx>,<vy>,<ke>,<pe>,<hamiltonian>,<bounce>,<tick>   O(1) expected  probe the index for a clash, then append
+                                                                                                    line 49: spawn-particle: add a particle
+  inspect-particle <pid>                                                                            O(1) expected  one index probe
+                                                                                                    line 50: inspect-particle: find a particle by pid
+  step-physics                                                                                      O(n)           one pass, changed in place
+                                                                                                    line 53: step-physics: for every particle, set vy to vy - 10, then set vx to vx - vx / 100, then set vy to vy - vy / 100, then set px to px + vx, then set py to py + vy, then set ke to (mass * (vx * vx + vy * vy)) / 2, then set pe to mass * 10 * py, then set hamiltonian to ke + pe, then increase ticks by 1
+  bounce-floor                                                                                      O(n)           one pass, changed in place
+                                                                                                    line 56: bounce-floor: for every particle whose py is under 0, set py to 0 - py, then set vy to ((0 - vy) * 80) / 100, then increase bounces by 1
+  bounce-left-wall                                                                                  O(n)           one pass, changed in place
+                                                                                                    line 57: bounce-left-wall: for every particle whose px is under -1000, set px to -1000 - (px + 1000), then set vx to 0 - vx, then increase bounces by 1
+  bounce-right-wall                                                                                 O(n)           one pass, changed in place
+                                                                                                    line 58: bounce-right-wall: for every particle whose px is over 1000, set px to 1000 - (px - 1000), then set vx to 0 - vx, then increase bounces by 1
+  energetic-particles                                                                               O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                    line 60: energetic-particles: show the top 5 particles by hamiltonian
+  total-system-energy                                                                               O(n)           one pass, constant extra memory
+                                                                                                    line 61: total-system-energy: what is the total hamiltonian of particles
+  total-bounces                                                                                     O(n)           one pass, constant extra memory
+                                                                                                    line 62: total-bounces: what is the total bounces of particles
+  init-register <reg_id>,<reg_name>,<reg_a>,<reg_b>,<scratch>,<cycle>                               O(1) expected  probe the index for a clash, then append
+                                                                                                    line 71: init-register: add a register
+  read-register <reg_id>                                                                            O(1) expected  one index probe
+                                                                                                    line 72: read-register: find a register by reg_id
+  step-fibonacci                                                                                    O(n)           one pass, changed in place
+                                                                                                    line 75: step-fibonacci: for every register, set scratch to reg_a + reg_b, then set reg_a to reg_b, then set reg_b to scratch, then increase cycle by 1
