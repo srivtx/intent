@@ -257,7 +257,8 @@ class Parser:
         if 'NOTWO' in kinds:
             return self.decl_unique(content)
         h = index_of(content, 'HAS')
-        if h is not None and h > 0 and all(c.kind in ('QUANT', 'COLL', 'GEN') for c in content[:h]):
+        if h is not None and h > 0 and all(c.kind in ('QUANT', 'COLL', 'GEN') for c in content[:h]) and \
+                not kinds & {'CMP', 'WHERE', 'ACT', 'AGG', 'BETWEEN'}:
             return self.decl_fields(toks, content, h)
         if 'UNIQUE' in kinds:
             return self.decl_unique(content)
@@ -758,6 +759,10 @@ class Parser:
             if len(t) > 2 and t[2].kind == 'BY':
                 e, n = self.parse_expr(t[3:])
                 op = {'multiply': 'mul', 'divide': 'div', 'increase': 'add', 'decrease': 'sub'}[c.val]
+                if 3 + n < len(t) and t[3 + n].kind == 'PCT':
+                    if op not in ('add', 'sub'):
+                        raise self.p('error', t[3 + n], 'percent only goes with increase or decrease')
+                    e, n = ('bin', 'div', binop('mul', ('field', f), e), ('num', 100)), n + 1
                 return f, binop(op, ('field', f), e), t[3 + n:]
             if len(t) > 2 and t[2].kind == 'TO' and c.val in ('increase', 'decrease'):
                 e, n = self.parse_expr(t[3:], f)
@@ -816,8 +821,10 @@ class Parser:
         ci = index_of(content, 'COLON')
         if ci is not None:
             pre, post = content[:ci], content[ci + 1:]
-            if pre and all(c.kind in ('COLL', 'QUANT', 'GEN') or (c.kind == 'VERB' and c.val == 'generic')
-                           for c in pre):
+            if pre and pre[0].kind in ('COLL', 'QUANT', 'GEN') and any(c.kind == 'WHERE' for c in pre):
+                content = post + pre        # "Customers whose age is under 18: remove them."
+            elif pre and all(c.kind in ('COLL', 'QUANT', 'GEN') or (c.kind == 'VERB' and c.val == 'generic')
+                             for c in pre):
                 content = [c for c in pre if c.kind in ('COLL', 'GEN')] + post
             else:
                 words = [t for t in flat(pre) if not (t.kind == 'sym' and t.text == '-')]
@@ -842,15 +849,44 @@ class Parser:
         if unk:
             raise self.unknown_word(unk[0])
         coll = self.scope(content)
+        everyone = any((c.kind == 'QUANT' and c.toks[0].text in ('all', 'every')) or
+                       (c.kind == 'GEN' and c.toks[0].text in ('everyone', 'everybody')) for c in content)
         content = [CT('WHERE', None, c.toks) if c.kind == 'HAS' else c
                    for c in content if c.kind not in ('COLL', 'QUANT', 'GEN')]
         for c in content:
             if c.kind == 'FIELD' and c.val not in coll.fields:
                 raise self.p('error', c, f'{coll.label} has no property "{c.val}"', self.could_be(coll))
         content = self.resolve_pronouns(content, coll)
+        content = self.between(content)
         order, content = self.take_order(content, coll)
+        order, limit, content = self.take_limit(content, coll, order)
         main, cond_t = self.split_where(content)
         main = rstrip(lstrip(main))
+        if cond_t:                      # "... with the highest salary": a ranking, not a filter
+            for i, c in enumerate(cond_t[:-1]):
+                joiner = ('WHERE', 'AND', 'COMMA')
+                if c.kind == 'AGG' and c.val in ('max', 'min') and cond_t[i + 1].kind == 'FIELD' and \
+                        (i == 0 or cond_t[i - 1].kind in joiner) and \
+                        (i + 2 == len(cond_t) or cond_t[i + 2].kind in joiner):
+                    if order:
+                        raise self.p('question', [c, cond_t[i + 1]], 'ranked by this, or by the sort order?',
+                                     'two orderings in one sentence')
+                    order = (cond_t[i + 1].val, c.val == 'max')
+                    lo = i - 1 if i and cond_t[i - 1].kind in ('AND', 'COMMA') else i
+                    cond_t = cond_t[:lo] + cond_t[i + 2:]
+                    while cond_t and cond_t[0].kind in joiner:
+                        cond_t = cond_t[1:]
+                    cond_t = cond_t or None
+                    nums = [m for m in main if m.kind == 'NUM']
+                    if limit is None and len(nums) == 1:
+                        limit = nums[0].val
+                        main = [m for m in main if m.kind != 'NUM']
+                    if limit is None:
+                        limit = 1
+                    break
+        if len(main) > 2 and main[0].kind == 'FIELD' and main[1].kind == 'COMMA' and \
+                any(c.kind == 'FIELD' and c.val == main[0].val for c in main[2:]):
+            main = main[2:]             # "The age of every customer, double it."
 
         def is_verb(c, *vals):
             return c.kind == 'VERB' and c.val in vals
@@ -890,6 +926,12 @@ class Parser:
         T.where = where
         act = acts[0].val if acts else None
         rest = [c for c in main if c.kind != 'ACT']
+        if limit is not None:
+            if act == 'find':
+                act = 'show'
+            if upd or act in ('remove', 'keep') or any(c.kind == 'AGG' for c in rest) or limit < 1:
+                raise self.p('error', sent, 'a limit only works when showing records in this version',
+                             hint='e.g. "Show the top 3 customers by salary."')
 
         if upd:
             T.kind, T.assigns = 'update', self.parse_updates(main, coll)
@@ -917,6 +959,7 @@ class Parser:
                 raise self.p('error', sent, f'"by {key}" and a condition together are not supported yet')
 
         if act in ('remove', 'find'):
+            rest = [c for c in rest if c.kind != 'COMMA']
             if rest:
                 raise self.leftover(rest)
             if key is None and where is not None and where[0] == 'cmp' and where[1] == 'eq' and \
@@ -926,6 +969,8 @@ class Parser:
                 T.kind, T.key = ('find' if act == 'find' else 'remove_key'), key
             elif where is not None:
                 T.kind = 'list' if act == 'find' else 'remove_where'
+            elif act == 'remove' and everyone:
+                T.kind = 'remove_where'     # "Remove all customers.": said outright, so nothing to ask
             else:
                 u = [f.name for f in coll.unique_fields()] or list(coll.fields)
                 eg = u[0] if u else 'email'
@@ -978,7 +1023,7 @@ class Parser:
                 raise self.leftover([c])
         if not acts and not fs and where is None and not order:
             raise self.p('error', sent, f'I see this is about {coll.label}, but not what to do with them')
-        T.kind, T.fields, T.order = 'list', (fs or None), order
+        T.kind, T.fields, T.order, T.limit = 'list', (fs or None), order, limit
         return self.emit(T, coll)
 
     def resolve_pronouns(self, content, coll):
@@ -1022,11 +1067,57 @@ class Parser:
         d = index_of(content, 'DIR')
         desc = False
         if d is not None:
+            b = index_of(content, 'BY')
+            if order is None and b is not None and b + 1 < len(content) and content[b + 1].kind == 'FIELD':
+                order = content[b + 1].val          # "alphabetically by name"
+                content = content[:b] + content[b + 2:]
+                d = index_of(content, 'DIR')
             if order is None:
                 raise self.p('question', content[d], f'"{content[d].text}" by which property?', self.could_be(coll))
             desc = content[d].val == 'desc'
             content = content[:d] + content[d + 1:]
         return ((order, desc) if order else None), content
+
+    def between(self, content):
+        """'between 18 and 30' -> 'at least 18 and at most 30' (the property carries over)."""
+        b = index_of(content, 'BETWEEN')
+        if b is None:
+            return content
+        a = index_of(content, 'AND', start=b)
+        if a is None:
+            raise self.p('error', content[b], 'between what and what?', hint='e.g. "between 18 and 30"')
+        return (content[:b] + [CT('CMP', 'ge', content[b].toks)] + content[b + 1:a + 1] +
+                [CT('CMP', 'le', content[a].toks)] + self.between(content[a + 1:]))
+
+    def take_limit(self, content, coll, order):
+        limit = None
+        i = index_of(content, 'TOP')
+        if i is not None:
+            desc, j, limit = content[i].val == 'desc', i + 1, 1
+            if j < len(content) and content[j].kind == 'NUM':
+                limit, j = content[j].val, j + 1
+            head, tail = content[:i], content[j:]
+            if order:
+                order = (order[0], desc)
+            else:
+                b = index_of(tail, 'BY')
+                if b is None or b + 1 >= len(tail) or tail[b + 1].kind != 'FIELD':
+                    raise self.p('question', content[i:j], f'{content[i].text} by which property?',
+                                 self.could_be(coll), f'e.g. "the top 3 {coll.label} by {next(iter(coll.fields), "score")}"')
+                order = (tail[b + 1].val, desc)
+                tail = tail[:b] + tail[b + 2:]
+            content = head + tail
+        i = index_of(content, 'FIRST')
+        if i is not None:
+            j, limit = i + 1, 1
+            if j < len(content) and content[j].kind == 'NUM':
+                limit, j = content[j].val, j + 1
+            if not order and not coll.ordered:
+                raise self.p('question', content[i:j], 'first in what order?',
+                             f'{coll.label} are not kept in any particular order',
+                             f'say "sorted by ...", or declare "Keep {coll.label} in the order they were added."')
+            content = content[:i] + content[j:]
+        return order, limit, content
 
     def split_where(self, content):
         content = lstrip(content)
@@ -1153,13 +1244,15 @@ class Parser:
         elif t.kind == 'remove_key':
             n = f'remove-by-{t.key}'
         elif t.kind == 'remove_where':
-            n = f'{"keep" if t.fn == "keep" else "remove"}-where-{first_field(t.where)}'
+            n = f'{"keep" if t.fn == "keep" else "remove"}-where-{first_field(t.where)}' if t.where else 'remove-all'
         elif t.kind == 'list':
             n = 'list' + ''.join(f'-{f}' for f in t.fields or [])
             if t.where:
                 n += f'-where-{first_field(t.where)}'
             if t.order:
                 n += f'-by-{t.order[0]}'
+            if t.limit is not None:
+                n = f'top-{t.limit}' + n[4:]
         elif t.kind == 'agg':
             n = {'avg': 'average', 'sum': 'total', 'count': 'count', 'max': 'largest', 'min': 'smallest'}[t.fn]
             if t.field:
