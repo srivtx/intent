@@ -1,3 +1,23 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="Intent — say what you mean, get a program" width="640">
+</p>
+
+<p align="center">
+  <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-f59e0b">
+  <img alt="version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-6366f1">
+  <a href="https://github.com/srivtx/intent/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/srivtx/intent/actions/workflows/tests.yml/badge.svg"></a>
+  <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
+  <img alt="backend: LLVM IR" src="https://img.shields.io/badge/backend-LLVM%20IR-262d3a">
+  <img alt="dependencies: none" src="https://img.shields.io/badge/dependencies-none-22c55e">
+  <img alt="AI in the compiler: none" src="https://img.shields.io/badge/AI%20in%20the%20compiler-none-ef4444">
+</p>
+
+> **Experimental.** Intent is a research prototype, a day or two old. The language changes
+> between versions, there are things it cannot say yet ([limits](#what-this-version-cannot-do)),
+> and it has only been run on macOS. Use it to explore the idea, not to hold data you care about.
+
+**[Language guide](docs/language.md)** · **[Changelog](CHANGELOG.md)** · **[Examples](examples/)** · **[Stress experiments](gemini-build/README.md)**
+
 # Intent
 
 You describe **what information exists and what should be possible with it**, in ordinary
@@ -192,6 +212,7 @@ that is refused with an explanation, not misread.
 | [examples/todo.intent](examples/todo.intent) | to-do list: open / finished / urgent tasks, what to do next |
 | [examples/shop.intent](examples/shop.intent) | shop stock: sell, restock, sale, what is running low |
 | [examples/store.intent](examples/store.intent) | customers, their orders and order lines, with cascading removal |
+| [examples/tour.intent](examples/tour.intent) | every kind of sentence in the [language guide](docs/language.md) |
 
 ```bash
 ./intent build examples/leaderboard.intent -o build/leaderboard
@@ -250,7 +271,7 @@ dicts). It is the definition of meaning. The tests build native programs and fee
 the same random command streams — unordered and ordered collections, text and numeric keys,
 reject and replace, with and without indexes, including malformed input and 64-bit overflow
 — and require identical output (as a multiset where order is not part of the meaning).
-113 tests pass, including the example apps and three-collection relationship programs run
+114 tests pass, including the example apps and three-collection relationship programs run
 against the reference on random commands.
 
 This shows the backend agrees with the reference. It does not show the reference agrees
