@@ -5,7 +5,7 @@ The generated module is a small command server: it reads one command per line on
 for I/O, memory and sorting; everything else (records, hash indexes, loops, filters,
 aggregates) is emitted here.
 """
-from .ir import MUTATING, canon, usage
+from .ir import MUTATING, TEXT_OPS, canon, usage
 
 LL = {'int': 'i64', 'text': 'ptr'}
 FNV_OFFSET = -3750763034362895579      # 14695981039346656037 as a signed 64-bit value
@@ -28,6 +28,9 @@ declare ptr @strsep(ptr, ptr)
 declare i64 @strtoll(ptr, ptr, i32)
 declare ptr @memmove(ptr, ptr, i64)
 declare void @qsort(ptr, i64, i64, ptr)
+declare ptr @strstr(ptr, ptr)
+declare i32 @strncmp(ptr, ptr, i64)
+declare i64 @strlen(ptr)
 declare ptr @fopen(ptr, ptr)
 declare i32 @fclose(ptr)
 declare i32 @fflush(ptr)
@@ -174,6 +177,8 @@ class Gen:
             if e[3][1] == -1:
                 return f.r(f'sub i64 0, {a}'), 'int'
             return f.r(f'sdiv i64 {a}, {b}'), 'int'
+        if e[1] == 'rem':
+            return ('0' if e[3][1] == -1 else f.r(f'srem i64 {a}, {b}')), 'int'
         return f.r(f'{e[1]} i64 {a}, {b}'), 'int'
 
     def cond(self, f, cnd, c, rec, vals):
@@ -182,6 +187,21 @@ class Gen:
         if cnd[0] == 'cmp':
             a, ty = self.expr(f, cnd[2], c, rec, vals)
             b, _ = self.expr(f, cnd[3], c, rec, vals)
+            if cnd[1] in TEXT_OPS:
+                op = cnd[1].lstrip('n') if cnd[1] != 'nhas' else 'has'
+                if cnd[1] in ('has', 'nhas'):
+                    hit = f.r(f'icmp ne ptr {f.r(f"call ptr @strstr(ptr {a}, ptr {b})")}, null')
+                elif op == 'starts':
+                    n = f.r(f'call i64 @strlen(ptr {b})')
+                    hit = f.r(f'icmp eq i32 {f.r(f"call i32 @strncmp(ptr {a}, ptr {b}, i64 {n})")}, 0')
+                else:
+                    la, lb = f.r(f'call i64 @strlen(ptr {a})'), f.r(f'call i64 @strlen(ptr {b})')
+                    fits = f.r(f'icmp sge i64 {la}, {lb}')
+                    off = f.r(f'select i1 {fits}, i64 {f.r(f"sub i64 {la}, {lb}")}, i64 0')
+                    tail = f.r(f'getelementptr i8, ptr {a}, i64 {off}')
+                    same = f.r(f'icmp eq i32 {f.r(f"call i32 @strcmp(ptr {tail}, ptr {b})")}, 0')
+                    hit = f.r(f'and i1 {fits}, {same}')
+                return f.r(f'xor i1 {hit}, true') if cnd[1].startswith('n') else hit
             if ty == 'int':
                 return f.r(f'icmp {ICMP[cnd[1]]} i64 {a}, {b}')
             return f.r(f'icmp {ICMP[cnd[1]]} i32 {f.r(f"call i32 @strcmp(ptr {a}, ptr {b})")}, 0')
@@ -417,6 +437,12 @@ class Gen:
         vals = {}
         if not t.params:
             return vals
+        bad, ok = f.lab('missing'), f.lab('ok')
+        f.cbr(f.r(f'icmp eq i8 {f.load("i8", "%arg")}, 0'), bad, ok)
+        f.at(bad)
+        self.puts(f, f'error: missing {t.params[0]}')
+        f.e('ret void')
+        f.at(ok)
         argp = f.var('ptr', '%arg')
         for p in t.params:
             tok = f.r(f'call ptr @strsep(ptr {argp}, ptr {self.cstr(",")})')
@@ -491,6 +517,7 @@ class Gen:
                 f.cbr(f.r(f'icmp sge i64 {row}, 0'), clash, ok)
                 f.at(clash)
                 if c.on_dup == 'replace':
+                    f.store('i32', '1', '@dirty')
                     rec = self.rec(f, c, row)
                     f.e(f'call void {g(C, "free")}(ptr {rec})')
                     self.store_record(f, c, rec, vals)
@@ -498,6 +525,7 @@ class Gen:
                     self.puts(f, f'duplicate {fl.name}')
                 f.e('ret void')
                 f.at(ok)
+            f.store('i32', '1', '@dirty')
             f.e(f'call void {g(C, "grow")}()')
             n = f.load('i64', g(C, 'len'))
             self.store_record(f, c, self.rec(f, c, n), vals)
@@ -516,6 +544,7 @@ class Gen:
             if k == 'find':
                 f.e(f'call void {g(C, "print")}(ptr {self.rec(f, c, row)})')
             else:
+                f.store('i32', '1', '@dirty')
                 f.e(f'call void {g(C, "remove_row")}(i64 {row})')
         elif k == 'find':
             hits = f.var('i64', '0')
@@ -529,13 +558,17 @@ class Gen:
             self.rows(f, c, body)
             self.none_if_zero(f, f.load('i64', hits))
         elif k == 'remove_key':
+            f.store('i32', '1', '@dirty')
             kv, kt = vals[t.key]
             before = f.load('i64', g(C, 'len'))
             kept = self.compact(f, c, lambda rec: self.eq(f, kt, self.fload(f, c, rec, t.key), kv))
             self.none_if_zero(f, f.r(f'sub i64 {before}, {kept}'))
         elif k == 'remove_where':
+            f.store('i32', '1', '@dirty')
             self.compact(f, c, lambda rec: self.cond(f, t.where, c, rec, vals))
         elif k == 'update':
+            f.store('i32', '1', '@dirty')
+
             def body(i, cont):
                 rec = self.rec(f, c, i)
                 self.guard(f, self.cond(f, t.where, c, rec, vals), cont)
@@ -651,6 +684,7 @@ class Gen:
 
     # ------------------------------------------------------------------ main
     def dispatch(self):
+        self.globals.append('@dirty = internal global i32 0     ; set when a command really changed data')
         f = self.fn('@dispatch', 'i32', 'ptr %line, i64 %len',
                     'run one command line; returns 1 if it may have changed the data')
         line = '%line'
@@ -687,8 +721,9 @@ class Gen:
             yes, no = f.lab('run'), f.lab('else')
             f.cbr(self.eq(f, 'text', line, self.cstr(t.name)), yes, no)
             f.at(yes)
+            f.store('i32', '0', '@dirty')
             f.e(f'call void {g("task", t.name)}(ptr {arg})')
-            f.e(f'ret i32 {1 if t.kind in MUTATING else 0}')
+            f.e(f'ret i32 {f.load("i32", "@dirty")}')
             f.at(no)
         if all(t.name != 'help' for t in self.prog.tasks):
             yes, no = f.lab('help'), f.lab('else')
@@ -763,6 +798,7 @@ class Gen:
         f.cbr(f.r(f'icmp eq ptr {jf}, null'), plain, logged)
         f.at(plain)
         f.e(f'call i32 @dispatch(ptr {line}, i64 {n})')
+        f.e('call i32 @fflush(ptr null)')        # answer now, so the program can be driven over a pipe
         f.br(loop)
         f.at(logged)
         copy = f.r(f'call ptr @strdup(ptr {line})')
@@ -781,6 +817,7 @@ class Gen:
         f.e(f'call i32 @fflush(ptr {jf})')
         f.br(release)
         f.at(release)
+        f.e('call i32 @fflush(ptr null)')
         f.e(f'call void @free(ptr {copy})')
         f.br(loop)
         f.at(done)
