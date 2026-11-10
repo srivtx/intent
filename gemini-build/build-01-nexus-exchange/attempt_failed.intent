@@ -1,0 +1,48 @@
+# =============================================================================
+# BUILD 01 (FAILED ATTEMPT): First-Instinct Financial Exchange in Intent
+# =============================================================================
+# This file captures what happens when you write a 5-collection exchange using
+# natural first-instinct phrasing. Every failure below is real and instructive.
+# =============================================================================
+
+Traders is a collection.
+Each trader has a handle (text), an email (text), cash_cents (number), risk_score (number) and frozen (number).
+No two traders share the same handle.
+No two traders share the same email.
+# FAILURE 1: Replace policy with >1 unique field is rejected by check.py:138
+If a trader already exists, replace it.
+
+Assets is a collection.
+Each asset has a ticker (text), mark_price (number) and volatility_bps (number).
+No two assets share the same ticker.
+# FAILURE 2: "Reject duplicates." worked for the 1st collection when only 1 collection
+# existed, but once a 2nd collection is declared, scope() asks "which collection is this about?"
+Reject duplicates.
+
+Orders is a collection.
+# FAILURE 3: Naming a foreign-key field "trader" on Orders shadows the "Traders"
+# collection globally in normalize() (parser.py:434)!
+Each order has an order_id (number), a trader (text), a symbol (text), a side (number), a limit_price (number) and a qty (number).
+No two orders share the same order_id.
+If an order already exists, reject it.
+
+# FAILURE 4: Because "trader" is now a FIELD on Orders, any sentence about the
+# "Traders" collection now fails to recognize "trader"/"traders" as a collection!
+register-trader: add a trader.
+
+# FAILURE 5: Writing "find an order by order_id" collides with the 2-word SQL phrase
+# "order by" (SORTBY) in lexicon.py:90, swallowing the collection name "order"!
+inspect-order: find an order by order_id.
+
+# FAILURE 6: Mixing "and" and "or" in a condition is rejected by parser.py:689
+vip-or-rich: show the traders whose frozen is 0 and risk_score is under 100 or cash_cents is at least 1000000.
+
+# FAILURE 7: Dividing by a runtime parameter (leverage) is rejected by check.py:149
+calc-liq: take entry_cents and leverage and return entry_cents - entry_cents / leverage.
+
+# FAILURE 8: Using a taught word inside a hyphenated capability label ("check-solvent:")
+# triggers a bug in expand_sentence() (parser.py:314) because '-' is a symbol token,
+# causing self.expand(pre) to expand "solvent" inside the capability name before ':'!
+"solvent" means frozen is 0 and risk_score under 8000.
+check-solvent: show the traders whose frozen is 0.
+

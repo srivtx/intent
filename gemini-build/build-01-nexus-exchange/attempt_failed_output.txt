@@ -1,0 +1,61 @@
+error: replacing duplicates with more than one unique property is not supported yet
+  --> gemini-build/build-01-nexus-exchange/attempt_failed.intent:13
+   |
+13 | If a trader already exists, replace it.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+question: which collection is this about?
+  --> gemini-build/build-01-nexus-exchange/attempt_failed.intent:20
+   |
+20 | Reject duplicates.
+   | ^^^^^^^^^^^^^^^^^ could be: Traders, Assets
+
+question: which collection is this about?
+  --> gemini-build/build-01-nexus-exchange/attempt_failed.intent:31
+   |
+31 | register-trader: add a trader.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ could be: Traders, Assets, Orders
+
+question: which collection is this about?
+  --> gemini-build/build-01-nexus-exchange/attempt_failed.intent:35
+   |
+35 | inspect-order: find an order by order_id.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ could be: Traders, Assets, Orders
+
+question: which collection is this about?
+  --> gemini-build/build-01-nexus-exchange/attempt_failed.intent:38
+   |
+38 | vip-or-rich: show the traders whose frozen is 0 and risk_score is under 100 or cash_cents is at least 1000000.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ could be: Traders, Assets, Orders
+
+error: dividing by something that could be zero is not supported yet
+  --> gemini-build/build-01-nexus-exchange/attempt_failed.intent:41
+   |
+41 | calc-liq: take entry_cents and leverage and return entry_cents - entry_cents / leverage.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ I would have to invent what happens at zero
+   = divide by a fixed non-zero number
+
+error: I can't read what comes before ":" as a name
+  --> gemini-build/build-01-nexus-exchange/attempt_failed.intent:47
+   |
+47 | check-solvent: show the traders whose frozen is 0.
+   | ^^^^^^^^^^^^^
+
+not compiled: 4 questions to answer, 3 things I could not read
+How I read this program:
+
+   8  Traders is a collection                                       ->  collection trader
+   9  Each trader has a handle (text), an email (text), cash_cents (number), risk_score (number) and frozen (number)  ->  trader has handle: text, email: text, cash_cent: int, risk_score: int, frozen: int
+  10  No two traders share the same handle                          ->  trader: handle unique
+  11  No two traders share the same email                           ->  trader: email unique
+  13  If a trader already exists, replace it                        ->  trader: on duplicate, replace
+  15  Assets is a collection                                        ->  collection asset
+  16  Each asset has a ticker (text), mark_price (number) and volatility_bps (number)  ->  asset has ticker: text, mark_price: int, volatility_bp: int
+  17  No two assets share the same ticker                           ->  asset: ticker unique
+  22  Orders is a collection                                        ->  collection order
+  25  Each order has an order_id (number), a trader (text), a symbol (text), a side (number), a limit_price (number) and a qty (number)  ->  order has order_id: int, trader: text, symbol: text, side: int, limit_price: int, qty: int
+  26  No two orders share the same order_id                         ->  order: order_id unique
+  27  If an order already exists, reject it                         ->  order: on duplicate, reject
+  41  calc-liq: take entry_cents and leverage and return entry_cents - entry_cents / leverage  ->  calc(entry_cents, leverage) = <entry_cents> - (<entry_cents> / <leverage>)
+  46  "solvent" means frozen is 0 and risk_score under 8000         ->  "solvent" means: frozen is 0 and risk_score under 8000
+
