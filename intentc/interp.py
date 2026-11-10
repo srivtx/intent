@@ -146,7 +146,11 @@ class Machine:
         if STATE in prog.collections:       # the single values start out as declared
             self.data[STATE] = [{f.name: f.init for f in prog.collections[STATE].fields.values()}]
         for s in prog.seeds:                # what is there from the start
-            self.data[s.coll].append({f: e[1] for f, e in s.assigns})
+            fields = prog.collections[s.coll].fields
+            given = {f: e[1] for f, e in s.assigns}
+            for combo in itertools.product(*(range(lo, hi + 1) for _, lo, hi in s.ranges)):
+                row = dict(given, **{n: v * 100 if fields[n].dec else v for (n, _, _), v in zip(s.ranges, combo)})
+                self.data[s.coll].append({f: row[f] for f in fields})
         self.left = [t.on[1] for t in self.timers]      # milliseconds until each one happens next
         return self.settle()
 
