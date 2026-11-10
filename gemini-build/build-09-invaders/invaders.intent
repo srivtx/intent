@@ -1,0 +1,102 @@
+# Space Invaders, in Intent v0.6.0.
+#   ./intent build gemini-build/build-09-invaders/invaders.intent -o build/invaders && build/invaders
+# Left/right move the ship, space fires, q quits, enter plays again.
+#
+# Design note: Intent 0.6 cannot compare a record of one collection with a record of
+# another collection ("a condition can look into one other collection in this version",
+# and the other collection may only be compared with numbers, text and single values).
+# So the player's shot is a pair of SINGLE VALUES (shot x, shot y), not a collection.
+# Aliens and bombs are collections; each is only ever compared against single values.
+
+The board is 32 wide and 16 high.
+
+The ship starts at 16.
+The score starts at 0.
+The best starts at 0.
+The lives start at 3.
+The wave starts at 1.
+The march starts at 1.
+The descend starts at 0.
+The hit starts at 0.
+The respawn starts at 0.
+The hurt starts at 0.
+
+# The shot: a y of 0 means there is no shot in the air.
+The shot x starts at 0.
+The shot y starts at 0.
+
+Aliens is a collection where each alien has an x (number), a y (number) and a kind (number).
+Bombs is a collection where each bomb has an x (number) and a y (number).
+
+Start with an alien at x 4, y 2, kind 1.
+Start with an alien at x 8, y 2, kind 1.
+Start with an alien at x 12, y 2, kind 1.
+Start with an alien at x 16, y 2, kind 1.
+Start with an alien at x 20, y 2, kind 1.
+Start with an alien at x 4, y 4, kind 2.
+Start with an alien at x 8, y 4, kind 2.
+Start with an alien at x 12, y 4, kind 2.
+Start with an alien at x 16, y 4, kind 2.
+Start with an alien at x 20, y 4, kind 2.
+
+# --- the ship
+When the left key is pressed, the ship decreases by 1 if the ship is over 1.
+When the right key is pressed, the ship increases by 1 if the ship is under 32.
+When space is pressed, if the shot y is 0, the shot x becomes the ship.
+When space is pressed, if the shot y is 0, the shot y becomes 15.
+
+# --- the shot flies up; reaching the top it is gone
+Every 50 milliseconds, the shot y decreases by 1 if the shot y is over 0.
+
+# --- a shot meets an alien: note the hit, score it, take the alien away, spend the shot
+Every 50 milliseconds, if any alien has an x equal to the shot x and a y equal to the shot y, the hit becomes 1.
+Every 50 milliseconds, if the hit is 1, the score increases by 10 times the wave.
+Every 50 milliseconds, remove the aliens whose x is the shot x and whose y is the shot y.
+Every 50 milliseconds, if the hit is 1, the shot y becomes 0.
+Every 50 milliseconds, if the hit is 1, the hit becomes 0.
+
+# --- the fleet marches; at an edge it turns and steps down
+Every 400 milliseconds, the x of each alien increases by the march.
+Every 400 milliseconds, if any alien has an x over 31, the descend becomes 1.
+Every 400 milliseconds, if any alien has an x under 2, the descend becomes 1.
+Every 400 milliseconds, if the descend is 1, the march becomes 0 minus the march.
+Every 400 milliseconds, if the descend is 1, increase the y of every alien by 1.
+Every 400 milliseconds, if the descend is 1, the descend becomes 0.
+
+# --- bombs fall from random columns; more of them in later waves
+Every 900 milliseconds, add a bomb whose x is a random number between 1 and 32 and whose y is 6.
+Every 900 milliseconds, if the wave is over 2, add a bomb whose x is the ship and whose y is 3.
+Every 150 milliseconds, the y of each bomb increases by 1.
+Every 150 milliseconds, if any bomb has an x equal to the ship and a y equal to 16, the hurt becomes 1.
+Every 150 milliseconds, if the hurt is 1, the lives decrease by 1.
+# (Bug found: "if the hurt is 1, remove the bombs whose y is at least 14" is refused;
+#  the same condition written AFTER the where-clause is accepted.)
+Every 150 milliseconds, remove the bombs whose y is at least 14 if the hurt is 1.
+Every 150 milliseconds, if the hurt is 1, the hurt becomes 0.
+Every 150 milliseconds, remove the bombs whose y is over 16.
+
+# --- a cleared fleet brings the next, faster-scoring wave
+Every 100 milliseconds, if no alien has a y over 0, the respawn becomes 1.
+Every 100 milliseconds, if the respawn is 1, the wave increases by 1.
+Every 100 milliseconds, if the respawn is 1, add an alien whose x is 4, whose y is 2 and whose kind is 1.
+Every 100 milliseconds, if the respawn is 1, add an alien whose x is 10, whose y is 2 and whose kind is 1.
+Every 100 milliseconds, if the respawn is 1, add an alien whose x is 16, whose y is 2 and whose kind is 1.
+Every 100 milliseconds, if the respawn is 1, add an alien whose x is 22, whose y is 2 and whose kind is 1.
+Every 100 milliseconds, if the respawn is 1, add an alien whose x is 7, whose y is 4 and whose kind is 2.
+Every 100 milliseconds, if the respawn is 1, add an alien whose x is 13, whose y is 4 and whose kind is 2.
+Every 100 milliseconds, if the respawn is 1, add an alien whose x is 19, whose y is 4 and whose kind is 2.
+Every 100 milliseconds, if the respawn is 1, the respawn becomes 0.
+
+# --- standing rules
+When the score is over the best, the best becomes the score.
+
+The game is over when the lives are under 1.
+The game is over when any alien has a y over 14.
+
+# --- what you see (later drawings cover earlier ones)
+Draw each bomb at its x and y as a red "!".
+Draw each alien whose kind is 1 at its x and y as a magenta "W".
+Draw each alien whose kind is 2 at its x and y as a cyan "M".
+Draw a yellow "|" at the shot x and the shot y.
+Draw a green "A" at the ship and 16.
+Show the score, the best, the lives and the wave above the board.
