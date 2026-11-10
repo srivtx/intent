@@ -1,0 +1,30 @@
+name: A sentence was read wrongly
+description: Intent compiled a sentence to something you did not mean, or refused one it should read.
+labels: [bug]
+body:
+  - type: textarea
+    id: program
+    attributes:
+      label: The smallest program that shows it
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reading
+    attributes:
+      label: What ./intent check printed
+      description: The line from the right-hand column, or the error or question.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: meant
+    attributes:
+      label: What you meant
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "0.8.0"
