@@ -12,10 +12,10 @@ import copy
 import difflib
 from dataclasses import dataclass, replace
 
-from .ir import (STATE, Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, fmt_expr, negate, task_exprs,
-                 walk_expr)
-from .lexicon import (CONVENTION, COUNT_NOUNS, MAX_PHRASE, PHRASES, SYMS, TYPE_WORDS, UNSUPPORTED_TYPES, all_known_words,
-                      singular)
+from .ir import (KEYS, LONGEST_WAIT, STATE, Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, fmt_event,
+                 fmt_expr, negate, task_exprs, walk_expr)
+from .lexicon import (BOARD_WORDS, CONVENTION, COUNT_NOUNS, DRAW_WORDS, HIGH_WORDS, MAX_PHRASE, PHRASES, PRESS_VERBS,
+                      PRESSED, SYMS, TYPE_WORDS, UNITS, UNSUPPORTED_TYPES, WIDE_WORDS, all_known_words, singular)
 from .source import Source, Tok, split_sentences, tokenize
 
 ARTICLES = {'a', 'an', 'the', 'their', 'its', 'some', 'one'}
@@ -24,6 +24,15 @@ MANY = [('a', 'list', 'of'), ('a', 'set', 'of'), ('lists', 'of'), ('list', 'of')
         ('some',)]
 LEADING_TYPES = {'numeric': 'int', 'integer': 'int', 'text': 'text', 'string': 'text', 'textual': 'text'}
 SCALE_NAME = {2: 'double', 3: 'triple', 4: 'quadruple'}
+STARTERS = [('as', 'soon', 'as'), ('every', 'time'), ('each', 'time'), ('when',), ('whenever',), ('if',), ('once',)]
+KEY_ALIASES = {'return': 'enter', 'spacebar': 'space'}
+OVER_WORDS = [('is', 'over'), ('is', 'lost'), ('is', 'finished'), ('is', 'done'), ('ends',), ('stops',), ('over',)]
+BOARD_FILL = {'show', 'draw', 'make', 'the', 'a', 'an', 'is', 'are', 'has', 'have', 'with', 'and', 'of', 'that',
+              'there', 'which', 'cells', 'squares', 'characters', 'big', 'by', 'x', 'on'}
+OPENERS = [('at', 'the', 'start', 'there', 'is'), ('at', 'the', 'start', 'there', 'are'), ('to', 'begin', 'with'),
+           ('at', 'first', 'there', 'is'), ('start', 'with'), ('begin', 'with'), ('starting', 'with'),
+           ('there', 'is'), ('there', 'are'), ('at', 'the', 'start')]
+BESIDE = {'above': 'above', 'over': 'above', 'below': 'below', 'under': 'below', 'beneath': 'below'}
 
 
 class Problem(Exception):
@@ -94,6 +103,7 @@ class Parser:
         self.macros = {}            # words the program taught us: (w1, w2..) -> ('phrase'|'noun', tokens)
         self.state = Collection(STATE, 'single values')     # "The score is a number.": one record of values
         self.as_rule = False
+        self.trigger = None         # set while reading a sentence that happens by itself, is drawn, or ends the game
 
     # ------------------------------------------------------------------ diagnostics
     def p(self, level, where, msg, label='', hint=''):
@@ -259,6 +269,10 @@ class Parser:
         if taught:
             return taught
         toks = self.cur = self.expand_sentence(toks)
+        self.trigger = None
+        lively = self.live(toks)
+        if lively:
+            return lively
         cts = self.short_names(self.normalize(toks))
         content = [c for c in cts if c.kind != 'FILLER']
         kinds = {c.kind for c in content}
@@ -531,6 +545,304 @@ class Parser:
             out.append(c)
         return out
 
+    # ------------------------------------------------------------------ time, keys and the board
+    # These sentences are recognised from their shape, before any word is looked up, so that
+    # none of their words is reserved: "the high score" and "each ticket has a key" stay names.
+    def free(self, word):
+        """Is this word still free to mean what the language means by it?"""
+        names = set(self.prog.field_names()) | set(self.prog.collections) | set(self.state.fields)
+        return word not in names and singular(word) not in names
+
+    def content_of(self, toks):
+        return [c for c in self.short_names(self.normalize(toks)) if c.kind != 'FILLER']
+
+    def live(self, toks):
+        words = [t.text if t.kind == 'word' else None for t in toks]
+        colon = next((i for i, t in enumerate(toks) if t.kind == 'sym' and t.text == ':'), None)
+        if colon is not None:
+            tail = toks[colon + 1:]
+            if tail and (self.timing(tail) or self.keypress(tail)):
+                raise self.p('error', toks[:colon + 1], 'this happens by itself, so it needs no name',
+                             hint='leave out the name and the colon')
+            return None
+        boards = [i for i, w in enumerate(words) if w in BOARD_WORDS and self.free(w)]
+        if boards:
+            board = self.decl_board(toks, words, boards[-1])
+            if board:
+                return board
+        known = None
+        for i, w in enumerate(words):   # "when space is presed": the slip is in "presed", whatever else is unknown
+            if w and len(w) > 4 and w not in PRESSED | PRESS_VERBS and \
+                    any(edit_distance(w, k) == 1 for k in ('pressed', 'presses')):
+                known = known or self.vocabulary()
+                if w not in known:
+                    raise self.unknown_word(CT('UNK', w, [toks[i]]))
+        if words[0] in DRAW_WORDS and self.free(words[0]):
+            return self.decl_draw(toks)
+        seeded = self.decl_seed(toks, words)
+        if seeded:
+            return seeded
+        if 'game' in words and self.free('game'):
+            ended = self.decl_end(toks, words)
+            if ended:
+                return ended
+        span = self.timing(toks)
+        if span:
+            a, b, ms = span
+            if not 1 <= ms <= LONGEST_WAIT:
+                raise self.p('error', toks[a:b], 'this has to be between one millisecond and one hour')
+            return self.event(self.cut(toks, a, b), ('every', ms))
+        span = self.keypress(toks)
+        if span:
+            a, b, key = span
+            return self.event(self.cut(toks, a, b), ('key', key))
+        return None
+
+    def cut(self, toks, a, b):
+        """The sentence without toks[a:b] and the comma that tied it on."""
+        if b < len(toks) and toks[b].kind == 'sym' and toks[b].text == ',':
+            b += 1
+        elif a and toks[a - 1].kind == 'sym' and toks[a - 1].text == ',':
+            a -= 1
+        return toks[:a] + toks[b:]
+
+    def timing(self, toks):
+        """"every 200 milliseconds" / "each second" / "5 times a second" -> (start, end, milliseconds)."""
+        n = len(toks)
+
+        def unit(j):
+            return j < n and toks[j].kind == 'word' and toks[j].text in UNITS and self.free(toks[j].text)
+
+        def count(j):
+            t = toks[j] if j < n else None
+            if t is None:
+                return None
+            if t.kind == 'num':
+                if '.' in t.text:
+                    raise self.p('error', t, 'decimal numbers are not supported yet',
+                                 'say it in milliseconds: "every 500 milliseconds"')
+                return int(t.text)
+            got = PHRASES.get((t.text,)) if t.kind == 'word' else None
+            return got[0][1] if got and len(got) == 1 and got[0][0] == 'NUM' else None
+
+        for i, t in enumerate(toks):
+            if t.kind == 'word' and t.text in ('every', 'each'):
+                if unit(i + 1):
+                    return i, i + 2, UNITS[toks[i + 1].text]
+                k = count(i + 1)
+                if k is not None and unit(i + 2):
+                    return i, i + 3, k * UNITS[toks[i + 2].text]
+            k = count(i)
+            times = k if k is not None and i + 1 < n and toks[i + 1].text == 'times' else \
+                {'once': 1, 'twice': 2}.get(t.text) if t.kind == 'word' else None
+            j = i + (2 if times == k and k is not None else 1)
+            if times and j < n and toks[j].text in ('a', 'per', 'each', 'every') and unit(j + 1):
+                return i, j + 2, UNITS[toks[j + 1].text] // times
+        return None
+
+    def keypress(self, toks):
+        """"when the left key is pressed" / "when the player presses space" -> (start, end, key)."""
+        n = len(toks)
+        w = [t.text if t.kind in ('word', 'num') else '' for t in toks]
+        for s in range(n):
+            L = next((len(st) for st in STARTERS if tuple(w[s:s + len(st)]) == st), 0)
+            if not L:
+                continue
+            k = s + L
+            if k < n and w[k] in ('the', 'a'):
+                k += 1
+            if k < n and w[k] in ('player', 'user', 'someone', 'you', 'i', 'we'):
+                k += 1
+            pressing = k < n and w[k] in PRESS_VERBS
+            k = k + 1 if pressing else s + L
+            if k < n and w[k] == 'the':
+                k += 1
+            if k >= n:
+                continue
+            kt = k
+            k += 1
+            said_key = False
+            while k < n and w[k] in ('arrow', 'key', 'button'):
+                said_key = True
+                k += 1
+            if not pressing:
+                while k < n and w[k] in ('is', 'gets', 'are'):
+                    k += 1
+                if not (k < n and w[k] in PRESSED):
+                    continue
+                k += 1
+                if k < n and w[k] == 'down':
+                    k += 1
+            if not (k == n or (s == 0 and toks[k].kind == 'sym' and toks[k].text == ',')):
+                continue
+            key = KEY_ALIASES.get(w[kt], w[kt])
+            if key not in KEYS:
+                if said_key or pressing:
+                    raise self.p('error', toks[kt], f'I don\'t know a key called "{toks[kt].raw}"',
+                                 hint='keys I know: left, right, up, down, space, enter, and any letter or digit')
+                continue
+            return s, k, key
+        return None
+
+    def event(self, rest, on):
+        if not rest:
+            raise self.p('error', self.cur, 'and then what happens?', 'this says when, but not what',
+                         'e.g. "Every second, the score increases by 1."')
+        self.trigger = on
+        return self.task(self.content_of(rest))
+
+    def decl_board(self, toks, words, b):
+        """"The board is 30 wide and 15 high."  "Show the score and the lives above the board."."""
+        nums = [i for i, t in enumerate(toks) if t.kind == 'num']
+        if not nums:
+            side = next((i for i in range(b) if words[i] in BESIDE and all(w == 'the' for w in words[i + 1:b])), None)
+            if side is None and words[0] not in DRAW_WORDS | {'show'}:
+                return None             # "Each ticket has a key and a board.": an ordinary name here
+            if side is None or b != len(toks) - 1:
+                raise self.p('error', toks, 'I can\'t tell what this says about the board',
+                             hint='e.g. "The board is 30 wide and 15 high." or "Show the score above the board."')
+            content = self.content_of(toks[:side])
+            for c in content:
+                if c.kind == 'UNK':
+                    raise self.unknown_word(c)
+                if c.kind not in ('VALUE', 'AND', 'COMMA') and not (c.kind == 'ACT' and c.val == 'show'):
+                    raise self.p('error', c, 'only single values can be shown beside the board in this version',
+                                 hint='e.g. "The score is a number." then "Show the score above the board."')
+            names = [c.val for c in content if c.kind == 'VALUE']
+            if not names:
+                raise self.p('error', toks, 'show what there?', hint='e.g. "Show the score above the board."')
+            where = BESIDE[words[side]]
+            getattr(self.prog, where).extend(n for n in names if n not in getattr(self.prog, where))
+            return f'{where} the board: ' + ', '.join(names)
+        if self.prog.board:
+            raise self.p('error', toks, 'the board already has a size', f'line {self.prog.board_line} gives it')
+        w = h = None
+        for i, t in enumerate(toks):
+            if t.kind == 'num':
+                if '.' in t.text or int(t.text) < 1:
+                    raise self.p('error', t, 'a board is a whole number of characters wide and high')
+                v, nxt = int(t.text), words[i + 1] if i + 1 < len(toks) else None
+                prev = words[i - 1] if i else None
+                if nxt in WIDE_WORDS or (nxt in ('by', 'x') and w is None):
+                    w = v
+                elif nxt in HIGH_WORDS or prev in ('by', 'x'):
+                    h = v
+                else:
+                    raise self.p('error', t, 'is this how wide the board is, or how high?',
+                                 hint='e.g. "The board is 30 wide and 15 high."')
+            elif t.kind == 'sym' and t.text == ',':
+                continue
+            elif words[i] is None or not (words[i] in BOARD_FILL | BOARD_WORDS | WIDE_WORDS | HIGH_WORDS):
+                raise self.leftover([CT('UNK', t.text, [t])])
+        if w is None or h is None:
+            raise self.p('error', toks, f'how {"wide" if w is None else "high"} is the board?',
+                         hint='e.g. "The board is 30 wide and 15 high."')
+        if w > 200 or h > 60:
+            raise self.p('error', toks, 'a board can be at most 200 wide and 60 high in this version')
+        self.prog.board, self.prog.board_line = (w, h), toks[0].line
+        return f'board {w} wide, {h} high'
+
+    def decl_draw(self, toks):
+        """"Draw each rock at its x and y as "#"."  "Draw "@" at the column and the row."."""
+        hint = 'e.g. Draw each rock at its x and y as "#".'
+        looks = [i for i, t in enumerate(toks) if t.kind in ('str', 'bad')]
+        if len(looks) != 1:
+            raise self.p('error', toks, 'what should it look like?' if not looks else
+                         'one thing is drawn as one character', hint=hint)
+        g = looks[0]
+        glyph = toks[g].text if toks[g].kind == 'str' else toks[g].raw
+        if len(glyph) != 1 or not 33 <= ord(glyph) <= 126:
+            raise self.p('error', toks[g], 'one thing is drawn as one plain character', hint=hint)
+        a = g - 1 if g and toks[g - 1].kind == 'word' and toks[g - 1].text in ('as', 'with', 'like', 'using') else g
+        rest = toks[1:a] + toks[g + 1:]
+        at = next((i for i, t in enumerate(rest) if t.kind == 'word' and t.text == 'at' and
+                   not (i + 1 < len(rest) and rest[i + 1].text in ('least', 'most'))), None)
+        if at is None:
+            raise self.p('error', toks, 'where should it be drawn?', 'this needs an "at"', hint)
+        place = self.content_of(rest[at + 1:])
+        cutoff = next((i for i, c in enumerate(place) if c.kind in ('WHERE', 'HAS')), len(place))
+        place, cond = place[:cutoff], place[cutoff:]
+        who = [c for c in place if c.kind in ('COLL', 'QUANT', 'GEN')]
+        place = [c for c in place if c not in who]
+        for c in place:
+            if c.kind == 'UNK':
+                raise self.unknown_word(c)
+        sep = next((i for i, c in enumerate(place) if c.kind in ('AND', 'COMMA')), None)
+        if sep is None:
+            raise self.p('error', place or toks, 'a place on the board is two numbers: how far across, and how far down',
+                         hint=hint)
+        xy = (self.whole_expr(place[:sep]), self.whole_expr(place[sep + 1:]))
+        subject = self.content_of(rest[:at]) + who + cond
+        used = [c for c in place if c.kind == 'FIELD']
+        if used and not any(c.kind == 'COLL' for c in subject):
+            subject = [CT('COLL', self.scope(used).name, used[0].toks)] + subject
+        if not subject:
+            T = Task(f'draw {len(self.prog.draws) + 1}', 'draw', None, toks[0].line, self.sent_text(toks), True)
+            T.at, T.glyph = xy, glyph
+            self.prog.draws.append(T)
+            return f'draw "{glyph}" at ({fmt_expr(xy[0])}, {fmt_expr(xy[1])})'
+        self.trigger = ('draw', xy, glyph)
+        return self.task([CT('ACT', 'show', [toks[0]])] + subject)
+
+    def decl_seed(self, toks, words):
+        """A record that is there from the start: "Start with a rock at x 5, y 1 and speed 2"."""
+        L = next((len(o) for o in OPENERS if tuple(words[:len(o)]) == o), 0)
+        if not L:
+            return None
+        rest = [t for t in toks[L:] if not (t.kind == 'word' and t.text == 'at' and self.free('at'))]
+        try:
+            content = self.content_of(rest)
+        except Problem:
+            return None
+        while content and (content[0].kind == 'QUANT' or (content[0].kind == 'NUM' and content[0].val == 1)):
+            content = content[1:]
+        if not content or content[0].kind != 'COLL' or \
+                any(c.kind not in ('FIELD', 'NUM', 'STR', 'IS', 'EQSYM', 'AND', 'COMMA', 'WHERE', 'HAS')
+                    for c in content[1:]):
+            return None
+        coll = self.prog.collections[content[0].val]
+        given, f = {}, None
+        for c in content[1:]:
+            if c.kind == 'FIELD':
+                if f or c.val not in coll.fields or c.val in given:
+                    raise self.p('error', c, f'I expected a value for "{f}" here' if f else
+                                 f'"{c.val}" is given twice' if c.val in given else
+                                 f'{coll.label} has no property "{c.val}"')
+                f = c.val
+            elif c.kind in ('NUM', 'STR'):
+                if not f:
+                    raise self.p('error', c, 'which property is this the value of?', self.could_be(coll))
+                given[f], f = ('num' if c.kind == 'NUM' else 'str', c.val), None
+        missing = [n for n in coll.fields if n not in given]
+        if f or missing:
+            raise self.p('question', toks, f'what is the {f or missing[0]} of this {coll.name}?',
+                         'something that is there from the start needs a value for every property',
+                         f'e.g. "... {f or missing[0]} 1"')
+        if any(fl.ref for fl in coll.fields.values()):
+            raise self.p('error', toks, f'starting with {coll.label.lower()} that belong to something is not supported yet')
+        T = Task(f'start {len(self.prog.seeds) + 1}', 'seed', coll.name, toks[0].line, self.sent_text(toks), True)
+        T.assigns = [(n, given[n]) for n in coll.fields]
+        self.prog.seeds.append(T)
+        return f'at the start, a {coll.name}: ' + ', '.join(f'{n} = {fmt_expr(e)}' for n, e in T.assigns)
+
+    def decl_end(self, toks, words):
+        """"The game is over when the lives are 0."  "When any rock is ..., the game ends."."""
+        i = words.index('game')
+        tail = next((len(o) for o in OVER_WORDS if tuple(words[i + 1:i + 1 + len(o)]) == o), 0)
+        if not tail:
+            return None
+        a = i
+        while a and words[a - 1] in ('the', 'it', 'is'):
+            a -= 1
+        rest = self.cut(toks, a, i + 1 + tail)
+        w = [t.text if t.kind == 'word' else '' for t in rest]
+        L = next((len(st) for st in STARTERS if tuple(w[:len(st)]) == st), 0)
+        if not L:
+            raise self.p('error', toks, 'when is the game over?',
+                         hint='e.g. "The game is over when the lives are 0."')
+        self.trigger = ('end',)
+        return self.task([CT('ACT', 'show', [toks[i]]), CT('WHERE', None, rest[:L])] + self.content_of(rest[L:]))
+
     # ------------------------------------------------------------------ single values
     def decl_value(self, content):
         """"The score is a number."  "The limit is 100."  "The score starts at 0."  -> one value, kept."""
@@ -557,7 +869,7 @@ class Parser:
         known = list(self.state.fields) + list(self.prog.field_names()) + list(self.prog.collections)
         for c in words:             # "The scroe is 5." is a slip for the score, not a new value
             w = singular(c.toks[0].text)
-            if any(w != n and edit_distance(w, n) <= (1 if len(n) < 8 else 2) for n in known):
+            if len(w) > 3 and any(w != n and edit_distance(w, n) <= (1 if len(n) < 8 else 2) for n in known):
                 raise self.unknown_word(c)
         self.taken(tuple(c.toks[0].text for c in words), words)
         typ = rest[1].val if rest[1].kind == 'TYPE' else None
@@ -1124,6 +1436,9 @@ class Parser:
                 return f, e, t[2 + n:]
             if nxt and nxt.kind == 'MODAL':
                 return self.modal_tail(f, t, 2, coll)
+            if nxt and ((nxt.kind == 'VERB' and nxt.val in ('multiply', 'divide', 'increase', 'decrease')) or
+                        (nxt.kind in ('SCALE', 'HALVE') and nxt.toks[-1].text.endswith('s'))):
+                return self.one_update([nxt, c] + t[2:], coll)      # "the score increases by 1", "the speed doubles"
             if nxt and nxt.kind in ('OP', 'SCALE', 'HALVE'):
                 raise self.p('question', t, f'should {f} change, or do you just want to see the result?',
                              'this describes a value, not an action',
@@ -1169,6 +1484,8 @@ class Parser:
             # "The level is always 3 if the score is at least 50, otherwise 1."
             # "Whenever a player's score passes 100, their level becomes 2.": not a command, a standing rule
             self.as_rule = True
+        if self.trigger:
+            self.as_rule = False
         content = [CT('WHERE', None, c.toks) if c.kind == 'RULE' else c for c in content]
         ci = index_of(content, 'COLON')
         if ci is not None:
@@ -1635,6 +1952,41 @@ class Parser:
                 if e[0] == 'param' and e[1] not in seen:
                     seen.append(e[1])
             T.params = seen
+        if self.trigger:
+            on, self.trigger = self.trigger, None
+            if T.params:
+                raise self.p('error', self.cur, f'there is nobody to give the {T.params[0]} here',
+                             'this is not a command, so nothing can be handed to it')
+            plain = T.kind == 'list' and not T.order and T.limit is None
+            if on[0] == 'end':
+                if not plain or T.where is None:
+                    raise self.p('error', self.cur, 'when is the game over?',
+                                 hint='e.g. "The game is over when the lives are 0."')
+                T.kind, T.name, T.named, T.fields = 'end', f'end {len(self.prog.ends) + 1}', True, None
+                self.prog.ends.append(T)
+                return 'the game is over when ' + fmt_cond(T.where) + \
+                    ('' if T.coll == STATE else f', for any {T.coll}')
+            if on[0] == 'draw':
+                if not plain:
+                    raise self.p('error', self.cur, 'I can\'t tell what should be drawn',
+                                 hint='e.g. Draw each rock at its x and y as "#".')
+                for e in (x for side in on[1] for x in walk_expr(side)):
+                    if e[0] == 'field' and e[1] not in coll.fields:
+                        raise self.p('error', self.cur, f'{coll.label} has no property "{e[1]}"', self.could_be(coll))
+                T.kind, T.name, T.named, T.fields = 'draw', f'draw {len(self.prog.draws) + 1}', True, None
+                T.at, T.glyph = on[1], on[2]
+                self.prog.draws.append(T)
+                w = f' where {fmt_cond(T.where)}' if T.where else ''
+                return f'draw "{T.glyph}" at ({fmt_expr(T.at[0])}, {fmt_expr(T.at[1])})' + \
+                    ('' if T.coll == STATE else f' for each {T.coll}') + w
+            if T.kind not in ('update', 'remove_where'):
+                raise self.p('error', self.cur, 'what should change?',
+                             'something that happens by itself has to change or remove something',
+                             'e.g. "Every second, the score increases by 1."')
+            T.on, T.named = on, True
+            T.name = f'{"timer" if on[0] == "every" else "key"} {len(self.prog.events) + 1}'
+            self.prog.events.append(T)
+            return fmt_event(T)
         if self.as_rule:
             self.as_rule = False
             if T.params and T.kind != 'add':

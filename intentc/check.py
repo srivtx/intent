@@ -132,6 +132,8 @@ class Checker:
                 else:
                     ch |= self.need(c[2], 'int', coll, t)
                     ch |= self.need(c[3], 'int', coll, t)
+        for e in t.at or ():            # a place on the board is two numbers
+            ch |= self.need(e, 'int', coll, t)
         if t.kind == 'agg' and t.field:
             ch |= self.need(('field', t.field), 'int', coll, t)
         return ch
@@ -149,7 +151,7 @@ class Checker:
 
     def settle(self):
         for _ in range(12):
-            if not any([self.constrain(t) for t in self.prog.work()] + [self.link()]):
+            if not any([self.constrain(t) for t in self.prog.work() + self.prog.looks()] + [self.link()]):
                 break
 
     def infer(self):
@@ -216,6 +218,30 @@ class Checker:
                                    f'removing a {p.name} removes its {c.label.lower()}, but a {c.name} with '
                                    f'{d.label.lower()} cannot be removed: which wins?',
                                    'two rules meet here', 'make both rules remove, or both refuse')
+        live = P.events or P.draws or P.ends or P.above or P.below
+        if P.draws and not P.board:
+            self.d('question', P.draws[0].line, 'how big is the board this is drawn on?', 'no sentence gives its size',
+                   'e.g. "The board is 30 wide and 15 high."')
+        elif live and not P.board:
+            first = min(t.line for t in P.events + P.ends) if P.events or P.ends else 1
+            self.d('note', first, 'nothing is drawn, so this program cannot be played; time only passes when it is '
+                   'told to wait', hint='add a board, e.g. "The board is 30 wide and 15 high.", and say what to draw')
+        elif P.board and not P.draws:
+            self.d('note', P.board_line, 'nothing is drawn on the board yet',
+                   hint='e.g. Draw each rock at its x and y as "#".')
+        for i, t in enumerate(P.seeds):
+            coll = P.collections[t.coll]
+            for u in coll.unique_fields():
+                twin = next((o for o in P.seeds[:i] if o.coll == t.coll and
+                             dict(o.assigns)[u.name] == dict(t.assigns)[u.name]), None)
+                if twin:
+                    self.d('error', t.line, f'two {coll.label.lower()} would start with the same {u.name}',
+                           f'line {twin.line} already starts with this one; line {u.unique_line} makes {u.name} unique')
+        for t in P.events:
+            coll = P.collections[t.coll]
+            if t.kind == 'remove_where' and any(rf.on_removed == 'restrict' for _, rf in P.children_of(coll.name)):
+                self.d('error', t.line, f'removing {coll.label.lower()} that other records belong to cannot happen '
+                       f'by itself yet')
         for t in P.rules:
             coll = P.collections[t.coll]
             for f, e in t.assigns:
@@ -226,10 +252,12 @@ class Checker:
                            f'by naming it: "Bump: ..."')
             if t.kind == 'remove_where' and any(rf.on_removed == 'restrict' for _, rf in P.children_of(coll.name)):
                 self.d('error', t.line, f'a rule cannot remove {coll.label.lower()} that other records belong to yet')
-        for t in P.work():
+        for t in P.work() + P.looks():
             coll = P.collections.get(t.coll)
             safe = nonzero(t.where, True)
             for _, e in t.assigns:
+                self.divisions(e, safe, t)
+            for e in t.at or ():
                 self.divisions(e, safe, t)
             if t.expr:
                 self.divisions(t.expr, [], t)

@@ -51,8 +51,8 @@ _add('PARITY', 1, 'odd')
 
 _add('VERB', 'multiply', 'multiply|multiplying|multiplies')
 _add('VERB', 'divide', 'divide|dividing|divides')
-_add('VERB', 'increase', 'increase|increasing|increases|increased|raise|raising|raised|increment|bump|bump up|boost|grow')
-_add('VERB', 'decrease', 'decrease|decreasing|decreases|decreased|reduce|reducing|reduced|lower|lowering|lowered|decrement|shrink|cut|cut down')
+_add('VERB', 'increase', 'increase|increasing|increases|increased|raise|raising|raised|increment|bump|bump up|boost|grow|grows|goes up|go up|rises|rise')
+_add('VERB', 'decrease', 'decrease|decreasing|decreases|decreased|reduce|reducing|reduced|lower|lowering|lowered|decrement|shrink|shrinks|cut|cut down|goes down|go down|falls|fall')
 _add('VERB', 'addv', 'add|adding|adds')
 _add('VERB', 'subv', 'subtract|subtracting|subtracts|take away')
 _add('VERB', 'set', 'set|setting|sets')
@@ -205,5 +205,20 @@ def singular(w):
 CONVENTION.update({singular(w): 'int' for w in COUNT_NOUNS})
 
 
+# ---- time, keys and the board ------------------------------------------------------
+# These are read from their place in the sentence, never reserved: "the high score" and
+# "each ticket has a key" stay ordinary names.
+UNITS = {'millisecond': 1, 'milliseconds': 1, 'ms': 1, 'second': 1000, 'seconds': 1000,
+         'minute': 60000, 'minutes': 60000}
+DRAW_WORDS = {'draw', 'paint', 'plot'}
+BOARD_WORDS = {'board', 'screen', 'grid'}
+WIDE_WORDS = {'wide', 'across', 'columns'}
+HIGH_WORDS = {'high', 'tall', 'rows'}
+PRESS_VERBS = {'presses', 'press', 'hits', 'taps', 'tap'}
+PRESSED = {'pressed', 'hit', 'tapped', 'held', 'down'}
+LIVE_WORDS = set(UNITS) | DRAW_WORDS | BOARD_WORDS | WIDE_WORDS | HIGH_WORDS | PRESS_VERBS | PRESSED | \
+    {'key', 'arrow', 'button', 'game', 'ends', 'finished', 'at', 'as', 'above', 'below'}
+
+
 def all_known_words():
-    return sorted({w for ph in PHRASES for w in ph})
+    return sorted({w for ph in PHRASES for w in ph} | LIVE_WORDS)

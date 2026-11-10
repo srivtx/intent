@@ -61,6 +61,9 @@ class Task:
     expr: tuple = None                              # calc
     params: list = _f(default_factory=list)      # names, in argument order
     ptypes: dict = _f(default_factory=dict)
+    on: tuple = None                                # happens by itself: ('every', milliseconds) | ('key', name)
+    at: tuple = None                                # draw: (x, y), counted from 1 at the top left
+    glyph: str = None                               # draw: the one character shown there
 
 
 STATE = '(values)'              # the hidden one-record collection that holds the program's single values
@@ -71,9 +74,33 @@ class Program:
     collections: dict = _f(default_factory=dict)
     tasks: list = _f(default_factory=list)
     rules: list = _f(default_factory=list)       # standing rules: applied after every change until nothing moves
+    events: list = _f(default_factory=list)      # what happens as time passes or a key is pressed
+    draws: list = _f(default_factory=list)       # what is on the board, later ones on top
+    ends: list = _f(default_factory=list)        # the game is over while any of these holds for any record
+    seeds: list = _f(default_factory=list)       # records that are there from the start
+    board: tuple = None                             # (width, height) in characters
+    board_line: int = 0
+    above: list = _f(default_factory=list)       # single values shown over the board
+    below: list = _f(default_factory=list)
 
     def work(self):
-        return self.tasks + self.rules
+        """Everything that changes or reads data when it runs."""
+        return self.tasks + self.rules + self.events
+
+    def looks(self):
+        """Sentences that are not run as commands: what is drawn, when the game is over, what is there at first."""
+        return self.draws + self.ends + self.seeds
+
+    def timers(self):
+        return [t for t in self.events if t.on[0] == 'every']
+
+    def keys(self):
+        """The keys the program listens to, in the order first mentioned."""
+        out = []
+        for t in self.events:
+            if t.on[0] == 'key' and t.on[1] not in out:
+                out.append(t.on[1])
+        return out
 
     def real(self):
         """The collections the programmer declared (not the hidden one that holds single values)."""
@@ -198,7 +225,7 @@ def walk_expr(e):
 
 def task_exprs(t):
     """Every value a task computes or compares, at any depth."""
-    tops = [e for _, e in t.assigns] + ([t.expr] if t.expr else [])
+    tops = [e for _, e in t.assigns] + ([t.expr] if t.expr else []) + list(t.at or ())
     return [e for top in tops for e in walk_expr(top)] + list(walk_cond_exprs(t.where))
 
 
@@ -233,7 +260,36 @@ def cond_cmps(c):
 
 def usage(prog):
     """One line per capability: its command name and the arguments it expects."""
-    return [t.name + (' ' + ','.join(f'<{p}>' for p in t.params) if t.params else '') for t in prog.tasks]
+    return [t.name + (' ' + ','.join(f'<{p}>' for p in t.params) if t.params else '') for t in prog.tasks] + \
+        [u for name, u in builtins(prog)]
+
+
+def builtins(prog):
+    """Commands the program answers without anyone having named them: time, keys, the board."""
+    taken = {t.name for t in prog.tasks}
+    out = []
+    if prog.timers():
+        out.append(('wait', 'wait <milliseconds>'))
+    if prog.keys():
+        out.append(('press', 'press <' + '|'.join(prog.keys()) + '>'))
+    if prog.board:
+        out.append(('screen', 'screen'))
+    return [(n, u) for n, u in out if n not in taken]
+
+
+def fmt_event(t):
+    if t.on[0] == 'every':
+        return f'every {t.on[1]} ms: {canon(t)}'
+    return f'when {t.on[1]} is pressed: {canon(t)}'
+
+
+KEYS = ['left', 'right', 'up', 'down', 'space', 'enter'] + list('abcdefghijklmnopqrstuvwxyz0123456789')
+KEY_CODES = {'left': 256 + 68, 'right': 256 + 67, 'up': 256 + 65, 'down': 256 + 66, 'space': 32, 'enter': 10}
+KEY_CODES.update({k: ord(k) for k in KEYS if len(k) == 1})      # an arrow is ESC [ A..D; the rest are themselves
+LONGEST_WAIT = 3600000          # one hour, in milliseconds
+OVER = 'the game is over'
+LONGEST_STEP = 250              # while playing, time never jumps further than this at once
+BAD_WAIT = f'error: wait takes a number of milliseconds, from 0 to {LONGEST_WAIT}'
 
 
 MUTATING = ('add', 'remove_key', 'remove_where', 'update')
