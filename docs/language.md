@@ -22,6 +22,7 @@ Any of these also works: `Members is a collection.` followed by `Each member has
 |---|---|
 | `a name`, `an email` | one value; text or number is worked out from the name and from how it is used |
 | `an age (number)`, `a code (text)` | one value of that type |
+| `a price (money)`, `a rate (decimal)`, `a decimal price` | a decimal number, kept exactly to the hundredth |
 | `points`, `units`, `cents` | one number (plural count words) |
 | `badges`, `several badges`, `a list of badges` | several values per member |
 | `a member` (when Members is a collection) | this record belongs to a member |
@@ -153,6 +154,35 @@ Status: show the score, the best and the lives.
 Rivals: show the names of players whose points are over the best.
 ```
 Single values are remembered between runs exactly like records.
+
+## Decimal numbers and money
+
+```
+Each product has a code (text), a price (money) and a stock (number).
+The till starts at 0.00.
+The rate is a decimal starting at 1.08.
+
+sale: decrease the price by a given discount for products whose stock is over 3.
+markup: multiply the price by the rate for every product.
+share: take a decimal bill and a number n and return bill divided by n if n is not 0, otherwise 0.
+```
+
+A decimal number has at most two digits after the point (`12.5`, `12.50`, `-0.05`) and is
+kept **exactly**, as a whole number of hundredths, so `0.1 + 0.2` is `0.30` and never
+`0.30000000000000004`. It is printed with two places: `12.50`.
+
+- **Which numbers are decimal follows from use.** `a given discount` taken off a price is a
+  decimal; `a given quantity` taken off a stock is a whole number. A single value that starts
+  at `0.00`, or meets a decimal, is one.
+- **Mixing is exact.** A whole number and a decimal can be added, compared and multiplied
+  freely; `3` next to a price means `3.00`.
+- **Multiplying and dividing round to the nearest hundredth, halves away from zero**:
+  `0.05 / 2` is `0.03`, `-0.05 / 2` is `-0.03`, `9.99 * 1.08` is `10.79`. There is no
+  remainder of a decimal.
+- **A whole number stays whole.** `increase the stock by 0.5` is refused, with the line that
+  declared the stock, instead of quietly dropping the half.
+- Typed in as a command (`add a1,apple,12.50,10`), `1.234` and `.5` are refused:
+  `price must be a number like 12.50`.
 
 ## Standing rules
 
@@ -376,7 +406,7 @@ the game is over, Enter sends `restart`. Everyone who opens the page sees the sa
 
 ## Not yet
 
-Decimals, dates and yes/no values; text in calculations; a random number between two values
+Dates and yes/no values; more than two decimal places; text in calculations; a random number between two values
 that are not written as numbers; a game that speeds up; sound and pictures; calling other servers;
 a record of the same collection "other than this one";
 properties defined by a calculation; summaries per owner or per group
