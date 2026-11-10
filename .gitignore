@@ -6,3 +6,5 @@ intent_language_research_conversation.txt
 .DS_Store
 _site/
 .vercel/
+.vercel
+.env*
