@@ -12,10 +12,10 @@ import copy
 import difflib
 from dataclasses import dataclass, replace
 
-from .ir import Collection, Diag, Field, Program, Task, binop, canon, negate
+from .ir import Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, negate
 from .lexicon import (CONVENTION, MAX_PHRASE, PHRASES, SYMS, TYPE_WORDS, UNSUPPORTED_TYPES, all_known_words,
                       singular)
-from .source import Source, Tok, split_sentences
+from .source import Source, Tok, split_sentences, tokenize
 
 ARTICLES = {'a', 'an', 'the', 'their', 'its', 'some', 'one'}
 LEADING_TYPES = {'numeric': 'int', 'integer': 'int', 'text': 'text', 'string': 'text', 'textual': 'text'}
@@ -87,6 +87,7 @@ class Parser:
         self.diags = []
         self.cur = []
         self.readings = []          # (line, sentence text, what it was understood as)
+        self.macros = {}            # words the program taught us: (w1, w2..) -> ('phrase'|'noun', tokens)
 
     # ------------------------------------------------------------------ diagnostics
     def p(self, level, where, msg, label='', hint=''):
@@ -119,6 +120,7 @@ class Parser:
         names = set(self.prog.collections)
         for f in self.prog.field_names():
             names.update(f.split('_'))
+        names.update(w for key in self.macros for w in key)
         words = set(all_known_words()) | names | {n + 's' for n in names}
         return {w for w in words if w.isalpha()}
 
@@ -134,10 +136,11 @@ class Parser:
         return [w for d, w in sorted(found) if d <= limit]
 
     def snapshot(self):
-        return copy.deepcopy(self.prog), list(self.diags), list(self.readings)
+        return copy.deepcopy(self.prog), list(self.diags), list(self.readings), dict(self.macros)
 
     def restore(self, snap):
         self.prog, self.diags, self.readings = copy.deepcopy(snap[0]), list(snap[1]), list(snap[2])
+        self.macros = dict(snap[3])
 
     def respell(self, toks, problem, depth=0):
         """Every way of correcting the unknown word(s) that makes the whole sentence readable.
@@ -237,6 +240,10 @@ class Parser:
             self.readings.append((toks[0].line, self.sent_text(toks), reading))
 
     def _sentence(self, toks):
+        taught = self.teach_phrase(toks)
+        if taught:
+            return taught
+        toks = self.cur = self.expand(toks)
         cts = self.normalize(toks)
         content = [c for c in cts if c.kind != 'FILLER']
         kinds = {c.kind for c in content}
@@ -244,6 +251,9 @@ class Parser:
         unk = [c for c in content if c.kind == 'UNK']
         if kinds & {'ISCOLL', 'COLLWORD'} and not colls and (unk or ('ISCOLL' in kinds and 'GEN' in kinds)):
             return self.decl_collection(content)
+        taught = self.teach_noun(toks, content)
+        if taught:
+            return taught
         if 'NOTWO' in kinds:
             return self.decl_unique(content)
         h = index_of(content, 'HAS')
@@ -256,6 +266,102 @@ class Parser:
         if 'DUP' in kinds and 'POLICY' in kinds:
             return self.decl_dup(content)
         return self.task(content)
+
+    # ------------------------------------------------------------------ definitions
+    # A program can teach the compiler words. Both forms are plain substitution, done before
+    # anything else looks at the sentence, so a taught word behaves exactly like its meaning.
+    #   "older than" means age over.                     -> a phrase
+    #   An adult is a customer whose age is at least 18. -> a kind of record
+    def expand(self, toks):
+        if not self.macros:
+            return toks
+        longest = max(len(k) for k in self.macros)
+        out, i, n = [], 0, len(toks)
+        while i < n:
+            for L in range(min(longest, n - i), 0, -1):
+                seg = toks[i:i + L]
+                if any(x.kind != 'word' for x in seg):
+                    continue
+                words = tuple(x.text for x in seg)
+                m = self.macros.get(words)
+                if m is None:
+                    m = self.macros.get(words[:-1] + (singular(words[-1]),))
+                    if m and m[0] != 'noun':
+                        m = None
+                if m:
+                    last = [x for x in seg if x.line == seg[0].line][-1]
+                    out += [replace(b, line=seg[0].line, start=seg[0].start, end=last.end) for b in m[1]]
+                    i += L
+                    break
+            else:
+                out.append(toks[i])
+                i += 1
+        return out
+
+    def taken(self, key, where):
+        name = ' '.join(key)
+        if key in PHRASES or key in self.macros or '_'.join(key) in self.prog.field_names() or \
+                (len(key) == 1 and key[0] in self.prog.collections):
+            raise self.p('error', where, f'"{name}" already has a meaning',
+                         'a word means one thing in one program', 'pick a different word')
+
+    def teach_phrase(self, toks):
+        m = next((i for i, t in enumerate(toks) if t.kind == 'word' and t.text == 'means'), None)
+        if not m:
+            return None
+        lhs, rhs = toks[:m], toks[m + 1:]
+        if len(lhs) == 1 and lhs[0].kind == 'str':
+            key = tuple(lhs[0].text.lower().split())
+        else:
+            while len(lhs) > 1 and lhs[0].text in ARTICLES:
+                lhs = lhs[1:]
+            if any(t.kind != 'word' for t in lhs):
+                raise self.p('error', lhs, 'I can\'t read this as a word or phrase to learn',
+                             hint='put it in quotes: "older than" means age over.')
+            key = tuple(t.text for t in lhs)
+        if not key or len(key) > 5:
+            raise self.p('error', lhs, 'a new phrase is one to five words')
+        self.taken(key, lhs)
+        if len(rhs) == 1 and rhs[0].kind == 'str':
+            q = rhs[0]
+            rhs = [replace(t, start=t.start + q.start + 1, end=t.end + q.start + 1)
+                   for t in tokenize(q.text, q.line)]
+        if not rhs:
+            raise self.p('error', toks, f'"{" ".join(key)}" means what?')
+        rhs = self.expand(rhs)
+        for c in self.normalize(rhs):
+            if c.kind == 'UNK':
+                raise self.unknown_word(c)
+        self.macros[key] = ('phrase', rhs)
+        return f'"{" ".join(key)}" means: {" ".join(t.raw for t in rhs)}'
+
+    def teach_noun(self, toks, content):
+        k = 0
+        while k < len(content) and content[k].kind == 'UNK':
+            k += 1
+        if not 1 <= k <= 3 or k + 1 >= len(content) or content[k].kind != 'IS' or \
+                content[k + 1].kind not in ('COLL', 'GEN') or any(c.kind == 'UNK' for c in content[k:]):
+            return None
+        words = [c.toks[0].text for c in content[:k]]
+        key = tuple(words[:-1] + [singular(words[-1])])
+        self.taken(key, content[:k])
+        start = content[k + 1].toks[0]
+        body = toks[next(i for i, t in enumerate(toks) if t is start):]
+        rest = content[k + 1:]
+        coll = self.scope(rest)
+        what = coll.name
+        if any(c.kind not in ('COLL', 'GEN', 'QUANT') for c in rest):
+            before = len(self.prog.tasks)
+            self.task(rest)
+            t = self.prog.tasks.pop()
+            assert len(self.prog.tasks) == before
+            if t.kind != 'list' or t.order or t.fields or t.params:
+                raise self.p('error', body, 'a definition can only narrow a collection with a fixed condition',
+                             hint='e.g. "An adult is a customer whose age is at least 18."')
+            if t.where:
+                what += ' where ' + fmt_cond(t.where)
+        self.macros[key] = ('noun', body)
+        return f'"{" ".join(key)}" means: {what}'
 
     # ------------------------------------------------------------------ normalisation
     def normalize(self, toks):
@@ -535,8 +641,17 @@ class Parser:
 
     # ------------------------------------------------------------------ conditions
     def parse_cond(self, toks, coll):
+        joined = []
+        for c in toks:              # "... whose age is over 18 whose salary is under 100": a second clause adds
+            if c.kind == 'WHERE' and joined:
+                if joined[-1].kind not in ('AND', 'OR', 'COMMA'):
+                    joined.append(CT('AND', None, c.toks))
+                continue
+            if c.kind == 'FIELD' and joined and joined[-1].kind in ('NUM', 'STR', 'PARAM', 'GIVENBARE'):
+                joined.append(CT('AND', None, c.toks))      # "... at least 18 age over 64"
+            joined.append(c)
         parts, ops, cur = [], [], []
-        for c in toks:
+        for c in joined:
             if c.kind in ('AND', 'OR'):
                 parts.append(cur)
                 ops.append(c)
