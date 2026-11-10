@@ -7,7 +7,7 @@
 
 <p align="center">
   <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-f59e0b">
-  <img alt="version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-6366f1">
+  <img alt="version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-6366f1">
   <a href="https://github.com/srivtx/intent/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/srivtx/intent/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
   <img alt="backend: LLVM IR" src="https://img.shields.io/badge/backend-LLVM%20IR-262d3a">
@@ -207,6 +207,28 @@ The planner indexes the owner's key because of the link, and `explain` says so.
 Not yet: asking about owners through what they own (`customers with more than 3 orders`) —
 that is refused with an explanation, not misread.
 
+## Values, decisions and rules
+
+Three things every language needs, said the same way as everything else.
+
+```
+The score is a number.
+The best starts at 0.
+
+Hit: increase the score by a given amount.
+Bigger: take a and b and return a if a is over b, otherwise b.
+Share: take a and b and return a divided by b if b is not 0, otherwise 0.
+
+When the score is over the best, the best becomes the score.
+The level is always 3 if the score is at least 50, otherwise 1.
+```
+
+- **Single values** (`the score`) sit beside collections and are remembered the same way.
+- **A value can depend on a condition.** Half a decision is a question (*and what if not?*).
+  Division by something that might be zero is a question too; the answer is the `otherwise`.
+- **Standing rules** are never called. After every change they are applied until nothing
+  moves, natively. A rule that could never come to rest is refused at compile time.
+
 ## Small programs written in it
 
 | file | what it is |
@@ -215,6 +237,8 @@ that is refused with an explanation, not misread.
 | [examples/todo.intent](examples/todo.intent) | to-do list: open / finished / urgent tasks, what to do next |
 | [examples/shop.intent](examples/shop.intent) | shop stock: sell, restock, sale, what is running low |
 | [examples/store.intent](examples/store.intent) | customers, their orders and order lines, with cascading removal |
+| [examples/calculator.intent](examples/calculator.intent) | a calculator: nothing stored, values that depend on conditions |
+| [examples/arcade.intent](examples/arcade.intent) | the scorekeeping of a game: single values, players, standing rules |
 | [examples/tour.intent](examples/tour.intent) | every kind of sentence in the [language guide](docs/language.md) |
 
 ```bash
@@ -287,9 +311,12 @@ with what you meant; that is what `check` is for — read the right-hand column.
 - Text may not contain commas (the command format is comma-separated).
 - Conditions are a flat list of `and` or of `or`; no grouping.
 - No constraints other than uniqueness; a unique property cannot be changed in bulk.
-- Division only by a fixed non-zero number.
+- **No time, screen, keys or network.** A program only reacts to command lines on standard
+  input. So there is no game loop, no drawing, and no server over a network yet.
+- Calculations work on whole numbers only (no text, no decimals), and cannot read a collection.
+- Rules are re-applied in full after every change: each rule costs one pass over its collection.
 - No summaries of a calculation (`total of price times stock`), no grouping
-  (`average salary per city`), no "if ... otherwise ..." values, no repeating until done.
+  (`average salary per city`), no loops written by the programmer.
 - A change applies to the records a condition selects; there is no "do this, then that"
   within one capability, and capabilities cannot call each other.
 - Remembering is a growing command log, never compacted. Nothing else touches files or the network.
@@ -327,25 +354,28 @@ Its `build-04` test now fails on purpose: it asserts the old buggy behaviour.
 
 ## Where it can go next
 
-Done so far: definitions, spelling tolerance, rankings, remembering, text tests, relationships.
+Done so far: definitions, spelling tolerance, rankings, remembering, text tests, relationships,
+single values, values that depend on a condition, standing rules.
 The stress experiments show the same thing from eight directions: people fall back to
 arithmetic tricks when the language cannot *say* something. So, in order:
 
-1. **Say what a value depends on.** `The status is "late" if the due date has passed, otherwise
-   "ok".` and `A line's cost is its price times its quantity.` (derived properties, so nothing
-   has to be stored and kept in step by hand).
+1. **Faces.** The program stays the same and one sentence says how it meets the world:
+   `Serve this on the web.` turns every capability into an endpoint.
+   Then **time and a screen**: `Every tick, the snake moves one cell.` `Draw each cell of the
+   snake.` With values and rules in place, that is what a game still needs.
 2. **Summaries per owner and per group.** `customers with more than 3 orders`,
    `the total of the lines of each order`, `the average salary for each city`.
 3. **Rules on data.** `Stock is never under 0.` checked on every add and change, with the
    refusal reported, so a guarded change no longer fails silently.
 4. **Capabilities made of steps.** `To check out: decrease the stock, then add an order.` and
    `repeat until nothing changes`.
-5. **More kinds of value.** Decimals and money, dates, yes/no, "may be missing"; division by a
-   value that might be zero, by asking what should happen then.
+5. **More kinds of value.** Decimals and money, dates, yes/no, "may be missing"; properties
+   defined by a calculation (`A line's cost is its price times its quantity.`).
 6. **Better structures.** An index on linking properties, an ordered index for ranges and
    top-N, tombstones so ordered removal stops being O(n).
-7. **Other front doors.** The same capabilities over HTTP; drawing; a model that turns loose
-   speech into Intent text, with `check` showing the reading before anything is compiled.
+7. **Rules that only look where something changed**, instead of a full pass each time.
+8. **A model that turns loose speech into Intent text**, with `check` showing the reading
+   before anything is compiled.
 
 ## Layout
 
@@ -361,5 +391,5 @@ intentc/interp.py       reference interpreter (the meaning)
 intentc/llvm.py         Intent IR + plan -> LLVM IR
 tests/                  phrasings, questions, planner, spelling, definitions, apps, native-vs-reference
 bench/bench.py          the table above
-examples/               customers, questions, leaderboard, todo, shop, store
+examples/               customers, questions, leaderboard, todo, shop, store, calculator, arcade
 ```
