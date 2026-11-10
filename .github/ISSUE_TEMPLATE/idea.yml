@@ -1,0 +1,17 @@
+name: Something it cannot say yet
+description: A thing you wanted to express that the language has no sentence for.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: wanted
+    attributes:
+      label: What you wanted to say
+      description: Write it the way you would naturally say it, as one or more sentences.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you had to write instead (if anything)
+      render: text
