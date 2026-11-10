@@ -1,0 +1,42 @@
+error: I expected a value here, not "%"
+  --> gemini-build/build-02-collatz-and-physics-alu/attempt_failed.intent:11
+   |
+11 | even-stones: show the stones whose val % 2 is 0.
+   |                                        ^
+
+error: I don't know the word "modulo"
+  --> gemini-build/build-02-collatz-and-physics-alu/attempt_failed.intent:14
+   |
+14 | odd-stones: show the stones whose val modulo 2 is 1.
+   |                                       ^^^^^^ not a concept I know, and not a name this program declared
+   = I never drop a word I don't understand, because it might change the meaning.
+
+note: whole-number division drops the remainder (7 / 2 is 3)
+  --> gemini-build/build-02-collatz-and-physics-alu/attempt_failed.intent:17
+   |
+17 | newton-sqrt: for every stone, set val to (val + 10000 / val) / 2.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: dividing by something that could be zero is not supported yet
+  --> gemini-build/build-02-collatz-and-physics-alu/attempt_failed.intent:17
+   |
+17 | newton-sqrt: for every stone, set val to (val + 10000 / val) / 2.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ I would have to invent what happens at zero
+   = divide by a fixed non-zero number
+
+error: I don't know the word "while"
+  --> gemini-build/build-02-collatz-and-physics-alu/attempt_failed.intent:20
+   |
+20 | solve-collatz: while val is over 1, halve val.
+   |                ^^^^^ not a concept I know, and not a name this program declared
+   = did you mean "whole"? I never drop a word I don't understand, because it might change the meaning.
+
+not compiled: 4 things I could not read
+How I read this program:
+
+   5  Stones is a collection                                        ->  collection stone
+   6  Each stone has an id (number), a val (number) and steps (number)  ->  stone has id: int, val: int, step: int
+   7  No two stones share the same id                               ->  stone: id unique
+   8  Reject duplicates                                             ->  stone: on duplicate, reject
+  17  newton-sqrt: for every stone, set val to (val + 10000 / val) / 2  ->  update stone: val = (val + (10000 / val)) / 2
+

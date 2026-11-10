@@ -1,0 +1,20 @@
+# =============================================================================
+# BUILD 02 (FAILED ATTEMPT): First-Instinct Collatz, Modulo & Newton Solver
+# =============================================================================
+
+Stones is a collection.
+Each stone has an id (number), a val (number) and steps (number).
+No two stones share the same id.
+Reject duplicates.
+
+# FAILURE 1: '%' is in the lexicon, but mapped to PCT ("percent"), NOT modulo!
+even-stones: show the stones whose val % 2 is 0.
+
+# FAILURE 2: "modulo" / "remainder" are not in the lexicon
+odd-stones: show the stones whose val modulo 2 is 1.
+
+# FAILURE 3: Newton-Raphson square root step divides by a variable field (val)
+newton-sqrt: for every stone, set val to (val + 10000 / val) / 2.
+
+# FAILURE 4: No while/until loop construct to iterate a single command until convergence
+solve-collatz: while val is over 1, halve val.
