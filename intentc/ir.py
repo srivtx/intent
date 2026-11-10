@@ -76,10 +76,12 @@ class Task:
     ptypes: dict = _f(default_factory=dict)
     on: tuple = None                                # happens by itself: ('every', milliseconds) | ('key', name)
     at: tuple = None                                # draw: (x, y), counted from 1 at the top left
-    glyph: str = None                               # draw: the one character shown there
-    colour: str = None                              # draw: the name of its colour, or None
+    glyph: object = None                            # draw: the one character shown there, or ('field' | 'value', name):
+                                                    #   the first character of that text, if it is a plain one
+    colour: object = None                           # draw: the name of its colour, None, or ('field' | 'value', name)
     dec: bool = False                               # calc: the result is a decimal number
     pdec: set = _f(default_factory=set)          # the parameters that are decimal numbers
+    ranges: list = _f(default_factory=list)      # seed: [(property, lowest, highest)], a record for each combination
 
 
 STATE = '(values)'              # the hidden one-record collection that holds the program's single values
@@ -322,7 +324,8 @@ def walk_expr(e):
 
 def task_exprs(t):
     """Every value a task computes or compares, at any depth."""
-    tops = [e for _, e in t.assigns] + ([t.expr] if t.expr else []) + list(t.at or ())
+    tops = [e for _, e in t.assigns] + ([t.expr] if t.expr else []) + list(t.at or ()) + \
+        [x for x in (t.glyph, t.colour) if isinstance(x, tuple)]
     return [e for top in tops for e in walk_expr(top)] + list(walk_cond_exprs(t.where))
 
 
