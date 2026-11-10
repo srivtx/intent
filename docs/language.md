@@ -172,6 +172,53 @@ The compiler refuses a rule that could never come to rest (`When the lives are u
 increase the lives by 1.`) and a rule that waits for `a given` value. Two rules that undo each
 other are caught when the program runs: `error: the rules keep changing each other`.
 
+## Time, keys and a board
+
+Three more kinds of sentence make a program that runs by itself and can be played.
+
+**Time.** Something that happens again and again, without anyone calling it:
+```
+Every 150 milliseconds, the y of each rock increases by 1.
+Every second, the score goes up by 1.
+The score increases by 2 every second.
+4 times a second, remove the rocks whose y is over 12.
+```
+Things due at the same moment happen in the order written; then the standing rules settle.
+
+**Keys.** `left`, `right`, `up`, `down`, `space`, `enter`, and any letter or digit:
+```
+When the left key is pressed, the column decreases by 1 if the column is over 1.
+When the player presses space, the score doubles.
+```
+
+**The board**, and what is on it. Places count from 1 at the top left; whatever is off the
+board is not drawn; later sentences draw over earlier ones.
+```
+The board is 30 wide and 12 high.
+Draw each rock at its x and y as "#".
+Draw "@" at the column and the row.
+Show the score above the board.
+```
+
+**What is there at the start, and when it ends:**
+```
+Start with a rock at x 4, y 1.
+The game is over when any rock has an x equal to the column and a y equal to the row.
+The game ends when the lives are under 1.
+```
+While the game is over, time and keys do nothing.
+
+Run the compiled program in a terminal and it is played: the real clock and the real keyboard
+drive it, and `q`, `Esc` or `Ctrl-C` stops. Over a pipe it takes commands instead, and time,
+keys and the board are three more commands, so a game can be scripted and tested exactly:
+```
+wait 450          let 450 milliseconds pass
+press left        as if the left key was pressed
+screen            print the board
+```
+None of the words used here is reserved: `the high score` and `each ticket has a key` are
+still ordinary names.
+
 ## What happens when it does not understand
 
 - **An unknown word stops compilation** and is pointed at. Nothing is skipped.
@@ -201,7 +248,8 @@ Answers: records print as comma-separated values; `none` when nothing matches a 
 
 ## Not yet
 
-Decimals, dates and yes/no values; text in calculations; time ("every second"), a screen,
-keys or a network; properties defined by a calculation; summaries per owner or per group
+Decimals, dates and yes/no values; text in calculations; chance (`a random number`); things
+that appear while a game runs (`every second, add a rock`); colours and windows; a network;
+properties defined by a calculation; summaries per owner or per group
 (`members with more than 3 visits`); capabilities made of several steps; mixing `and` with
 `or`; commas inside text. See the [README](../README.md#what-this-version-cannot-do).
