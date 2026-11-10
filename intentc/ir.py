@@ -76,9 +76,13 @@ class Diag:
     hint: str = ''
 
 
-OPSYM = {'mul': '*', 'add': '+', 'sub': '-', 'div': '/'}
-CMPSYM = {'gt': '>', 'ge': '>=', 'lt': '<', 'le': '<=', 'eq': '==', 'ne': '!='}
-NEGATE = {'gt': 'le', 'ge': 'lt', 'lt': 'ge', 'le': 'gt', 'eq': 'ne', 'ne': 'eq'}
+OPSYM = {'mul': '*', 'add': '+', 'sub': '-', 'div': '/', 'rem': 'mod'}
+CMPSYM = {'gt': '>', 'ge': '>=', 'lt': '<', 'le': '<=', 'eq': '==', 'ne': '!=',
+          'has': 'contains', 'nhas': 'does not contain', 'starts': 'starts with',
+          'nstarts': 'does not start with', 'ends': 'ends with', 'nends': 'does not end with'}
+TEXT_OPS = ('has', 'nhas', 'starts', 'nstarts', 'ends', 'nends')
+NEGATE = {'gt': 'le', 'ge': 'lt', 'lt': 'ge', 'le': 'gt', 'eq': 'ne', 'ne': 'eq',
+          'has': 'nhas', 'nhas': 'has', 'starts': 'nstarts', 'nstarts': 'starts', 'ends': 'nends', 'nends': 'ends'}
 
 
 def binop(op, a, b):

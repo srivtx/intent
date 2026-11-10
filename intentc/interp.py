@@ -31,7 +31,10 @@ def parse_num(s):
 
 
 CMP = {'gt': lambda a, b: a > b, 'ge': lambda a, b: a >= b, 'lt': lambda a, b: a < b,
-       'le': lambda a, b: a <= b, 'eq': lambda a, b: a == b, 'ne': lambda a, b: a != b}
+       'le': lambda a, b: a <= b, 'eq': lambda a, b: a == b, 'ne': lambda a, b: a != b,
+       'has': lambda a, b: b in a, 'nhas': lambda a, b: b not in a,
+       'starts': lambda a, b: a.startswith(b), 'nstarts': lambda a, b: not a.startswith(b),
+       'ends': lambda a, b: a.endswith(b), 'nends': lambda a, b: not a.endswith(b)}
 
 
 def ev(e, row, args):
@@ -49,6 +52,8 @@ def ev(e, row, args):
         return wrap(a + b)
     if e[1] == 'sub':
         return wrap(a - b)
+    if e[1] == 'rem':
+        return wrap(a - tdiv(a, b) * b)        # same sign as a, like C
     return tdiv(a, b)
 
 
@@ -83,7 +88,7 @@ class Machine:
             return usage(self.prog)
         if t is None:
             return [f'error: unknown command {cmd}']
-        toks = arg.split(',')
+        toks = arg.split(',') if arg else []
         args = {}
         for i, p in enumerate(t.params):
             if i >= len(toks):

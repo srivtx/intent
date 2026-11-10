@@ -6,7 +6,7 @@ Four tiers, in this order, and each is reported differently:
   assumed   - a naming convention (email -> text); reported as a note, overridable
   asked     - nothing decides it; compilation stops with a question
 """
-from .ir import Diag, cond_cmps, walk_cond_exprs, walk_expr
+from .ir import TEXT_OPS, Diag, cond_cmps, walk_cond_exprs, walk_expr
 from .lexicon import CONVENTION
 
 TYPE_NAME = {'int': 'a number', 'text': 'text'}
@@ -86,6 +86,9 @@ class Checker:
         for c in cond_cmps(t.where):
             if c[1] in ('eq', 'ne'):
                 ch |= self.equal(c[2], c[3], coll, t)
+            elif c[1] in TEXT_OPS:
+                ch |= self.need(c[2], 'text', coll, t)
+                ch |= self.need(c[3], 'text', coll, t)
             else:
                 if 'text' in (self.ty(c[2], coll, t), self.ty(c[3], coll, t)):
                     self.d('error', t.line, 'text can only be compared with "is" / "is not" in this version')
@@ -144,12 +147,12 @@ class Checker:
             exprs = [e for _, e in t.assigns] + list(walk_cond_exprs(t.where)) + ([t.expr] if t.expr else [])
             for top in exprs:
                 for e in walk_expr(top):
-                    if e[0] == 'bin' and e[1] == 'div':
+                    if e[0] == 'bin' and e[1] in ('div', 'rem'):
                         if e[3][0] != 'num' or e[3][1] == 0:
                             self.d('error', t.line, 'dividing by something that could be zero is not supported yet',
                                    'I would have to invent what happens at zero',
                                    'divide by a fixed non-zero number')
-                        else:
+                        elif e[1] == 'div':
                             self.d('note', t.line, 'whole-number division drops the remainder (7 / 2 is 3)')
             if t.kind == 'update':
                 for f, _ in t.assigns:
