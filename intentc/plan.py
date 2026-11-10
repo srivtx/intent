@@ -89,7 +89,10 @@ def make_plan(prog, no_index=False):
                 plan.tasks[t.name] = ('O(n)', 'one pass, changed in place')
             elif t.kind == 'list':
                 if t.order:
-                    plan.tasks[t.name] = ('O(n log n)', 'collect matching row numbers, sort them, print')
+                    plan.tasks[t.name] = ('O(n log n)', 'collect matching row numbers, sort them, print' +
+                                          (f' the first {t.limit}' if t.limit is not None else ''))
+                elif t.limit is not None:
+                    plan.tasks[t.name] = ('O(n)', f'one pass, printing only the first {t.limit} that match')
                 else:
                     plan.tasks[t.name] = ('O(n)', 'one pass; filter and output fused, nothing copied')
             elif t.kind == 'agg':

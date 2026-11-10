@@ -47,6 +47,7 @@ class Task:
     where: tuple = None
     fields: list = None                             # list: projected properties, None = whole record
     order: tuple = None                             # list: (field, descending)
+    limit: int = None                               # list: at most this many records
     fn: str = None                                  # agg
     field: str = None                               # agg
     key: str = None                                 # find / remove_key
@@ -132,7 +133,8 @@ def canon(t):
     if t.kind == 'list':
         what = ', '.join(t.fields) if t.fields else 'all'
         o = f' sorted by {t.order[0]} {"descending" if t.order[1] else "ascending"}' if t.order else ''
-        return f'list {what} of {t.coll}{w}{o}'
+        lim = f', first {t.limit}' if t.limit is not None else ''
+        return f'list {what} of {t.coll}{w}{o}{lim}'
     if t.kind == 'agg':
         return f'{t.fn}({t.field or ""}) of {t.coll}{w}'
     if t.kind == 'calc':
@@ -166,3 +168,11 @@ def cond_cmps(c):
     else:
         yield from cond_cmps(c[1])
         yield from cond_cmps(c[2])
+
+
+def usage(prog):
+    """One line per capability: its command name and the arguments it expects."""
+    return [t.name + (' ' + ','.join(f'<{p}>' for p in t.params) if t.params else '') for t in prog.tasks]
+
+
+MUTATING = ('add', 'remove_key', 'remove_where', 'update')

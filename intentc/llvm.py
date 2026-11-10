@@ -541,9 +541,15 @@ class Gen:
         elif k == 'list':
             names = t.fields or list(c.fields)
             if not t.order:
+                shown = f.var('i64', '0') if t.limit is not None else None
+
                 def body(i, cont):
                     rec = self.rec(f, c, i)
                     self.guard(f, self.cond(f, t.where, c, rec, vals), cont)
+                    if shown:
+                        sv = f.load('i64', shown)
+                        self.guard(f, f.r(f'icmp slt i64 {sv}, {t.limit}'), cont)
+                        f.store('i64', f.r(f'add i64 {sv}, 1'), shown)
                     self.print_fields(f, c, rec, names)
                 self.rows(f, c, body)
             else:
@@ -560,6 +566,8 @@ class Gen:
                 self.rows(f, c, collect)
                 m = f.load('i64', cnt)
                 f.e(f'call void @qsort(ptr {idx}, i64 {m}, i64 8, ptr {g("task", t.name, "cmp")})')
+                if t.limit is not None:
+                    m = f.r(f'select i1 {f.r(f"icmp slt i64 {m}, {t.limit}")}, i64 {m}, i64 {t.limit}')
 
                 def emit(j, cont):
                     row = f.load('i64', f.r(f'getelementptr i64, ptr {idx}, i64 {j}'))

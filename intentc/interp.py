@@ -8,6 +8,8 @@ Numbers are 64-bit and wrap on overflow. Division truncates toward zero.
 import functools
 import re
 
+from .ir import usage
+
 M = 1 << 64
 NUM_RE = re.compile(r'[ \t\n\v\f\r]*[+-]?[0-9]+')
 
@@ -77,6 +79,8 @@ class Machine:
             return []
         cmd, _, arg = line.partition(' ')
         t = self.tasks.get(cmd)
+        if t is None and cmd == 'help':
+            return usage(self.prog)
         if t is None:
             return [f'error: unknown command {cmd}']
         toks = arg.split(',')
@@ -144,6 +148,8 @@ class Machine:
                     return (-1 if kx < ky else 1) * (-1 if desc else 1)
                 return -1 if x[0] < y[0] else 1
             rows.sort(key=functools.cmp_to_key(cmp))
+        if t.limit is not None:
+            rows = rows[:t.limit]
         return [self.show(r, t.fields) for _, r in rows]
 
     def do_agg(self, t, a):
