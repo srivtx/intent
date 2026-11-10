@@ -1,0 +1,25 @@
+# A to-do list you can keep on disk:
+#   ./intent build examples/todo.intent -o build/todo
+#   ./build/todo my.todo
+
+Tasks is a collection.
+Each task has an id (number), a title, a priority (number) and a done (number).
+Ids are unique. Reject duplicates.
+Keep tasks in the order they were added.
+
+An open task is a task whose done is 0.
+A finished task is a task whose done is 1.
+"urgent" means with a priority of at least 3.
+
+Add a task.
+finish: set done to 1 for the task whose id is a given id.
+reopen: set done to 0 for the task whose id is a given id.
+bump: increase the priority by 1 for tasks whose id is a given id.
+drop: remove a task by id.
+
+todo: show the open tasks.
+next: show the title of the open task with the highest priority.
+urgent: show the titles of the urgent open tasks.
+done: show the titles of the finished tasks.
+How many open tasks are there?
+tidy: remove the finished tasks.
