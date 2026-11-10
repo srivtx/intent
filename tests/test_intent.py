@@ -569,6 +569,9 @@ class TestApps(TestNativeAgainstReference):
     def test_shop(self):
         self.app('shop')
 
+    def test_tour_of_the_language(self):
+        self.app('tour')
+
     def test_help_lists_capabilities(self):
         src, exe = os.path.join(self.dir, 'h.intent'), os.path.join(self.dir, 'h')
         with open(src, 'w') as fh:
