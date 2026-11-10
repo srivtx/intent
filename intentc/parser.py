@@ -243,7 +243,7 @@ class Parser:
         taught = self.teach_phrase(toks)
         if taught:
             return taught
-        toks = self.cur = self.expand(toks)
+        toks = self.cur = self.expand_sentence(toks)
         cts = self.normalize(toks)
         content = [c for c in cts if c.kind != 'FILLER']
         kinds = {c.kind for c in content}
@@ -299,6 +299,25 @@ class Parser:
                 i += 1
         return out
 
+    def expand_sentence(self, toks):
+        """Expand taught words, except in a label that names a capability.
+
+        "urgent: show ..." names a capability "urgent". "Adults: double the salary." is about
+        adults, because nothing after the colon says which records it is about.
+        """
+        ci = next((i for i, t in enumerate(toks) if t.kind == 'sym' and t.text == ':'), None)
+        if not self.macros or not ci:
+            return self.expand(toks)
+        pre, post = toks[:ci], self.expand(toks[ci + 1:])
+        words = tuple(t.text for t in pre)
+        m = self.macros.get(words) or self.macros.get(words[:-1] + (singular(words[-1]),))
+        if any(t.kind != 'word' for t in pre) or m is None:
+            return self.expand(pre) + [toks[ci]] + post
+        about = any(t.kind == 'word' and singular(t.text) in self.prog.collections for t in post)
+        if m[0] == 'phrase' or about:
+            return pre + [toks[ci]] + post
+        return self.expand(pre) + [toks[ci]] + post
+
     def taken(self, key, where):
         name = ' '.join(key)
         if key in PHRASES or key in self.macros or '_'.join(key) in self.prog.field_names() or \
@@ -340,12 +359,18 @@ class Parser:
         k = 0
         while k < len(content) and content[k].kind == 'UNK':
             k += 1
-        if not 1 <= k <= 3 or k + 1 >= len(content) or content[k].kind != 'IS' or \
-                content[k + 1].kind not in ('COLL', 'GEN') or any(c.kind == 'UNK' for c in content[k:]):
-            return None
         words = [c.toks[0].text for c in content[:k]]
+        named = content[:k]
+        if 1 <= k < len(content) and content[k].kind == 'COLL':       # "An open task is a task whose ..."
+            words.append(content[k].val)
+            k += 1
+            named = content[:k]
+        if not 1 <= len(words) <= 4 or not content[0].kind == 'UNK' or k + 1 >= len(content) or \
+                content[k].kind != 'IS' or content[k + 1].kind not in ('COLL', 'GEN') or \
+                any(c.kind == 'UNK' for c in content[k:]):
+            return None
         key = tuple(words[:-1] + [singular(words[-1])])
-        self.taken(key, content[:k])
+        self.taken(key, named)
         start = content[k + 1].toks[0]
         body = toks[next(i for i, t in enumerate(toks) if t is start):]
         rest = content[k + 1:]
@@ -827,7 +852,9 @@ class Parser:
                              for c in pre):
                 content = [c for c in pre if c.kind in ('COLL', 'GEN')] + post
             else:
-                words = [t for t in flat(pre) if not (t.kind == 'sym' and t.text == '-')]
+                colon = content[ci].toks[0]
+                label = sent[:next(i for i, t in enumerate(sent) if t is colon)]
+                words = [t for t in label if not (t.kind == 'sym' and t.text == '-')]
                 if not words or len(words) > 6 or any(t.kind not in ('word', 'num') for t in words):
                     raise self.p('error', pre or content[ci], 'I can\'t read what comes before ":" as a name')
                 name = '-'.join(t.text for t in words)
@@ -872,7 +899,7 @@ class Parser:
                         raise self.p('question', [c, cond_t[i + 1]], 'ranked by this, or by the sort order?',
                                      'two orderings in one sentence')
                     order = (cond_t[i + 1].val, c.val == 'max')
-                    lo = i - 1 if i and cond_t[i - 1].kind in ('AND', 'COMMA') else i
+                    lo = i - 1 if i else i
                     cond_t = cond_t[:lo] + cond_t[i + 2:]
                     while cond_t and cond_t[0].kind in joiner:
                         cond_t = cond_t[1:]
