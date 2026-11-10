@@ -187,12 +187,14 @@ class Machine:
         grid = [[' '] * w for _ in range(h)]
         ink = [[0] * w for _ in range(h)]
         for d in self.prog.draws:
-            for r in (self.data[d.coll] if d.coll else [None]):
-                if holds(d.where, r, {}, self):
+            for _, r in (self.chosen(d, {}) if d.coll else [(0, None)]):
+                if d.coll or holds(d.where, r, {}, self):
                     x, y = ev(d.at[0], r, {}, self), ev(d.at[1], r, {}, self)
-                    if 1 <= x <= w and 1 <= y <= h:
-                        grid[y - 1][x - 1] = d.glyph
-                        ink[y - 1][x - 1] = COLOURS[d.colour] if d.colour else 0
+                    ch = d.glyph if isinstance(d.glyph, str) else draw_char(ev(d.glyph, r, {}, self))
+                    if 1 <= x <= w and 1 <= y <= h and ch:
+                        grid[y - 1][x - 1] = ch
+                        ink[y - 1][x - 1] = COLOURS[d.colour] if isinstance(d.colour, str) else \
+                            COLOURS.get(ev(d.colour, r, {}, self), 0) if d.colour else 0
         return grid, ink
 
     def picture(self):
@@ -409,6 +411,13 @@ class Machine:
         return []
 
     def do_list(self, t, a):
+        rows = self.chosen(t, a)
+        if t.limit is not None:
+            rows = rows[:t.limit]
+        return [self.show(r, t.fields, t.coll) for _, r in rows]
+
+    def chosen(self, t, a):
+        """The records a list or a drawing is about, in its order (by position when none is given)."""
         rows = [(i, r) for i, r in enumerate(self.data[t.coll]) if holds(t.where, r, a, self)]
         if t.order:
             f, desc = t.order
@@ -422,9 +431,7 @@ class Machine:
                     return (-1 if kx < ky else 1) * (-1 if desc else 1)
                 return -1 if x[0] < y[0] else 1
             rows.sort(key=functools.cmp_to_key(cmp))
-        if t.limit is not None:
-            rows = rows[:t.limit]
-        return [self.show(r, t.fields, t.coll) for _, r in rows]
+        return rows
 
     def do_agg(self, t, a):
         rows = [r for r in self.data[t.coll] if holds(t.where, r, a, self)]
