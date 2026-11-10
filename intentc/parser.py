@@ -13,8 +13,8 @@ import difflib
 import re
 from dataclasses import dataclass, replace
 
-from .ir import (KEYS, LONGEST_WAIT, STATE, Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, fmt_event,
-                 fmt_expr, negate, task_exprs, walk_expr)
+from .ir import (CHANCE_WIDEST, COLOURS, KEYS, LONGEST_WAIT, STATE, Collection, Diag, Field, Program, Task, binop,
+                 canon, fmt_cond, fmt_event, fmt_expr, negate, task_exprs, walk_cond_exprs, walk_expr)
 from .lexicon import (BOARD_WORDS, CONVENTION, COUNT_NOUNS, DRAW_WORDS, HIGH_WORDS, MAX_PHRASE, PHRASES, PRESS_VERBS,
                       PRESSED, SYMS, TYPE_WORDS, UNITS, UNSUPPORTED_TYPES, WIDE_WORDS, all_known_words, singular)
 from .source import Source, Tok, split_sentences, tokenize
@@ -33,6 +33,7 @@ BOARD_FILL = {'show', 'draw', 'make', 'the', 'a', 'an', 'is', 'are', 'has', 'hav
 OPENERS = [('at', 'the', 'start', 'there', 'is'), ('at', 'the', 'start', 'there', 'are'), ('to', 'begin', 'with'),
            ('at', 'first', 'there', 'is'), ('start', 'with'), ('begin', 'with'), ('starting', 'with'),
            ('there', 'is'), ('there', 'are'), ('at', 'the', 'start')]
+IF_WORDS = {'if', 'when', 'whenever', 'once', 'as', 'only', 'every', 'each', 'any', 'the'}   # first word of an "if"
 BESIDE = {'above': 'above', 'over': 'above', 'below': 'below', 'under': 'below', 'beneath': 'below'}
 
 
@@ -105,6 +106,7 @@ class Parser:
         self.state = Collection(STATE, 'single values')     # "The score is a number.": one record of values
         self.as_rule = False
         self.trigger = None         # set while reading a sentence that happens by itself, is drawn, or ends the game
+        self.other = None           # a condition about another collection, waiting to join the sentence's own
 
     # ------------------------------------------------------------------ diagnostics
     def p(self, level, where, msg, label='', hint=''):
@@ -490,6 +492,11 @@ class Parser:
             if t.kind == 'bad':
                 raise self.p('error', t, f'I can\'t read the character "{t.raw}"',
                              hint='put literal text in double quotes')
+            if t.text == 'random' and self.free('random') and i + 1 < n and toks[i + 1].kind == 'word' and \
+                    toks[i + 1].text in ('whole', 'number', 'integer', 'value', 'between', 'from'):
+                out.append(self.chance(toks, i))
+                i += len(out[-1].toks)
+                continue
             pl, pv = 0, None
             for L in range(min(MAX_PHRASE, n - i), 0, -1):
                 seg = toks[i:i + L]
@@ -530,6 +537,35 @@ class Parser:
                 out.append(CT('UNK', t.text, [t]))
                 i += 1
         return out
+
+    def chance(self, toks, i):
+        """"a random number between 1 and 30" / "a random number from 1 to 30": both ends can come up."""
+        n, j = len(toks), i + 1
+        while j < n and toks[j].kind == 'word' and toks[j].text in ('whole', 'number', 'integer', 'value'):
+            j += 1
+
+        def lit(k):
+            x = toks[k] if k < n else None
+            if x is None:
+                return None
+            if x.kind == 'num':
+                return int(x.text) if '.' not in x.text else None
+            got = PHRASES.get((x.text,)) if x.kind == 'word' else None
+            return got[0][1] if got and len(got) == 1 and got[0][0] == 'NUM' else None
+
+        def word(k, w):
+            return k < n and toks[k].kind == 'word' and toks[k].text == w
+        lo, hi = lit(j + 1), lit(j + 3)
+        shaped = (word(j, 'between') and word(j + 2, 'and')) or (word(j, 'from') and word(j + 2, 'to'))
+        if not shaped or lo is None or hi is None:
+            raise self.p('error', toks[i:j], 'a random number between what and what?',
+                         'chance needs a lowest and a highest whole number',
+                         'e.g. "a random number between 1 and 30"')
+        if lo > hi:
+            raise self.p('error', toks[j + 1:j + 4], 'the lower number has to come first')
+        if hi - lo >= CHANCE_WIDEST:
+            raise self.p('error', toks[j + 1:j + 4], 'that is too wide a range to draw from in this version')
+        return CT('RAND', (lo, hi), toks[i:j + 4])
 
     def short_names(self, cts):
         """"take a number a and a number b": here the second "a" is a name, not an article."""
@@ -692,8 +728,170 @@ class Parser:
         if not rest:
             raise self.p('error', self.cur, 'and then what happens?', 'this says when, but not what',
                          'e.g. "Every second, the score increases by 1."')
+        steps, cur, i = [], [], 0
+        while i < len(rest):            # "..., and then ...": several things, in this order
+            if i + 1 < len(rest) and [t.text for t in rest[i:i + 2]] == ['and', 'then'] and \
+                    all(t.kind == 'word' for t in rest[i:i + 2]):
+                steps.append(cur)
+                cur, i = [], i + 2
+            else:
+                cur.append(rest[i])
+                i += 1
+        steps.append(cur)
+
+        def bare(part):
+            while part and part[0].kind == 'sym' and part[0].text == ',':
+                part = part[1:]
+            while part and part[-1].kind == 'sym' and part[-1].text == ',':
+                part = part[:-1]
+            return part
+        steps = [bare(part) for part in steps]
+        if len(steps) > 1:
+            if not all(steps):
+                raise self.p('error', rest, 'and then what?', 'a step is missing next to "and then"')
+            w = [t.text if t.kind == 'word' else '' for t in steps[0]]
+            if any(tuple(w[:len(st)]) == st for st in STARTERS):
+                raise self.p('question', steps[0], 'does this condition go with every step, or only the first?',
+                             'a condition, then several steps',
+                             'say each step in its own sentence, with its own condition')
+        return '; '.join(self.step(part, on) for part in steps)
+
+    def step(self, toks, on):
         self.trigger = on
-        return self.task(self.content_of(rest))
+        content = self.content_of(toks)
+        return self.make_record(content, on) or self.task(content)
+
+    def quantified(self, toks):
+        """Does this start by speaking of some record of a collection? -> (how, collection, the rest)."""
+        if len(toks) > 1 and toks[1].kind == 'COLL':
+            if toks[0].kind == 'UNK' and toks[0].toks[0].text == 'no':
+                return 'none', toks[1].val, toks[2:]
+            if toks[0].kind == 'QUANT' and toks[0].toks[0].text == 'any':
+                return 'any', toks[1].val, toks[2:]
+        if toks and toks[0].kind == 'COLL':
+            return 'a', toks[0].val, toks[1:]
+        return None
+
+    def other_cond(self, how, name, clause):
+        """A condition about another collection: "any rock has an x equal to the column and ..."."""
+        coll = self.prog.collections[name]
+        inner = []
+        for c in clause:
+            if c.kind == 'UNK':
+                raise self.unknown_word(c)
+            if c.kind in ('QUANT', 'GEN') or (c.kind == 'COLL' and c.val == name):
+                continue
+            if c.kind == 'COLL':
+                raise self.p('error', c, 'a condition can look into one other collection in this version')
+            if c.kind == 'HAS':
+                c = CT('WHERE', None, c.toks)
+            if c.kind == 'FIELD' and c.val not in coll.fields:
+                raise self.p('error', c, f'{coll.label} has no property "{c.val}"', self.could_be(coll))
+            inner.append(c)
+        if not inner:
+            raise self.p('error', clause or self.cur, f'what about the {name}?', 'a condition is missing here',
+                         f'e.g. "if any {name} has ..."')
+        cond = self.parse_cond(self.between(self.resolve_pronouns(inner, coll)), coll)
+        for e in walk_cond_exprs(cond):
+            if e[0] in ('param', 'pfield', 'rand'):
+                raise self.p('error', clause, 'this is more than a condition about another collection can use yet',
+                             'it can compare its properties with numbers, text and single values')
+        return ('none' if how == 'none' else 'any', name, cond)
+
+    def split_other(self, content):
+        """Take "if any rock ..." out of a sentence that is itself about something else."""
+        for w, c in enumerate(content):
+            if c.kind != 'WHERE' or c.toks[0].text not in IF_WORDS:
+                continue
+            q = self.quantified(content[w + 1:])
+            if not q:
+                continue
+            how, name, _ = q
+            if w == 0:
+                end = next((i for i, x in enumerate(content) if i and x.kind in ('COMMA', 'THEN')), None)
+                if end is None:
+                    continue
+                clause, main = content[1:end], content[end + 1:]
+            else:
+                clause, main = content[w + 1:], rstrip(content[:w])
+            if not main or any(x.kind in ('FIELD', 'PFIELD') or (x.kind == 'COLL' and x.val == name) for x in main):
+                continue                # the sentence is about those records themselves
+            if how == 'a' and not any(x.kind == 'VALUE' for x in main):
+                continue
+            self.other = self.other_cond(how, name, self.quantified(clause)[2])
+            return main
+        return content
+
+    def make_record(self, content, on):
+        """Something appears by itself: "add a segment whose x is the column and whose y is the row"."""
+        lead, body = None, content
+        if body and body[0].kind == 'WHERE' and body[0].toks[0].text in IF_WORDS:
+            end = next((i for i, c in enumerate(body) if i and c.kind in ('COMMA', 'THEN')), None)
+            if end is None:
+                return None
+            lead, body = body[1:end], body[end + 1:]
+        if not body or not (body[0].kind == 'VERB' and body[0].val in ('addv', 'insert')):
+            return None
+        j = 1
+        while j + 1 < len(body) and (body[j].kind == 'QUANT' or (body[j].kind == 'NUM' and body[j].val == 1)):
+            j += 1
+        if j >= len(body) or body[j].kind != 'COLL':
+            return None
+        coll = self.prog.collections[body[j].val]
+        tail = [c for c in body[j + 1:] if not (c.kind == 'UNK' and c.toks[0].text == 'at' and self.free('at'))]
+        k = next((i for i, c in enumerate(tail) if c.kind == 'WHERE' and c.toks[0].text in ('if', 'when', 'only', 'as')),
+                 None)
+        if k is not None:
+            if lead is not None:
+                raise self.p('error', tail[k:], 'this already has a condition at the front')
+            lead, tail = tail[k + 1:], tail[:k]
+        if any(f.ref for f in coll.fields.values()):
+            raise self.p('error', self.cur, f'{coll.label} that belong to something cannot appear by themselves yet')
+        given, i = {}, 0
+        while i < len(tail):
+            c = tail[i]
+            if c.kind in ('AND', 'COMMA', 'WHERE', 'HAS'):
+                i += 1
+                continue
+            if c.kind == 'UNK':
+                raise self.unknown_word(c)
+            if c.kind != 'FIELD':
+                raise self.p('error', c, 'which property is this the value of?', self.could_be(coll))
+            if c.val not in coll.fields:
+                raise self.p('error', c, f'{coll.label} has no property "{c.val}"', self.could_be(coll))
+            if c.val in given:
+                raise self.p('error', c, f'"{c.val}" is given twice')
+            i += 1
+            while i < len(tail) and (tail[i].kind in ('IS', 'EQSYM') or (tail[i].kind == 'CMP' and tail[i].val == 'eq')):
+                i += 1
+            e, n = self.parse_expr(tail[i:])
+            given[c.val] = e
+            i += n
+        missing = [n for n in coll.fields if n not in given]
+        if missing:
+            raise self.p('question', self.cur, f'what is the {missing[0]} of the new {coll.name}?',
+                         'a record that appears needs a value for every property',
+                         f'e.g. "... whose {missing[0]} is 1"')
+        where = None
+        if lead is not None:
+            for c in lead:
+                if c.kind == 'UNK' and not (c.toks[0].text == 'no' and c is lead[0]):
+                    raise self.unknown_word(c)
+            q = self.quantified(lead)
+            where = self.other_cond(*q) if q else self.parse_cond(lead, coll)
+        T = Task(f'{"timer" if on[0] == "every" else "key"} {len(self.prog.events) + 1}', 'make', coll.name,
+                 self.cur[0].line, self.sent_text(self.cur), True)
+        T.assigns, T.where, T.on = list(given.items()), where, on
+        for e in task_exprs(T):
+            if e[0] in ('field', 'pfield'):
+                raise self.p('error', self.cur, f'there is no "{e[-1]}" to read: the {coll.name} is not there yet',
+                             'a new record can be described with numbers, text, chance and single values')
+            if e[0] == 'param':
+                raise self.p('error', self.cur, f'there is nobody to give the {e[1]} here',
+                             'this is not a command, so nothing can be handed to it')
+        self.trigger = None
+        self.prog.events.append(T)
+        return fmt_event(T)
 
     def decl_board(self, toks, words, b):
         """"The board is 30 wide and 15 high."  "Show the score and the lives above the board."."""
@@ -766,8 +964,27 @@ class Parser:
         glyph = toks[g].text if toks[g].kind == 'str' else toks[g].raw
         if len(glyph) != 1 or not 33 <= ord(glyph) <= 126:
             raise self.p('error', toks[g], 'one thing is drawn as one plain character', hint=hint)
-        a = g - 1 if g and toks[g - 1].kind == 'word' and toks[g - 1].text in ('as', 'with', 'like', 'using') else g
+        def word(i, among):
+            return 0 <= i < len(toks) and toks[i].kind == 'word' and toks[i].text in among
+
+        def colour_at(seq, i):
+            return 0 <= i < len(seq) and seq[i].kind == 'word' and seq[i].text in COLOURS and self.free(seq[i].text)
+        colour, a = None, g
+        if colour_at(toks, a - 1):                  # as a red "#"
+            a -= 1
+            colour = toks[a].text
+        if a > 1 and word(a - 1, ('a', 'an', 'the')):
+            a -= 1
+        if a > 1 and word(a - 1, ('as', 'with', 'like', 'using')):
+            a -= 1
         rest = toks[1:a] + toks[g + 1:]
+        ins = [i for i, t in enumerate(rest) if t.kind == 'word' and t.text == 'in' and colour_at(rest, i + 1)]
+        if ins:                                     # as "#" in red
+            if colour or len(ins) > 1:
+                raise self.p('error', rest[ins[-1]:ins[-1] + 2], 'one thing is drawn in one colour')
+            colour = rest[ins[0] + 1].text
+            rest = rest[:ins[0]] + rest[ins[0] + 2:]
+        inked = f' in {colour}' if colour else ''
         at = next((i for i, t in enumerate(rest) if t.kind == 'word' and t.text == 'at' and
                    not (i + 1 < len(rest) and rest[i + 1].text in ('least', 'most'))), None)
         if at is None:
@@ -798,10 +1015,10 @@ class Parser:
             subject = [CT('COLL', self.scope(used).name, used[0].toks)] + subject
         if not subject:
             T = Task(f'draw {len(self.prog.draws) + 1}', 'draw', None, toks[0].line, self.sent_text(toks), True)
-            T.at, T.glyph = xy, glyph
+            T.at, T.glyph, T.colour = xy, glyph, colour
             self.prog.draws.append(T)
-            return f'draw "{glyph}" at ({fmt_expr(xy[0])}, {fmt_expr(xy[1])})'
-        self.trigger = ('draw', xy, glyph)
+            return f'draw "{glyph}"{inked} at ({fmt_expr(xy[0])}, {fmt_expr(xy[1])})'
+        self.trigger = ('draw', xy, glyph, colour)
         return self.task([CT('ACT', 'show', [toks[0]])] + subject)
 
     def decl_seed(self, toks, words):
@@ -1232,6 +1449,8 @@ class Parser:
                 return ('param', c.val)
             if c.kind == 'VALUE':
                 return ('value', c.val)
+            if c.kind == 'RAND':
+                return ('rand',) + c.val
             if c.kind == 'SCALE':
                 return binop('mul', prim(False), ('num', c.val))
             if c.kind == 'LP':
@@ -1539,6 +1758,10 @@ class Parser:
         content = [c for c in content if c.kind not in ('ISCOLL', 'COLLWORD')]
         if not content:
             raise self.p('error', sent, 'this sentence has nothing I can act on')
+        self.other = None
+        if not (self.trigger and self.trigger[0] in ('end', 'draw')) and index_of(content, 'OTHERWISE') is None and \
+                index_of(content, 'TAKE') is None:
+            content = self.split_other(content)
 
         ti = index_of(content, 'TAKE')
         if ti is not None:
@@ -1966,6 +2189,12 @@ class Parser:
     # ------------------------------------------------------------------ finishing
     def emit(self, T, coll=None):
         seen = []
+        if self.other is not None:
+            node, self.other = self.other, None
+            if T.kind not in ('update', 'remove_where'):
+                raise self.p('error', self.cur, 'what should change when that is so?',
+                             'a condition about other records goes with a change or a removal')
+            T.where = node if T.where is None else ('and', node, T.where)
         if coll is self.state:
             if T.kind not in ('update', 'list') or T.order or T.limit is not None:
                 raise self.p('error', self.cur, 'a single value can be shown or changed, nothing else',
@@ -2005,10 +2234,10 @@ class Parser:
                     if e[0] == 'field' and e[1] not in coll.fields:
                         raise self.p('error', self.cur, f'{coll.label} has no property "{e[1]}"', self.could_be(coll))
                 T.kind, T.name, T.named, T.fields = 'draw', f'draw {len(self.prog.draws) + 1}', True, None
-                T.at, T.glyph = on[1], on[2]
+                T.at, T.glyph, T.colour = on[1], on[2], on[3]
                 self.prog.draws.append(T)
                 w = f' where {fmt_cond(T.where)}' if T.where else ''
-                return f'draw "{T.glyph}" at ({fmt_expr(T.at[0])}, {fmt_expr(T.at[1])})' + \
+                return f'draw "{T.glyph}"{" in " + T.colour if T.colour else ""} at ({fmt_expr(T.at[0])}, {fmt_expr(T.at[1])})' + \
                     ('' if T.coll == STATE else f' for each {T.coll}') + w
             if T.kind not in ('update', 'remove_where'):
                 raise self.p('error', self.cur, 'what should change?',
@@ -2036,6 +2265,8 @@ class Parser:
 
     def derived_name(self, t):
         def first_field(c):
+            if c[0] in ('any', 'none'):
+                return c[1]
             if c[0] != 'cmp':
                 return first_field(c[1])
             return next((e[-1] for side in (c[2], c[3]) for e in walk_expr(side) if e[0] in ('field', 'pfield')),

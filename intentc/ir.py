@@ -5,9 +5,11 @@ Expressions are tuples:
     ('pfield', ref, name)   a property of the record this one belongs to (ref is the linking property)
     ('value', name)         a single value the program keeps ("the score")
     ('if', cond, a, b)      a when cond holds, otherwise b
+    ('rand', lo, hi)        a whole number from lo to hi, drawn by chance (see CHANCE_*)
 Conditions are tuples:
     ('cmp', op, a, b)   op in gt ge lt le eq ne
     ('and', a, b) | ('or', a, b)
+    ('any', coll, cond) | ('none', coll, cond)   cond holds for some / for no record of another collection
 """
 import json
 from dataclasses import dataclass, field as _f
@@ -45,7 +47,7 @@ class Collection:
 @dataclass
 class Task:
     name: str
-    kind: str                   # add find remove_key remove_where update list agg calc
+    kind: str                   # add find remove_key remove_where update list agg calc make draw end seed
     coll: str = None
     line: int = 0
     text: str = ''
@@ -64,6 +66,7 @@ class Task:
     on: tuple = None                                # happens by itself: ('every', milliseconds) | ('key', name)
     at: tuple = None                                # draw: (x, y), counted from 1 at the top left
     glyph: str = None                               # draw: the one character shown there
+    colour: str = None                              # draw: the name of its colour, or None
 
 
 STATE = '(values)'              # the hidden one-record collection that holds the program's single values
@@ -149,6 +152,8 @@ def binop(op, a, b):
 def negate(c):
     if c[0] == 'cmp':
         return ('cmp', NEGATE[c[1]], c[2], c[3])
+    if c[0] in ('any', 'none'):
+        return ('none' if c[0] == 'any' else 'any', c[1], c[2])
     if c[0] == 'and':
         return ('or', negate(c[1]), negate(c[2]))
     return ('and', negate(c[1]), negate(c[2]))
@@ -168,6 +173,8 @@ def fmt_expr(e, top=True):
         return f'{e[1]}.{e[2]}'
     if k == 'value':
         return e[1]
+    if k == 'rand':
+        return f'random({e[1]}..{e[2]})'
     if k == 'if':
         s = f'{fmt_expr(e[2], False)} if {fmt_cond(e[1])} else {fmt_expr(e[3], False)}'
         return s if top else f'({s})'
@@ -178,6 +185,9 @@ def fmt_expr(e, top=True):
 def fmt_cond(c, top=True):
     if c[0] == 'cmp':
         return f'{fmt_expr(c[2])} {CMPSYM[c[1]]} {fmt_expr(c[3])}'
+    if c[0] in ('any', 'none'):
+        s = f'{"any" if c[0] == "any" else "no"} {c[1]} has {fmt_cond(c[2], False)}'
+        return s if top else f'({s})'
     s = f'{fmt_cond(c[1], False)} {c[0]} {fmt_cond(c[2], False)}'
     return s if top else f'({s})'
 
@@ -193,6 +203,8 @@ def canon(t):
         return f'update {t.coll}: ' + ', '.join(f'{f} = {fmt_expr(e)}' for f, e in t.assigns) + w
     if t.kind == 'add':
         return f'add {t.coll}'
+    if t.kind == 'make':
+        return f'new {t.coll}: ' + ', '.join(f'{f} = {fmt_expr(e)}' for f, e in t.assigns) + w
     if t.kind == 'find':
         return f'find {t.coll} by {t.key}'
     if t.kind == 'remove_key':
@@ -238,7 +250,9 @@ def task_conds(t):
 
 
 def walk_cond_exprs(c):
-    if c is None:
+    """Every value compared in c. What is said about another collection ("any rock ...") is not
+    included: its properties are that collection's, so it is walked on its own (see cond_anys)."""
+    if c is None or c[0] in ('any', 'none'):
         return
     if c[0] == 'cmp':
         yield from walk_expr(c[2])
@@ -249,13 +263,39 @@ def walk_cond_exprs(c):
 
 
 def cond_cmps(c):
-    if c is None:
+    if c is None or c[0] in ('any', 'none'):
         return
     if c[0] == 'cmp':
         yield c
     else:
         yield from cond_cmps(c[1])
         yield from cond_cmps(c[2])
+
+
+def cond_anys(c):
+    """The parts of a condition that look into another collection."""
+    if c is None or c[0] == 'cmp':
+        return
+    if c[0] in ('any', 'none'):
+        yield c
+    else:
+        yield from cond_anys(c[1])
+        yield from cond_anys(c[2])
+
+
+def conjuncts(c):
+    """The parts of a condition that all have to hold."""
+    if c is None:
+        return
+    if c[0] == 'and':
+        yield from conjuncts(c[1])
+        yield from conjuncts(c[2])
+    else:
+        yield c
+
+
+def uses_chance(prog):
+    return any(e[0] == 'rand' for t in prog.work() for e in task_exprs(t))
 
 
 def usage(prog):
@@ -274,6 +314,10 @@ def builtins(prog):
         out.append(('press', 'press <' + '|'.join(prog.keys()) + '>'))
     if prog.board:
         out.append(('screen', 'screen'))
+    if uses_chance(prog):
+        out.append(('seed', 'seed <number>'))
+    if prog.ends:
+        out.append(('restart', 'restart'))
     return [(n, u) for n, u in out if n not in taken]
 
 
@@ -288,6 +332,8 @@ KEY_CODES = {'left': 256 + 68, 'right': 256 + 67, 'up': 256 + 65, 'down': 256 + 
 KEY_CODES.update({k: ord(k) for k in KEYS if len(k) == 1})      # an arrow is ESC [ A..D; the rest are themselves
 LONGEST_WAIT = 3600000          # one hour, in milliseconds
 OVER = 'the game is over'
+OVER_HINT = 'the game is over: enter plays again, q stops'
+BAD_SEED = 'error: seed takes a number'
 ENTER_PLAY = '\x1b[?1049h\x1b[?7l\x1b[2J\x1b[?25l'     # a screen of its own, no line wrap, no cursor
 LEAVE_PLAY = '\x1b[?7h\x1b[?25h\x1b[?1049l'
 TOO_SMALL = 'this board needs a terminal at least %d wide and %d high; this one is %d wide and %d high'
@@ -296,7 +342,7 @@ TOO_SMALL = 'this board needs a terminal at least %d wide and %d high; this one 
 def room(prog):
     """(columns, rows) the terminal needs to show the board with its frame and status lines."""
     w, h = prog.board
-    return w + 2, h + 3 + bool(prog.above) + bool(prog.below)
+    return w + 2, h + 3 + bool(prog.above) + bool(prog.below) + bool(prog.ends)
 
 
 LONGEST_STEP = 250              # while playing, time never jumps further than this at once
@@ -304,3 +350,13 @@ BAD_WAIT = f'error: wait takes a number of milliseconds, from 0 to {LONGEST_WAIT
 
 
 MUTATING = ('add', 'remove_key', 'remove_where', 'update')
+
+# Colours a drawing can have, and the number a terminal knows each by.
+COLOURS = {'red': 31, 'green': 32, 'yellow': 33, 'blue': 34, 'magenta': 35, 'purple': 35, 'pink': 35,
+           'cyan': 36, 'white': 37, 'grey': 90, 'gray': 90}
+
+# Chance. One 64-bit number is kept; every draw moves it on by the same fixed step, so a run
+# that starts from the same number ("seed <number>") draws the same numbers again.
+CHANCE_MUL = 6364136223846793005
+CHANCE_ADD = 1442695040888963407
+CHANCE_WIDEST = 1 << 31         # a draw picks one of at most this many numbers

@@ -8,8 +8,10 @@ aggregates) is emitted here.
 from .interp import ROUNDS, UNSETTLED
 import sys
 
-from .ir import (BAD_WAIT, ENTER_PLAY, LEAVE_PLAY, TOO_SMALL, room, KEY_CODES, LONGEST_STEP, LONGEST_WAIT, MUTATING, OVER, STATE, TEXT_OPS, builtins, canon,
-                 fmt_event, usage)
+from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, ENTER_PLAY, KEY_CODES, LEAVE_PLAY, LONGEST_STEP,
+                 LONGEST_WAIT, MUTATING, OVER, OVER_HINT, STATE, TEXT_OPS, TOO_SMALL, builtins, canon, fmt_cond,
+                 fmt_event, room, usage, uses_chance, walk_cond_exprs)
+from .plan import narrow_settle
 
 LL = {'int': 'i64', 'text': 'ptr'}
 FNV_OFFSET = -3750763034362895579      # 14695981039346656037 as a signed 64-bit value
@@ -57,6 +59,7 @@ declare i32 @fprintf(ptr, ptr, ...)
 declare i32 @tcgetattr(i32, ptr)
 declare i32 @tcsetattr(i32, i32, ptr)
 declare i32 @ioctl(i32, i64, ...)
+declare i32 @putchar(i32)
 '''
 
 
@@ -118,6 +121,7 @@ class Gen:
     def __init__(self, prog, plan):
         self.prog, self.plan = prog, plan
         self.strs, self.globals, self.fns = {}, [], []
+        self.others = {}                # conditions about another collection -> the function that answers each
 
     # ------------------------------------------------------------------ helpers
     def cstr(self, s):
@@ -196,6 +200,8 @@ class Gen:
         if k == 'value':                # a single value lives in the one record of the hidden collection
             S = self.prog.collections[STATE]
             return self.fload(f, S, self.rec(f, S, '0'), e[1]), S.fields[e[1]].type
+        if k == 'rand':
+            return f.r(f'call i64 @rand(i64 {e[1]}, i64 {e[2] - e[1] + 1})'), 'int'
         if k == 'if':                   # only the chosen side is worked out (the other may divide by zero)
             yes, no, done = f.lab('then'), f.lab('else'), f.lab('fi')
             f.cbr(self.cond(f, e[1], c, rec, vals), yes, no)
@@ -251,9 +257,82 @@ class Gen:
             if ty == 'int':
                 return f.r(f'icmp {ICMP[cnd[1]]} i64 {a}, {b}')
             return f.r(f'icmp {ICMP[cnd[1]]} i32 {f.r(f"call i32 @strcmp(ptr {a}, ptr {b})")}, 0')
+        if cnd[0] in ('any', 'none'):
+            hit = f.r(f'call i1 {self.other(cnd)}()')
+            return hit if cnd[0] == 'any' else f.r(f'xor i1 {hit}, true')
         a = self.cond(f, cnd[1], c, rec, vals)
+        if any(e[0] == 'rand' for e in walk_cond_exprs(cnd[2])):
+            # chance is only drawn when the first part leaves the answer open, exactly as the meaning says
+            slot = f.var('i1')
+            f.store('i1', a, slot)
+            more, done = f.lab('more'), f.lab('known')
+            f.cbr(a, *((more, done) if cnd[0] == 'and' else (done, more)))
+            f.at(more)
+            f.store('i1', self.cond(f, cnd[2], c, rec, vals), slot)
+            f.br(done)
+            f.at(done)
+            return f.load('i1', slot)
         b = self.cond(f, cnd[2], c, rec, vals)
         return f.r(f'{cnd[0]} i1 {a}, {b}')
+
+    def other(self, node):
+        """The function that answers "does this hold for any record of that collection?"."""
+        key = (node[1], repr(node[2]))
+        if key not in self.others:
+            name = self.others[key] = g('any', str(len(self.others) + 1))
+            c = self.prog.collections[node[1]]
+            h = self.fn(name, 'i1', comment=f'is there a {c.name} with {fmt_cond(node[2])}?')
+
+            def body(i, cont):
+                hit = h.lab('hit')
+                h.cbr(self.cond(h, node[2], c, self.rec(h, c, i), {}), hit, cont)
+                h.at(hit)
+                h.e('ret i1 true')
+                h.at(h.lab('dead'))
+            self.rows(h, c, body)
+            h.e('ret i1 false')
+        return self.others[key]
+
+    def chance(self):
+        self.globals.append('@chance = internal global i64 0    ; where the run of chance stands')
+        f = self.fn('@rand', 'i64', 'i64 %lo, i64 %span',
+                    'a number drawn by chance from lo upward, one of span; the same seed draws the same numbers')
+        n = f.r(f'add i64 {f.r(f"mul i64 {f.load("i64", "@chance")}, {CHANCE_MUL}")}, {CHANCE_ADD}')
+        f.store('i64', n, '@chance')
+        f.store('i32', '1', '@dirty')       # a command that drew a number has to be replayed to draw it again
+        f.e(f'ret i64 {f.r(f"add i64 %lo, {f.r(f"urem i64 {f.r(f"lshr i64 {n}, 33")}, %span")}")}')
+
+    def visit(self, f, t, c, body, vals):
+        """Run body on every record the task has to look at: all of them, or the one the index finds."""
+        pick = self.plan.picks.get(t.name)
+        if not pick:
+            return self.rows(f, c, body)
+        v, ty = self.expr(f, pick[1], c, None, vals)
+        row = f.r(f'call i64 {g(c.name, pick[0], "find")}({LL[ty]} {v})')
+        hit, cont = f.lab('hit'), f.lab('cont')
+        f.cbr(f.r(f'icmp sge i64 {row}, 0'), hit, cont)
+        f.at(hit)
+        f.store('i64', row, '@touched')
+        body(row, cont)
+        f.br(cont)
+        f.at(cont)
+
+    def update_body(self, f, t, c, vals, rule):
+        def body(i, cont):
+            rec = self.rec(f, c, i)
+            self.guard(f, self.cond(f, t.where, c, rec, vals), cont)
+            for name, e in t.assigns:
+                v, ty = self.expr(f, e, c, rec, vals)
+                p = self.fptr(f, c, rec, name)
+                if rule:
+                    old = f.load(LL[ty], p)
+                    self.mark(f, f.r(f'icmp ne i64 {old}, {v}') if ty == 'int' else
+                              f.r(f'icmp ne i32 {f.r(f"call i32 @strcmp(ptr {old}, ptr {v})")}, 0'))
+                if ty == 'text':
+                    v = f.r(f'call ptr @strdup(ptr {v})')
+                    f.e(f'call void @free(ptr {f.load("ptr", p)})')
+                f.store(LL[ty], v, p)
+        return body
 
     # ------------------------------------------------------------------ collection runtime
     def collection(self, c, cp):
@@ -634,6 +713,7 @@ class Gen:
                 f.at(clash)
                 if c.on_dup == 'replace':
                     f.store('i32', '1', '@dirty')
+                    f.store('i64', row, '@touched')
                     rec = self.rec(f, c, row)
                     f.e(f'call void {g(C, "free")}(ptr {rec})')
                     self.store_record(f, c, rec, vals)
@@ -646,8 +726,33 @@ class Gen:
             n = f.load('i64', g(C, 'len'))
             self.store_record(f, c, self.rec(f, c, n), vals)
             f.store('i64', f.r(f'add i64 {n}, 1'), g(C, 'len'))
+            f.store('i64', n, '@touched')
             for ix in cp.indexes:
                 f.e(f'call void {g(C, ix, "put")}(i64 {n})')
+        elif k == 'make':               # a record that appears by itself; a clash is passed over in silence
+            go, out = f.lab('go'), f.lab('out')
+            f.cbr(self.cond(f, t.where, c, None, vals), go, out)
+            f.at(go)
+            made = {name: self.expr(f, e, c, None, vals) for name, e in t.assigns}
+            for fl in c.unique_fields():
+                row = f.r(f'call i64 {g(C, fl.name, "find")}({LL[fl.type]} {made[fl.name][0]})')
+                clash, ok = f.lab('clash'), f.lab('ok')
+                f.cbr(f.r(f'icmp sge i64 {row}, 0'), clash, ok)
+                f.at(clash)
+                if c.on_dup == 'replace':
+                    rec = self.rec(f, c, row)
+                    f.e(f'call void {g(C, "free")}(ptr {rec})')
+                    self.store_record(f, c, rec, made)
+                f.br(out)
+                f.at(ok)
+            f.e(f'call void {g(C, "grow")}()')
+            n = f.load('i64', g(C, 'len'))
+            self.store_record(f, c, self.rec(f, c, n), made)
+            f.store('i64', f.r(f'add i64 {n}, 1'), g(C, 'len'))
+            for ix in cp.indexes:
+                f.e(f'call void {g(C, ix, "put")}(i64 {n})')
+            f.br(out)
+            f.at(out)
         elif k in ('find', 'remove_key') and c.fields[t.key].unique:
             kv, kt = vals[t.key]
             row = f.r(f'call i64 {g(C, t.key, "find")}({LL[kt]} {kv})')
@@ -706,21 +811,7 @@ class Gen:
             if not rule:
                 f.store('i32', '1', '@dirty')
 
-            def body(i, cont):
-                rec = self.rec(f, c, i)
-                self.guard(f, self.cond(f, t.where, c, rec, vals), cont)
-                for name, e in t.assigns:
-                    v, ty = self.expr(f, e, c, rec, vals)
-                    p = self.fptr(f, c, rec, name)
-                    if rule:
-                        old = f.load(LL[ty], p)
-                        self.mark(f, f.r(f'icmp ne i64 {old}, {v}') if ty == 'int' else
-                                  f.r(f'icmp ne i32 {f.r(f"call i32 @strcmp(ptr {old}, ptr {v})")}, 0'))
-                    if ty == 'text':
-                        v = f.r(f'call ptr @strdup(ptr {v})')
-                        f.e(f'call void @free(ptr {f.load("ptr", p)})')
-                    f.store(LL[ty], v, p)
-            self.rows(f, c, body)
+            self.visit(f, t, c, self.update_body(f, t, c, vals, rule), vals)
         elif k == 'list':
             names = t.fields or list(c.fields)
             if not t.order:
@@ -734,7 +825,7 @@ class Gen:
                         self.guard(f, f.r(f'icmp slt i64 {sv}, {t.limit}'), cont)
                         f.store('i64', f.r(f'add i64 {sv}, 1'), shown)
                     self.print_fields(f, c, rec, names)
-                self.rows(f, c, body)
+                self.visit(f, t, c, body, vals)
             else:
                 self.comparator(t, c)
                 n = f.load('i64', g(C, 'len'))
@@ -746,7 +837,7 @@ class Gen:
                     cv = f.load('i64', cnt)
                     f.store('i64', i, f.r(f'getelementptr i64, ptr {idx}, i64 {cv}'))
                     f.store('i64', f.r(f'add i64 {cv}, 1'), cnt)
-                self.rows(f, c, collect)
+                self.visit(f, t, c, collect, vals)
                 m = f.load('i64', cnt)
                 f.e(f'call void @qsort(ptr {idx}, i64 {m}, i64 8, ptr {g("task", t.name, "cmp")})')
                 if t.limit is not None:
@@ -775,7 +866,7 @@ class Gen:
                         nv = f.r(f'select i1 {take}, i64 {v}, i64 {a}')
                     f.store('i64', nv, acc)
                 f.store('i64', f.r(f'add i64 {cv}, 1'), cnt)
-            self.rows(f, c, body)
+            self.visit(f, t, c, body, vals)
             n, a = f.load('i64', cnt), f.load('i64', acc)
             if t.fn == 'count':
                 self.printf(f, '%lld\n', f'i64 {n}')
@@ -893,6 +984,9 @@ class Gen:
     def screen(self):
         w, h = self.prog.board
         self.globals.append(f'@grid = internal global [{w * h} x i8] zeroinitializer')
+        inked = any(d.colour for d in self.prog.draws)
+        if inked:
+            self.globals.append(f'@ink = internal global [{w * h} x i8] zeroinitializer   ; the colour of each cell')
         f = self.fn('@screen', params='i1 %live',
                     comment='draw the board as text: later sentences draw over earlier ones')
         home, clear, body = f.lab('home'), f.lab('clear'), f.lab('body')
@@ -902,6 +996,8 @@ class Gen:
         f.br(body)
         f.at(body)
         f.e(f'call ptr @memset(ptr @grid, i32 32, i64 {w * h})')
+        if inked:
+            f.e(f'call ptr @memset(ptr @ink, i32 0, i64 {w * h})')
         for d in self.prog.draws:
             c = self.prog.collections.get(d.coll)
 
@@ -914,6 +1010,9 @@ class Gen:
                 self.guard(f, f.r(f'and i1 {inx}, {iny}'), cont)
                 cell = f.r(f'add i64 {f.r(f"mul i64 {f.r(f"sub i64 {y}, 1")}, {w}")}, {f.r(f"sub i64 {x}, 1")}')
                 f.store('i8', str(ord(d.glyph)), f.r(f'getelementptr i8, ptr @grid, i64 {cell}'))
+                if inked:
+                    f.store('i8', str(COLOURS[d.colour] if d.colour else 0),
+                            f.r(f'getelementptr i8, ptr @ink, i64 {cell}'))
             if c:
                 self.rows(f, c, lambda i, cont, put=put, c=c: put(self.rec(f, c, i), cont))
             else:
@@ -936,9 +1035,41 @@ class Gen:
         edge = '+' + '-' * w + '+'
         status(self.prog.above)
         self.puts(f, edge)
-        self.rows(f, None, lambda i, cont: self.printf(
-            f, '|%.*s|\n', f'i32 {w}, ptr {f.r(f"getelementptr i8, ptr @grid, i64 {f.r(f"mul i64 {i}, {w}")}")}'),
-            count=str(h))
+        cur = f.var('i32') if inked else None
+
+        def line(i, cont):
+            base = f.r(f'mul i64 {i}, {w}')
+            if inked:                   # colour is only put in while playing; as a command the board is plain
+                fancy, plain = f.lab('fancy'), f.lab('plain')
+                f.cbr('%live', fancy, plain)
+                f.at(fancy)
+                f.e('call i32 @putchar(i32 124)')
+                f.store('i32', '0', cur)
+
+                def cell(j, cont2):
+                    at = f.r(f'add i64 {base}, {j}')
+                    code = f.r(f'zext i8 {f.load("i8", f.r(f"getelementptr i8, ptr @ink, i64 {at}"))} to i32')
+                    same, change = f.lab('same'), f.lab('change')
+                    f.cbr(f.r(f'icmp eq i32 {code}, {f.load("i32", cur)}'), same, change)
+                    f.at(change)
+                    self.printf(f, '\x1b[%dm', f'i32 {code}')
+                    f.store('i32', code, cur)
+                    f.br(same)
+                    f.at(same)
+                    ch = f.load('i8', f.r(f'getelementptr i8, ptr @grid, i64 {at}'))
+                    f.e(f'call i32 @putchar(i32 {f.r(f"zext i8 {ch} to i32")})')
+                self.rows(f, None, cell, count=str(w))
+                reset, closed = f.lab('reset'), f.lab('closed')
+                f.cbr(f.r(f'icmp ne i32 {f.load("i32", cur)}, 0'), reset, closed)
+                f.at(reset)
+                self.printf(f, '\x1b[0m')
+                f.br(closed)
+                f.at(closed)
+                self.printf(f, '|\n')
+                f.br(cont)
+                f.at(plain)
+            self.printf(f, '|%.*s|\n', f'i32 {w}, ptr {f.r(f"getelementptr i8, ptr @grid, i64 {base}")}')
+        self.rows(f, None, line, count=str(h))
         self.puts(f, edge)
         status(self.prog.below)
         done = f.lab('done')
@@ -1034,6 +1165,7 @@ class Gen:
         buf, pfd = f.var('[16 x i8]'), f.var('{ i32, i16, i16 }')
         loop, wait, typed, decode, tick, adv, log, end, lost, bye = (
             f.lab(x) for x in ('loop', 'wait', 'typed', 'decode', 'tick', 'advance', 'log', 'end', 'lost', 'bye'))
+        fallen, again, key, look, anew = (f.lab(x) for x in ('fallen', 'again', 'key', 'look', 'anew'))
         size = {'darwin': 0x40087468, 'linux': 0x5413}.get(sys.platform)     # "how big is this terminal?"
         if size:
             cols, rows = room(P)
@@ -1057,11 +1189,52 @@ class Gen:
         f.e(f'call i32 @system(ptr {self.cstr("stty -icanon -echo min 0 time 0")})')
         self.printf(f, ENTER_PLAY)
         last = f.var('i64', f.r('call i64 @now()'))
+        if uses_chance(P):              # each time it is played, chance starts somewhere else; the journal says where
+            first = f.load('i64', last)
+            f.store('i64', first, '@chance')
+            seeded, unseeded = f.lab('seeded'), f.lab('unseeded')
+            f.cbr(f.r('icmp eq ptr %jf, null'), unseeded, seeded)
+            f.at(seeded)
+            f.e(f'call i32 (ptr, ptr, ...) @fprintf(ptr %jf, ptr {self.cstr("seed %lld" + chr(10))}, i64 {first})')
+            f.br(unseeded)
+            f.at(unseeded)
         f.br(loop)
         f.at(loop)
         f.e('call void @screen(i1 true)')
         f.e('call i32 @fflush(ptr null)')
-        f.cbr(f.r('call i1 @over()'), end, wait)
+        f.cbr(f.r('call i1 @over()'), fallen, wait)
+        f.at(fallen)                    # the game is over: it stays on show until the player says what next
+        self.printf(f, OVER_HINT + '\x1b[K\n')
+        f.e('call i32 @fflush(ptr null)')
+        f.br(again)
+        f.at(again)
+        f.store('i32', '0', pfd)
+        f.store('i16', '1', f.r(f'getelementptr {{ i32, i16, i16 }}, ptr {pfd}, i32 0, i32 1'))
+        f.store('i16', '0', f.r(f'getelementptr {{ i32, i16, i16 }}, ptr {pfd}, i32 0, i32 2'))
+        f.cbr(f.r(f'icmp sgt i32 {f.r(f"call i32 @poll(ptr {pfd}, i64 1, i32 1000)")}, 0'), key, again)
+        f.at(key)
+        got = f.r(f'call i64 @read(i32 0, ptr {buf}, i64 16)')
+        f.cbr(f.r(f'icmp sgt i64 {got}, 0'), look, end)
+        f.at(look)
+        b0 = f.r(f'zext i8 {f.load("i8", buf)} to i32')
+        enter = f.r(f'or i1 {f.r(f"icmp eq i32 {b0}, 10")}, {f.r(f"icmp eq i32 {b0}, 13")}')
+        stop = f.r(f'and i1 {f.r(f"icmp eq i32 {b0}, 27")}, {f.r(f"icmp eq i64 {got}, 1")}')
+        for code in (3, 4, ord('q'), ord('Q')):
+            stop = f.r(f'or i1 {stop}, {f.r(f"icmp eq i32 {b0}, {code}")}')
+        other = f.lab('other')
+        f.cbr(enter, anew, other)
+        f.at(other)
+        f.cbr(stop, end, again)
+        f.at(anew)
+        f.e('call void @reset()')
+        told, quiet = f.lab('told'), f.lab('quiet')
+        f.cbr(f.r('icmp eq ptr %jf, null'), quiet, told)
+        f.at(told)
+        f.e(f'call i32 @fputs(ptr {self.cstr("restart" + chr(10))}, ptr %jf)')
+        f.br(quiet)
+        f.at(quiet)
+        f.store('i64', f.r('call i64 @now()'), last)
+        f.br(loop)
         f.at(wait)
         d = '1000'
         for i in range(len(timers)):
@@ -1142,6 +1315,22 @@ class Gen:
         if name == 'screen':
             f.e('call void @screen(i1 false)')
             f.e('ret i32 0')
+        elif name == 'restart':
+            f.e('call void @reset()')
+            f.e('ret i32 1')
+        elif name == 'seed':
+            endp = f.var('ptr')
+            v = f.r(f'call i64 @strtoll(ptr {arg}, ptr {endp}, i32 10)')
+            end = f.load('ptr', endp)
+            bad = f.r(f'or i1 {f.r(f"icmp eq ptr {end}, {arg}")}, {f.r(f"icmp ne i8 {f.load("i8", end)}, 0")}')
+            wrong, ok = f.lab('wrong'), f.lab('ok')
+            f.cbr(bad, wrong, ok)
+            f.at(wrong)
+            self.puts(f, BAD_SEED)
+            f.e('ret i32 0')
+            f.at(ok)
+            f.store('i64', v, '@chance')
+            f.e('ret i32 1')
         elif name == 'wait':
             endp = f.var('ptr')
             v = f.r(f'call i64 @strtoll(ptr {arg}, ptr {endp}, i32 10)')
@@ -1182,6 +1371,7 @@ class Gen:
     # ------------------------------------------------------------------ main
     def dispatch(self):
         self.globals.append('@dirty = internal global i32 0     ; set when a command really changed data')
+        self.globals.append('@touched = internal global i64 -1  ; the one record a command added or changed, if any')
         f = self.fn('@dispatch', 'i32', 'ptr %line, i64 %len',
                     'run one command line; returns 1 if it may have changed the data')
         line = '%line'
@@ -1219,9 +1409,27 @@ class Gen:
             f.cbr(self.eq(f, 'text', line, self.cstr(t.name)), yes, no)
             f.at(yes)
             f.store('i32', '0', '@dirty')
+            f.store('i64', '-1', '@touched')
             f.e(f'call void {g("task", t.name)}(ptr {arg})')
             if t.kind in MUTATING and self.prog.rules:
-                f.e('call void @settle()')
+                narrow = narrow_settle(self.prog, self.plan, t)
+                if narrow == 'all':
+                    f.e('call void @settle()')
+                else:                   # untouched records are still as the rules left them: look only where needed
+                    full, quick, after = f.lab('full'), f.lab('quick'), f.lab('after')
+                    f.cbr(f.r(f'icmp ne i32 {f.load("i32", "@unsettled")}, 0'), full, quick)
+                    f.at(full)
+                    f.e('call void @settle()')
+                    f.br(after)
+                    f.at(quick)
+                    if narrow == 'row' and any(r.coll == t.coll for r in self.prog.rules):
+                        row = f.load('i64', '@touched')
+                        one = f.lab('one')
+                        f.cbr(f.r(f'icmp sge i64 {row}, 0'), one, after)
+                        f.at(one)
+                        f.e(f'call void {g("settle", t.coll)}(i64 {row})')
+                    f.br(after)
+                    f.at(after)
             f.e(f'ret i32 {f.load("i32", "@dirty")}')
             f.at(no)
         for name, _ in builtins(self.prog):
@@ -1235,6 +1443,17 @@ class Gen:
             f.at(no)
         self.printf(f, 'error: unknown command %s\n', f'ptr {line}')
         f.e('ret i32 0')
+
+    def reset(self):
+        f = self.fn('@reset', comment='everything as it was at the start (chance is not wound back)')
+        for c in self.prog.collections.values():
+            self.rows(f, c, lambda i, cont, c=c: f.e(f'call void {g(c.name, "free")}(ptr {self.rec(f, c, i)})'))
+            f.store('i64', '0', g(c.name, 'len'))
+            f.e(f'call void {g(c.name, "reindex")}()')
+        for i, t in enumerate(self.prog.timers()):
+            f.store('i64', str(t.on[1]), g('left', str(i)))
+        f.e('call void @start()')
+        f.e('ret void')
 
     def start(self):
         """The single values take their starting values, and the standing rules get their first look."""
@@ -1262,24 +1481,49 @@ class Gen:
 
     def settle(self):
         self.globals.append('@changed = internal global i32 0   ; set when a rule really changed something')
+        self.globals.append('@unsettled = internal global i32 0 ; set while the rules have not come to rest')
+
+        def rounds(f, calls):
+            n_ = f.var('i64', '0')
+            loop, more, stuck, rest, done = (f.lab(x) for x in ('round', 'more', 'stuck', 'rest', 'done'))
+            f.br(loop)
+            f.at(loop)
+            f.store('i32', '0', '@changed')
+            for call in calls:
+                f.e(call)
+            f.cbr(f.r(f'icmp ne i32 {f.load("i32", "@changed")}, 0'), more, rest)
+            f.at(more)
+            n = f.r(f'add i64 {f.load("i64", n_)}, 1')
+            f.store('i64', n, n_)
+            f.cbr(f.r(f'icmp slt i64 {n}, {ROUNDS}'), loop, stuck)
+            f.at(stuck)
+            self.puts(f, UNSETTLED)
+            f.store('i32', '1', '@unsettled')
+            f.br(done)
+            f.at(rest)
+            f.store('i32', '0', '@unsettled')
+            f.br(done)
+            f.at(done)
+            f.e('ret void')
         f = self.fn('@settle', comment='apply every rule, in the order written, until a whole round changes nothing')
-        rounds = f.var('i64', '0')
-        loop, more, stuck, done = f.lab('round'), f.lab('more'), f.lab('stuck'), f.lab('done')
-        f.br(loop)
-        f.at(loop)
-        f.store('i32', '0', '@changed')
+        rounds(f, [f'call void {g("rule", r.name)}(ptr null)' for r in self.prog.rules])
+        if not self.plan.local_rules:
+            return
+        # Every rule reads and changes one record only. So a record no command touched is still
+        # exactly as the rules left it, and after a command that touched one record it is enough
+        # to let the rules look at that record again.
         for r in self.prog.rules:
-            f.e(f'call void {g("rule", r.name)}(ptr null)')
-        f.cbr(f.r(f'icmp ne i32 {f.load("i32", "@changed")}, 0'), more, done)
-        f.at(more)
-        n = f.r(f'add i64 {f.load("i64", rounds)}, 1')
-        f.store('i64', n, rounds)
-        f.cbr(f.r(f'icmp slt i64 {n}, {ROUNDS}'), loop, stuck)
-        f.at(stuck)
-        self.puts(f, UNSETTLED)
-        f.br(done)
-        f.at(done)
-        f.e('ret void')
+            c = self.prog.collections[r.coll]
+            f = self.fn(g('rule1', r.name), params='i64 %row', comment=f'the rule on line {r.line}, for one {c.name}')
+            cont = f.lab('cont')
+            self.update_body(f, r, c, {}, True)('%row', cont)
+            f.br(cont)
+            f.at(cont)
+            f.e('ret void')
+        for name in dict.fromkeys(r.coll for r in self.prog.rules):
+            f = self.fn(g('settle', name), params='i64 %row',
+                        comment=f'apply the rules about one {name} to that record until nothing changes')
+            rounds(f, [f'call void {g("rule1", r.name)}(i64 %row)' for r in self.prog.rules if r.coll == name])
 
     def main(self):
         """Commands come from stdin. Given a file name, the program also remembers:
@@ -1391,6 +1635,10 @@ class Gen:
         if self.prog.rules:
             self.settle()
         self.live()
+        if uses_chance(self.prog):
+            self.chance()
+        if self.prog.ends or self.prog.board:
+            self.reset()
         self.start()
         self.main()
         return (f'; Generated by the Intent compiler from {source_name}.\n'

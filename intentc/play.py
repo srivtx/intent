@@ -11,7 +11,7 @@ import sys
 import termios
 import time
 
-from .ir import ENTER_PLAY, KEY_CODES, LEAVE_PLAY, LONGEST_STEP, OVER, TOO_SMALL, room
+from .ir import ENTER_PLAY, KEY_CODES, LEAVE_PLAY, LONGEST_STEP, OVER, OVER_HINT, TOO_SMALL, room, uses_chance
 
 
 def decode(data):
@@ -59,12 +59,30 @@ def play(m, out=sys.stdout):
         termios.tcsetattr(fd, termios.TCSADRAIN, raw)
         out.write(ENTER_PLAY)
         last = time.monotonic()
+        if uses_chance(m.prog):         # each time it is played, chance starts somewhere else
+            m.chance = int(time.time() * 1000)
         going = True
         while going:
-            out.write('\x1b[H' + ''.join(line + '\x1b[K\n' for line in m.screen()) + '\x1b[J')
+            out.write('\x1b[H' + ''.join(line + '\x1b[K\n' for line in m.screen(colour=True)) + '\x1b[J')
+            if m.over():                # it stays on show until the player says what next
+                out.write(OVER_HINT + '\x1b[K\n')
+                out.flush()
+                data = b''
+                while not data:
+                    if select.select([fd], [], [], 1)[0]:
+                        data = os.read(fd, 16)
+                        if not data:
+                            going = False
+                            break
+                        if data[0] in (10, 13):
+                            m.reset()
+                            last = time.monotonic()
+                        elif data[0] in (3, 4, ord('q'), ord('Q')) or data == b'\x1b':
+                            going = False
+                        else:
+                            data = b''
+                continue
             out.flush()
-            if m.over():
-                break
             due = min(m.left + [1000])
             if select.select([fd], [], [], max(due, 1) / 1000)[0]:
                 data = os.read(fd, 16)

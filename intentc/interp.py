@@ -8,7 +8,8 @@ Numbers are 64-bit and wrap on overflow. Division truncates toward zero.
 import functools
 import re
 
-from .ir import BAD_WAIT, LONGEST_WAIT, MUTATING, OVER, STATE, builtins, usage
+from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, LONGEST_WAIT, MUTATING, OVER, STATE, builtins,
+                 usage)
 
 UNSETTLED = 'error: the rules keep changing each other'
 ROUNDS = 100
@@ -52,6 +53,8 @@ def ev(e, row, args, m=None):
         return m.parent_row(e[1], row[e[1]])[e[2]]
     if k == 'value':
         return m.data[STATE][0][e[1]]
+    if k == 'rand':
+        return m.draw(e[1], e[2])
     if k == 'if':
         return ev(e[2] if holds(e[1], row, args, m) else e[3], row, args, m)
     a, b = ev(e[2], row, args, m), ev(e[3], row, args, m)
@@ -71,6 +74,8 @@ def holds(c, row, args, m=None):
         return True
     if c[0] == 'cmp':
         return CMP[c[1]](ev(c[2], row, args, m), ev(c[3], row, args, m))
+    if c[0] in ('any', 'none'):     # about another collection: its records are looked at one by one
+        return any(holds(c[2], r, args, m) for r in m.data[c[1]]) == (c[0] == 'any')
     if c[0] == 'and':
         return holds(c[1], row, args, m) and holds(c[2], row, args, m)
     return holds(c[1], row, args, m) or holds(c[2], row, args, m)
@@ -79,17 +84,27 @@ def holds(c, row, args, m=None):
 class Machine:
     def __init__(self, prog):
         self.prog = prog
-        self.data = {c: [] for c in prog.collections}
         self.tasks = {t.name: t for t in prog.tasks}
         self.changed = False
+        self.chance = 0                     # where the run of chance stands; "seed <number>" sets it
+        self.timers = prog.timers()
+        self.builtin = dict(builtins(prog))
+        self.boot = self.reset()            # what the rules say before the first command
+
+    def reset(self):
+        """Everything as it was at the start. Chance is not wound back: a new game draws new numbers."""
+        prog = self.prog
+        self.data = {c: [] for c in prog.collections}
         if STATE in prog.collections:       # the single values start out as declared
             self.data[STATE] = [{f.name: f.init for f in prog.collections[STATE].fields.values()}]
         for s in prog.seeds:                # what is there from the start
             self.data[s.coll].append({f: e[1] for f, e in s.assigns})
-        self.timers = prog.timers()
         self.left = [t.on[1] for t in self.timers]      # milliseconds until each one happens next
-        self.builtin = dict(builtins(prog))
-        self.boot = self.settle()           # what the rules say before the first command
+        return self.settle()
+
+    def draw(self, lo, hi):
+        self.chance = (self.chance * CHANCE_MUL + CHANCE_ADD) & (M - 1)
+        return lo + (self.chance >> 33) % (hi - lo + 1)
 
     # ---- time, keys and the board: all three arrive as commands, so a run can be replayed exactly
     def over(self):
@@ -118,29 +133,51 @@ class Machine:
                 getattr(self, 'do_' + t.kind)(t, {})
         return self.settle()
 
-    def screen(self):
-        """The board as lines of text: later sentences draw over earlier ones, off the board is not drawn."""
+    def screen(self, colour=False):
+        """The board as lines of text: later sentences draw over earlier ones, off the board is not drawn.
+
+        Colour is only put in for a terminal that is being played in; as a command the board is plain text."""
         w, h = self.prog.board
         grid = [[' '] * w for _ in range(h)]
+        ink = [[0] * w for _ in range(h)]
         for d in self.prog.draws:
             for r in (self.data[d.coll] if d.coll else [None]):
                 if holds(d.where, r, {}, self):
                     x, y = ev(d.at[0], r, {}, self), ev(d.at[1], r, {}, self)
                     if 1 <= x <= w and 1 <= y <= h:
                         grid[y - 1][x - 1] = d.glyph
+                        ink[y - 1][x - 1] = COLOURS[d.colour] if d.colour else 0
         edge = '+' + '-' * w + '+'
+
+        def line(cells, inks):
+            if not colour or not any(d.colour for d in self.prog.draws):
+                return '|' + ''.join(cells) + '|'
+            out, cur = '|', 0
+            for ch, code in zip(cells, inks):
+                if code != cur:
+                    out, cur = out + f'\x1b[{code}m', code
+                out += ch
+            return out + ('\x1b[0m' if cur else '') + '|'
 
         def status(names):
             if not names:
                 return []
             row = self.data[STATE][0]
             return ['   '.join(f'{n.replace("_", " ")} {row[n]}' for n in names)]
-        return status(self.prog.above) + [edge] + ['|' + ''.join(g) + '|' for g in grid] + [edge] + \
+        return status(self.prog.above) + [edge] + [line(g, k) for g, k in zip(grid, ink)] + [edge] + \
             status(self.prog.below)
 
     def builtin_command(self, cmd, arg):
         if cmd == 'screen':
             return self.screen()
+        if cmd == 'restart':
+            return self.reset()
+        if cmd == 'seed':
+            n = parse_num(arg)
+            if n is None:
+                return [BAD_SEED]
+            self.chance = n & (M - 1)
+            return []
         if cmd == 'wait':
             ms = parse_num(arg)
             if ms is None or not 0 <= ms <= LONGEST_WAIT:
@@ -245,6 +282,25 @@ class Machine:
                         return []
                     return [f'duplicate {f.name}']
         rows.append({f: a[f] for f in c.fields})
+        return []
+
+    def do_make(self, t, a):
+        """A record that appears by itself: every property is worked out, in the order written."""
+        if not holds(t.where, None, a, self):
+            return []
+        c = self.prog.collections[t.coll]
+        rows = self.data[t.coll]
+        made = {f: ev(e, None, a, self) for f, e in t.assigns}
+        row = {f: made[f] for f in c.fields}
+        for f in c.unique_fields():
+            for i, r in enumerate(rows):
+                if r[f.name] == row[f.name]:
+                    if c.on_dup == 'replace':
+                        rows[i] = row
+                        self.changed = True
+                    return []
+        rows.append(row)
+        self.changed = True
         return []
 
     def do_find(self, t, a):

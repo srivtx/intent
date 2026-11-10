@@ -7,7 +7,7 @@ source lines that caused it.
 """
 from dataclasses import dataclass, field
 
-from .ir import STATE, task_exprs
+from .ir import STATE, cond_anys, conjuncts, task_exprs, walk_cond_exprs, walk_expr
 
 
 @dataclass
@@ -22,6 +22,35 @@ class CollPlan:
 class Plan:
     colls: dict = field(default_factory=dict)
     tasks: dict = field(default_factory=dict)         # task name -> (cost, how)
+    picks: dict = field(default_factory=dict)         # task name -> (unique property, the value it must equal)
+    local_rules: bool = False                         # every rule reads and changes one record only
+
+
+def pick_of(prog, t):
+    """If the task's condition fixes a unique property, at most one record can match: which one?
+
+    "increase the points of the player with a given name": name is unique, so the one player
+    is found through the index instead of looking at every player.
+    """
+    c = prog.collections.get(t.coll)
+    if c is None or c.name == STATE or t.kind not in ('update', 'list', 'agg') or t.where is None:
+        return None
+    if any(e[0] == 'rand' for e in walk_cond_exprs(t.where)):
+        return None                     # chance is drawn once per record looked at; keep looking at each
+    for part in conjuncts(t.where):
+        if part[0] != 'cmp' or part[1] != 'eq':
+            continue
+        for a, b in ((part[2], part[3]), (part[3], part[2])):
+            if a[0] == 'field' and c.fields[a[1]].unique and \
+                    all(e[0] in ('num', 'str', 'param', 'value', 'bin') for e in walk_expr(b)):
+                return a[1], b
+    return None
+
+
+def one_record(t):
+    """Does this rule read and change nothing but the record it is looking at?"""
+    return t.kind == 'update' and not list(cond_anys(t.where)) and \
+        all(e[0] in ('num', 'str', 'field', 'bin', 'if') for e in task_exprs(t))
 
 
 def reaches(t, ref):
@@ -30,13 +59,31 @@ def reaches(t, ref):
         any(n.startswith(ref + '.') for n in t.fields or [])
 
 
+def narrow_settle(prog, plan, t):
+    """After this command, how much do the standing rules have to look at again?
+
+    'all'  - every rule, every record (always right)
+    'row'  - only the one record the command added or changed
+    'none' - nothing: records were only removed, and no rule reads another record
+    The narrow answers are only given when every rule reads and changes a single record, so a
+    record nobody touched is still exactly as the rules left it.
+    """
+    if not plan.local_rules or t.on or t not in prog.tasks:
+        return 'all'
+    if t.kind in ('remove_key', 'remove_where'):
+        return 'none'
+    if t.kind == 'add' or (t.kind == 'update' and t.name in plan.picks):
+        return 'row' if any(r.coll == t.coll for r in prog.rules) else 'none'
+    return 'all'
+
+
 def make_plan(prog, no_index=False):
     plan = Plan()
     for c in prog.collections.values():
         cp = CollPlan(c.name)
         plan.colls[c.name] = cp
         tasks = [t for t in prog.work() if t.coll == c.name]
-        adds = [t for t in tasks if t.kind == 'add']
+        adds = [t for t in tasks if t.kind in ('add', 'make')]
         if c.name == STATE:
             cp.decisions.append(('storage', f'kept side by side in one place, {8 * len(c.fields)} bytes', []))
         else:
@@ -49,6 +96,8 @@ def make_plan(prog, no_index=False):
             for t in tasks:
                 if t.kind in ('find', 'remove_key') and t.key == f.name:
                     why.append((t.line, f'"{t.name}" picks one {c.name} by {f.name} on every call'))
+                elif (pick_of(prog, t) or ('',))[0] == f.name:
+                    why.append((t.line, f'"{t.name}" is about the one {c.name} with a certain {f.name}'))
             if prog.key_of(c.name) is f:
                 for d, rf in prog.children_of(c.name):
                     for t in prog.work():
@@ -84,7 +133,12 @@ def make_plan(prog, no_index=False):
                                       (c.ordered_line or c.line, 'nothing says the order matters')]))
         for t in tasks:
             idx = t.key in cp.indexes if t.key else False
-            if t.kind == 'add':
+            pick = pick_of(prog, t)
+            if pick and pick[0] in cp.indexes:
+                plan.picks[t.name] = pick
+                plan.tasks[t.name] = ('O(1) expected', f'one index probe on {pick[0]}, ' + {
+                    'update': 'changed in place', 'list': 'then print', 'agg': 'nothing else looked at'}[t.kind])
+            elif t.kind in ('add', 'make'):
                 if cp.indexes:
                     plan.tasks[t.name] = ('O(1) expected', 'probe the index for a clash, then append')
                 elif c.unique_fields():
@@ -131,7 +185,7 @@ def make_plan(prog, no_index=False):
         cost, how = plan.tasks[t.name]
         if c.name == STATE:
             cost, how = 'O(1)', ('read the value' if t.kind == 'list' else 'change the value in place')
-        if t.kind == 'add' and any(f.ref for f in c.fields.values()):
+        if t.kind in ('add', 'make') and any(f.ref for f in c.fields.values()):
             how += ', after checking that what it belongs to exists'
         if t.kind in ('remove_key', 'remove_where'):
             for d, rf in prog.children_of(c.name):
@@ -143,9 +197,17 @@ def make_plan(prog, no_index=False):
     for t in prog.tasks:
         if t.kind == 'calc':
             plan.tasks[t.name] = ('O(1)', 'straight-line arithmetic')
+    plan.local_rules = bool(prog.rules) and all(one_record(r) for r in prog.rules)
     for t in prog.tasks + prog.events:
-        if t.kind in ('add', 'remove_key', 'remove_where', 'update') and prog.rules:
+        if t.kind in ('add', 'remove_key', 'remove_where', 'update', 'make') and prog.rules:
             cost, how = plan.tasks[t.name]
             n = len(prog.rules)
-            plan.tasks[t.name] = (cost, how + f'; then the {n} rule{"s are" if n > 1 else " is"} applied until nothing changes')
+            narrow = narrow_settle(prog, plan, t)
+            if narrow == 'none':
+                how += '; no rule has to look again, since each rule reads only the record it changes'
+            elif narrow == 'row':
+                how += f'; then the rules look again at just that {t.coll}'
+            else:
+                how += f'; then the {n} rule{"s are" if n > 1 else " is"} applied until nothing changes'
+            plan.tasks[t.name] = (cost, how)
     return plan

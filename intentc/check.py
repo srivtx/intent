@@ -6,12 +6,12 @@ Four tiers, in this order, and each is reported differently:
   assumed   - a naming convention (email -> text); reported as a note, overridable
   asked     - nothing decides it; compilation stops with a question
 """
-from .ir import NEGATE, STATE, TEXT_OPS, Diag, cond_cmps, task_conds, task_exprs, walk_expr
+from .ir import NEGATE, STATE, TEXT_OPS, Diag, cond_anys, cond_cmps, task_conds, task_exprs, walk_cond_exprs, walk_expr
 from .lexicon import CONVENTION
 
 def nonzero(c, yes):
     """The values that cannot be zero when condition c is true (yes) or false (not yes)."""
-    if c is None:
+    if c is None or c[0] in ('any', 'none'):
         return []
     if c[0] == 'cmp':
         op = c[1] if yes else NEGATE.get(c[1])
@@ -50,7 +50,7 @@ class Checker:
     # ------------------------------------------------------------------ types
     def ty(self, e, coll, t):
         k = e[0]
-        if k in ('num', 'bin'):
+        if k in ('num', 'bin', 'rand'):
             return 'int'
         if k == 'str':
             return 'text'
@@ -71,6 +71,8 @@ class Checker:
             return f'"{e[1]}"'
         if e[0] == 'if':
             return 'an either-or value'
+        if e[0] == 'rand':
+            return 'a random number'
         return {'field': f'"{e[1]}"', 'param': f'the given {e[1]}', 'num': str(e[1]),
                 'str': f'"{e[1]}"', 'bin': 'a calculation'}[e[0]] if e[0] != 'num' else str(e[1])
 
@@ -120,7 +122,23 @@ class Checker:
                 ch |= self.equal(e[2], e[3], coll, t)
         for f, e in t.assigns:
             ch |= self.equal(('field', f), e, coll, t)
-        for c in task_conds(t):
+        ch |= self.compared(task_conds(t), coll, t)
+        for node in cond_anys(t.where):     # "if any rock ...": its properties are the rock's
+            other = self.prog.collections[node[1]]
+            for e in walk_cond_exprs(node[2]):
+                if e[0] == 'bin':
+                    ch |= self.need(e[2], 'int', other, t)
+                    ch |= self.need(e[3], 'int', other, t)
+            ch |= self.compared(cond_cmps(node[2]), other, t)
+        for e in t.at or ():            # a place on the board is two numbers
+            ch |= self.need(e, 'int', coll, t)
+        if t.kind == 'agg' and t.field:
+            ch |= self.need(('field', t.field), 'int', coll, t)
+        return ch
+
+    def compared(self, cmps, coll, t):
+        ch = False
+        for c in cmps:
             if c[1] in ('eq', 'ne'):
                 ch |= self.equal(c[2], c[3], coll, t)
             elif c[1] in TEXT_OPS:
@@ -132,10 +150,6 @@ class Checker:
                 else:
                     ch |= self.need(c[2], 'int', coll, t)
                     ch |= self.need(c[3], 'int', coll, t)
-        for e in t.at or ():            # a place on the board is two numbers
-            ch |= self.need(e, 'int', coll, t)
-        if t.kind == 'agg' and t.field:
-            ch |= self.need(('field', t.field), 'int', coll, t)
         return ch
 
     def link(self):
@@ -196,7 +210,7 @@ class Checker:
                        f'e.g. "Each {c.name} has a name and an age."')
             if c.on_dup == 'replace' and len(c.unique_fields()) > 1:
                 self.d('error', c.on_dup_line, 'replacing duplicates with more than one unique property is not supported yet')
-        if not P.tasks and P.collections:
+        if not P.tasks and not P.events and P.collections:
             line = max(c.line for c in P.collections.values())
             self.d('note', line, 'this program describes information but nothing to do with it yet')
         for c in P.collections.values():
@@ -242,6 +256,12 @@ class Checker:
             if t.kind == 'remove_where' and any(rf.on_removed == 'restrict' for _, rf in P.children_of(coll.name)):
                 self.d('error', t.line, f'removing {coll.label.lower()} that other records belong to cannot happen '
                        f'by itself yet')
+        for t in P.rules + P.looks() + [x for x in P.work() if x.kind == 'remove_where']:
+            if any(e[0] == 'rand' for e in task_exprs(t)):
+                what = ('a rule looks again and again, so it would draw a new number each time'
+                        if t in P.rules else 'this is looked at many times, and would be different each time')
+                self.d('error', t.line, 'chance cannot be used here', what,
+                       'draw the number in a sentence that happens at one moment, and keep it in a single value')
         for t in P.rules:
             coll = P.collections[t.coll]
             for f, e in t.assigns:
@@ -261,7 +281,7 @@ class Checker:
                 self.divisions(e, safe, t)
             if t.expr:
                 self.divisions(t.expr, [], t)
-            for c in cond_cmps(t.where):
+            for c in list(cond_cmps(t.where)) + [c for node in cond_anys(t.where) for c in cond_cmps(node[2])]:
                 self.divisions(c[2], [], t)
                 self.divisions(c[3], [], t)
             if t.kind == 'update':
@@ -271,7 +291,7 @@ class Checker:
                     if coll.fields[f].unique:
                         self.d('error', t.line, f'changing "{f}" in bulk is not supported yet because it is unique',
                                f'line {coll.fields[f].unique_line} says so; a bulk change could create duplicates')
-            if t.kind == 'add':
+            if t.kind in ('add', 'make'):
                 u = coll.unique_fields()
                 if u and coll.on_dup is None:
                     self.d('question', t.line,
