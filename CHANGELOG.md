@@ -3,6 +3,27 @@
 Intent is experimental. Until 1.0, any version may change what a sentence means; `./intent check`
 always shows the current reading.
 
+## 0.8.0 — 2026-11-11
+
+Decimal numbers and money, the first piece of making a small business back end possible.
+
+### Added
+- **Decimals.** `a price (money)`, `(decimal)`, `(decimal number)`, `(currency)`,
+  `a decimal price`, `The till starts at 0.00.`, `take a decimal p`, and literals like `12.50`
+  anywhere a number can stand. Kept exactly as whole hundredths in 64 bits, natively and in the
+  reference; printed with two places.
+- **Which numbers are decimal is inferred.** A given value, single value or untyped property
+  that meets a decimal becomes one; the checker then makes every place where a whole number
+  meets a decimal explicit, so the backends only ever do whole-number arithmetic.
+- Multiplication and division of decimals round to the nearest hundredth, halves away from
+  zero, the same in LLVM IR and Python (tested on random commands, including the 64-bit edges).
+- Periods can be written with a decimal: `every 0.5 seconds`.
+
+### Changed
+- `examples/shop.intent` keeps prices as money instead of cents.
+- Giving a whole-number property a decimal value is an error that points at its declaration.
+- The note "whole-number division drops the remainder" is no longer given for decimals.
+
 ## 0.7.0 — 2026-11-11
 
 Records of different collections can meet, a sentence can count, and a program can be served

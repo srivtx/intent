@@ -9,13 +9,24 @@ import functools
 import re
 
 from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, INK_LETTER, LONGEST_WAIT, MUTATING, OVER, STATE, builtins,
-                 decides_first, usage)
+                 decides_first, fmt_dec, rdiv, usage)
 
 UNSETTLED = 'error: the rules keep changing each other'
 ROUNDS = 100
 
 M = 1 << 64
 NUM_RE = re.compile(r'[ \t\n\v\f\r]*[+-]?[0-9]+')
+DEC_RE = re.compile(r'[ \t\n\v\f\r]*([+-]?)([0-9]+)(?:\.([0-9]{1,2}))?')
+
+
+def parse_dec(s):
+    """"12.5" -> 1250 hundredths; None when it is not a number with at most two decimal places.
+    Like a whole number, one too large to keep becomes the largest (or smallest) there is."""
+    m = DEC_RE.fullmatch(s)
+    if not m:
+        return None
+    n = int(m.group(2)) * 100 + int((m.group(3) or '').ljust(2, '0'))
+    return max(-(1 << 63), min((1 << 63) - 1, -n if m.group(1) == '-' else n))
 
 
 def wrap(x):
@@ -57,6 +68,10 @@ def ev(e, row, args, m=None):
         return m.draw(e[1], e[2])
     if k == 'outer':
         return m.outer[e[1]]
+    if k == 'dec':
+        return e[1]
+    if k == 'cents':
+        return wrap(ev(e[1], row, args, m) * 100)
     if k == 'agg':
         rows = among(e[2], e[4], row, args, m)
         if e[1] == 'count':
@@ -70,6 +85,10 @@ def ev(e, row, args, m=None):
     a, b = ev(e[2], row, args, m), ev(e[3], row, args, m)
     if e[1] == 'mul':
         return wrap(a * b)
+    if e[1] == 'dmul':
+        return wrap(rdiv(wrap(a * b), 100))
+    if e[1] == 'rdiv':
+        return wrap(rdiv(a, b))
     if e[1] == 'add':
         return wrap(a + b)
     if e[1] == 'sub':
@@ -194,7 +213,8 @@ class Machine:
             if not names:
                 return []
             row = self.data[STATE][0]
-            return ['   '.join(f'{n.replace("_", " ")} {row[n]}' for n in names)]
+            S = self.prog.collections[STATE].fields
+            return ['   '.join(f'{n.replace("_", " ")} {fmt_dec(row[n]) if S[n].dec else row[n]}' for n in names)]
         return status(self.prog.above) + [edge] + [line(g, k) for g, k in zip(grid, ink)] + [edge] + \
             status(self.prog.below)
 
@@ -232,13 +252,17 @@ class Machine:
                 return []
         return [UNSETTLED]
 
-    def show(self, row, fields=None):
+    def show(self, row, fields=None, coll=None):
+        c = self.prog.collections.get(coll)
+
         def one(f):
             if '.' in f:
                 ref, name = f.split('.')
-                return self.parent_row(ref, row[ref])[name]
-            return row[f]
-        return ','.join(str(one(f)) for f in (fields or row))
+                v, fl = self.parent_row(ref, row[ref])[name], self.prog.collections[c.fields[ref].ref].fields[name]
+            else:
+                v, fl = row[f], c.fields[f] if c else None
+            return fmt_dec(v) if fl is not None and fl.dec else str(v)
+        return ','.join(one(f) for f in (fields or row))
 
     # ---- relationships: a record points at its owner by the owner's unique property
     def parent_row(self, ref, value):
@@ -289,9 +313,9 @@ class Machine:
             if i >= len(toks):
                 return [f'error: missing {p}']
             if t.ptypes[p] == 'int':
-                v = parse_num(toks[i])
+                v = parse_dec(toks[i]) if p in t.pdec else parse_num(toks[i])
                 if v is None:
-                    return [f'error: {p} must be a number']
+                    return [f'error: {p} must be a number' + (' like 12.50' if p in t.pdec else '')]
                 args[p] = v
             else:
                 args[p] = toks[i]
@@ -299,7 +323,8 @@ class Machine:
         return out + self.settle() if t.kind in MUTATING else out
 
     def do_calc(self, t, a):
-        return [str(ev(t.expr, None, a, self))]
+        v = ev(t.expr, None, a, self)
+        return [fmt_dec(v) if t.dec else str(v)]
 
     def do_add(self, t, a):
         c = self.prog.collections[t.coll]
@@ -337,7 +362,7 @@ class Machine:
         return []
 
     def do_find(self, t, a):
-        out = [self.show(r) for r in self.data[t.coll] if r[t.key] == a[t.key]]
+        out = [self.show(r, None, t.coll) for r in self.data[t.coll] if r[t.key] == a[t.key]]
         return out or ['none']
 
     def do_remove_key(self, t, a):
@@ -390,19 +415,22 @@ class Machine:
             rows.sort(key=functools.cmp_to_key(cmp))
         if t.limit is not None:
             rows = rows[:t.limit]
-        return [self.show(r, t.fields) for _, r in rows]
+        return [self.show(r, t.fields, t.coll) for _, r in rows]
 
     def do_agg(self, t, a):
         rows = [r for r in self.data[t.coll] if holds(t.where, r, a, self)]
         if t.fn == 'count':
             return [str(len(rows))]
         vals = [r[t.field] for r in rows]
+        dec = self.prog.collections[t.coll].fields[t.field].dec
+        say = fmt_dec if dec else str
         if t.fn == 'sum':
-            return [str(wrap(sum(vals)))]
+            return [say(wrap(sum(vals)))]
         if not vals:
             return ['none']
         if t.fn == 'max':
-            return [str(max(vals))]
+            return [say(max(vals))]
         if t.fn == 'min':
-            return [str(min(vals))]
-        return ['%.2f' % (float(wrap(sum(vals))) / float(len(vals)))]
+            return [say(min(vals))]
+        mean = float(wrap(sum(vals))) / float(len(vals))
+        return ['%.2f' % (mean / 100.0 if dec else mean)]
