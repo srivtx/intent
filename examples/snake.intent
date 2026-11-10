@@ -1,0 +1,42 @@
+# Snake. Build it and run it in a terminal:
+#
+#     ./intent build examples/snake.intent && examples/snake
+#
+# Steer with the arrow keys; q stops. When the game is over, enter plays again.
+
+The board is 30 wide and 14 high.
+
+# Where the head is, and which way it is going.
+The column starts at 10. The row starts at 7.
+The sideways speed starts at 1. The downward speed starts at 0.
+
+The length starts at 4.
+The score starts at 0.
+The food x starts at 20. The food y starts at 7.
+
+# The body is the places the head has been lately.
+Segments is a collection. Each segment has an x (number), a y (number) and an age (number).
+
+# One step. Things that happen at the same moment happen in the order written.
+Every 120 milliseconds, add a segment whose x is the column, whose y is the row and whose age is 0.
+Every 120 milliseconds, the column increases by the sideways speed and the row increases by the downward speed.
+Every 120 milliseconds, increase the age of every segment by 1.
+Every 120 milliseconds, remove the segments whose age is at least the length.
+Every 120 milliseconds, if the column is the food x and the row is the food y,
+  the score increases by 1, the length increases by 1,
+  the food x becomes a random number between 1 and 30,
+  and the food y becomes a random number between 1 and 14.
+
+# Steering. A snake cannot turn straight back on itself.
+When the left key is pressed, if the sideways speed is 0, the sideways speed becomes -1 and the downward speed becomes 0.
+When the right key is pressed, if the sideways speed is 0, the sideways speed becomes 1 and the downward speed becomes 0.
+When the up key is pressed, if the downward speed is 0, the downward speed becomes -1 and the sideways speed becomes 0.
+When the down key is pressed, if the downward speed is 0, the downward speed becomes 1 and the sideways speed becomes 0.
+
+The game is over when the column is under 1 or the column is over 30 or the row is under 1 or the row is over 14.
+The game is over when any segment's x is the column and its y is the row.
+
+Draw each segment at its x and y as a green "o".
+Draw a red "*" at the food x and the food y.
+Draw a yellow "@" at the column and the row.
+Show the score above the board.
