@@ -3,6 +3,29 @@
 Intent is experimental. Until 1.0, any version may change what a sentence means; `./intent check`
 always shows the current reading.
 
+## 0.4.0 — 2026-11-10
+
+### Added
+- **Single values.** `The score is a number.` `The best starts at 0.` `The limit is 100.`
+  Shown, changed and remembered like properties; usable in any condition or calculation.
+- **Values that depend on a condition.** `... a if a is over b, otherwise b`, chained as often
+  as needed, in calculations and in changes (`Set the grade to "pass" if ..., otherwise "fail".`).
+- **Standing rules.** `When the score is over the best, the best becomes the score.`
+  `Whenever a player's points are under 0, remove them.` `The level is always ... if ...,
+  otherwise ...` Applied after every change until nothing moves; compiled natively.
+- Calculations accept one-letter names (`take a number a and a number b`) and
+  `take two numbers a and b`.
+- `increase the points of the player with a given name by a given amount` (the amount may
+  follow the condition).
+- `examples/calculator.intent`, `examples/arcade.intent`.
+
+### Changed
+- Dividing by a value that might be zero is now a **question** (*what should happen when it is
+  zero?*), answered with `if ... is not 0, otherwise ...`, instead of an error. Dividing by an
+  input is therefore possible.
+- An unnamed sentence starting with `when` that changes or removes something is now a standing
+  rule, not a command. Name it (`Retire: when ...`) to keep it a command.
+
 ## 0.3.0 — 2026-11-10
 
 ### Added
