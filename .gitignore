@@ -4,3 +4,5 @@ __pycache__/
 *.ll
 intent_language_research_conversation.txt
 .DS_Store
+_site/
+.vercel/
