@@ -1,7 +1,7 @@
-# Stock for a small shop. Prices are in cents because this version has whole numbers only.
+# Stock for a small shop. Prices are money: kept exactly, to the cent.
 
 Products is a collection.
-Each product has a code (text), a name, a price (number) and a stock (number).
+Each product has a code (text), a name, a price (money) and a stock (number).
 Codes are unique. Reject duplicates.
 
 "running low" means stock under 5.
