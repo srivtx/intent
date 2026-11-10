@@ -10,6 +10,7 @@ Any step that cannot proceed raises a Problem pointing at the exact words.
 """
 import copy
 import difflib
+import re
 from dataclasses import dataclass, replace
 
 from .ir import (KEYS, LONGEST_WAIT, STATE, Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, fmt_event,
@@ -291,6 +292,8 @@ class Parser:
             for c in content[cut + 1:h]:
                 if c.kind == 'UNK' and singular(c.toks[0].text) != coll.name:
                     raise self.unknown_word(c)
+                if c.kind not in ('UNK', 'QUANT', 'GEN', 'COLL', 'WHERE'):
+                    raise self.leftover([c])
             return reading + '; ' + self.decl_fields(toks, content, h, coll)
         h = index_of(content, 'HAS')
         if h and not self.prog.collections.get(singular(content[h - 1].toks[0].text)) and \
@@ -662,11 +665,12 @@ class Parser:
             kt = k
             k += 1
             said_key = False
-            while k < n and w[k] in ('arrow', 'key', 'button'):
-                said_key = True
-                k += 1
+            for group in (('arrow',), ('key', 'button')):
+                if k < n and w[k] in group:
+                    said_key = True
+                    k += 1
             if not pressing:
-                while k < n and w[k] in ('is', 'gets', 'are'):
+                if k < n and w[k] in ('is', 'gets'):
                     k += 1
                 if not (k < n and w[k] in PRESSED):
                     continue
@@ -709,6 +713,10 @@ class Parser:
                     raise self.p('error', c, 'only single values can be shown beside the board in this version',
                                  hint='e.g. "The score is a number." then "Show the score above the board."')
             names = [c.val for c in content if c.kind == 'VALUE']
+            listed = ''.join('v' if c.kind == 'VALUE' else 's' if c.kind == 'ACT' else 'j' for c in content)
+            if names and not re.fullmatch(r's?v(j+v)*', listed):
+                raise self.p('error', toks, 'I can\'t tell which values to show there',
+                             hint='e.g. "Show the score and the lives above the board."')
             if not names:
                 raise self.p('error', toks, 'show what there?', hint='e.g. "Show the score above the board."')
             where = BESIDE[words[side]]
@@ -716,27 +724,32 @@ class Parser:
             return f'{where} the board: ' + ', '.join(names)
         if self.prog.board:
             raise self.p('error', toks, 'the board already has a size', f'line {self.prog.board_line} gives it')
-        w = h = None
+        shape, sizes = '', []
         for i, t in enumerate(toks):
+            word = words[i]
             if t.kind == 'num':
                 if '.' in t.text or int(t.text) < 1:
                     raise self.p('error', t, 'a board is a whole number of characters wide and high')
-                v, nxt = int(t.text), words[i + 1] if i + 1 < len(toks) else None
-                prev = words[i - 1] if i else None
-                if nxt in WIDE_WORDS or (nxt in ('by', 'x') and w is None):
-                    w = v
-                elif nxt in HIGH_WORDS or prev in ('by', 'x'):
-                    h = v
-                else:
-                    raise self.p('error', t, 'is this how wide the board is, or how high?',
-                                 hint='e.g. "The board is 30 wide and 15 high."')
-            elif t.kind == 'sym' and t.text == ',':
+                shape += 'N'
+                sizes.append(int(t.text))
+            elif word in ('the', 'a', 'an', 'there'):
                 continue
-            elif words[i] is None or not (words[i] in BOARD_FILL | BOARD_WORDS | WIDE_WORDS | HIGH_WORDS):
-                raise self.leftover([CT('UNK', t.text, [t])])
-        if w is None or h is None:
-            raise self.p('error', toks, f'how {"wide" if w is None else "high"} is the board?',
-                         hint='e.g. "The board is 30 wide and 15 high."')
+            else:
+                sym = 'B' if word in BOARD_WORDS else 'W' if word in WIDE_WORDS else 'H' if word in HIGH_WORDS else \
+                    'X' if word in ('by', 'x') else 'A' if word == 'and' or t.text == ',' else \
+                    'V' if word in ('is', 'has', 'with', 'of') else 'S' if word in ('show', 'draw', 'make') and not i \
+                    else None
+                if sym is None:
+                    raise self.leftover([CT('UNK', t.text, [t])])
+                shape += sym
+        size = r'(NWA?NH|NHA?NW|NXN)'
+        m = re.fullmatch(f'S?BV?{size}', shape) or re.fullmatch(f'S?{size}B', shape)
+        if not m:
+            lone = re.fullmatch(r'S?BV?N([WH])', shape)
+            raise self.p('error', toks, f'how {"high" if lone and lone.group(1) == "W" else "wide"} is the board?'
+                         if lone else 'I can\'t tell how big the board is',
+                         hint='e.g. "The board is 30 wide and 12 high." or "The board is 30 by 12."')
+        w, h = sizes[::-1] if m.group(1).startswith('NH') else sizes
         if w > 200 or h > 60:
             raise self.p('error', toks, 'a board can be at most 200 wide and 60 high in this version')
         self.prog.board, self.prog.board_line = (w, h), toks[0].line
@@ -772,7 +785,14 @@ class Parser:
             raise self.p('error', place or toks, 'a place on the board is two numbers: how far across, and how far down',
                          hint=hint)
         xy = (self.whole_expr(place[:sep]), self.whole_expr(place[sep + 1:]))
-        subject = self.content_of(rest[:at]) + who + cond
+        what = self.content_of(rest[:at])
+        cutoff = next((i for i, c in enumerate(what) if c.kind in ('WHERE', 'HAS')), len(what))
+        for c in what[:cutoff]:
+            if c.kind == 'UNK':
+                raise self.unknown_word(c)
+            if c.kind not in ('COLL', 'QUANT', 'GEN'):
+                raise self.leftover([c])
+        subject = what + who + cond
         used = [c for c in place if c.kind == 'FIELD']
         if used and not any(c.kind == 'COLL' for c in subject):
             subject = [CT('COLL', self.scope(used).name, used[0].toks)] + subject
@@ -801,18 +821,24 @@ class Parser:
                     for c in content[1:]):
             return None
         coll = self.prog.collections[content[0].val]
-        given, f = {}, None
+        given, f, joined = {}, None, True
         for c in content[1:]:
             if c.kind == 'FIELD':
                 if f or c.val not in coll.fields or c.val in given:
                     raise self.p('error', c, f'I expected a value for "{f}" here' if f else
                                  f'"{c.val}" is given twice' if c.val in given else
                                  f'{coll.label} has no property "{c.val}"')
-                f = c.val
+                f, joined = c.val, True
             elif c.kind in ('NUM', 'STR'):
                 if not f:
                     raise self.p('error', c, 'which property is this the value of?', self.could_be(coll))
                 given[f], f = ('num' if c.kind == 'NUM' else 'str', c.val), None
+            elif c.kind in ('IS', 'EQSYM'):
+                if not f or not joined:
+                    raise self.leftover([c])
+                joined = False          # one "is" between a property and its value
+            elif f:
+                raise self.leftover([c])
         missing = [n for n in coll.fields if n not in given]
         if f or missing:
             raise self.p('question', toks, f'what is the {f or missing[0]} of this {coll.name}?',
@@ -832,8 +858,10 @@ class Parser:
         if not tail:
             return None
         a = i
-        while a and words[a - 1] in ('the', 'it', 'is'):
+        if a and words[a - 1] == 'the':
             a -= 1
+        elif a > 1 and words[a - 2:a] == ['it', 'is']:
+            a -= 2
         rest = self.cut(toks, a, i + 1 + tail)
         w = [t.text if t.kind == 'word' else '' for t in rest]
         L = next((len(st) for st in STARTERS if tuple(w[:len(st)]) == st), 0)
@@ -849,7 +877,7 @@ class Parser:
         k = 0
         while k < len(content) and content[k].kind == 'UNK':
             k += 1
-        rest = [c for c in content[k:] if c.kind != 'WHERE']
+        rest = [c for i, c in enumerate(content[k:]) if not (c.kind == 'WHERE' and i and content[k + i - 1].kind == 'TYPE')]
         kinds = [c.kind for c in rest]
         if k == 0 and kinds[:2] == ['VALUE', 'STARTS'] and len(rest) == 3 and rest[2].kind in ('NUM', 'STR'):
             f = self.state.fields[rest[0].val]
@@ -1328,13 +1356,16 @@ class Parser:
                 (p[0].kind in ('NUM', 'LP', 'PARAM', 'SCALE') and any(c.kind == 'OP' for c in p[:stop])) or \
                 (p[0].kind == 'PARAM' and 0 < stop < len(p)):
             lhs, i = self.parse_expr(p[:stop])       # "whose price times quantity is over 100"
-        op, neg, explicit = None, False, False
+        op, neg, explicit, last_cmp = None, False, False, None
         while i < len(p) and p[i].kind in ('IS', 'NOT', 'CMP', 'EQSYM'):
             c = p[i]
             if c.kind == 'NOT':
                 neg = not neg
             elif c.kind == 'CMP':
-                op, explicit = c.val, True
+                if explicit:
+                    raise self.p('question', [last_cmp, c], f'"{last_cmp.text}" or "{c.text}"?',
+                                 'two comparisons side by side', 'keep one of them')
+                op, explicit, last_cmp = c.val, True, c
             elif c.kind == 'EQSYM':
                 op = 'eq'
             i += 1
