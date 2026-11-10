@@ -26,6 +26,7 @@ STEP_MS = 50
 
 
 def build():
+    os.makedirs(os.path.dirname(BIN), exist_ok=True)
     r = subprocess.run([os.path.join(ROOT, "intent"), "build", SRC, "-o", BIN], capture_output=True, text=True)
     if r.returncode:
         print(r.stdout, r.stderr)
