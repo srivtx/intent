@@ -8,7 +8,10 @@ Numbers are 64-bit and wrap on overflow. Division truncates toward zero.
 import functools
 import re
 
-from .ir import usage
+from .ir import MUTATING, STATE, usage
+
+UNSETTLED = 'error: the rules keep changing each other'
+ROUNDS = 100
 
 M = 1 << 64
 NUM_RE = re.compile(r'[ \t\n\v\f\r]*[+-]?[0-9]+')
@@ -47,6 +50,10 @@ def ev(e, row, args, m=None):
         return args[e[1]]
     if k == 'pfield':
         return m.parent_row(e[1], row[e[1]])[e[2]]
+    if k == 'value':
+        return m.data[STATE][0][e[1]]
+    if k == 'if':
+        return ev(e[2] if holds(e[1], row, args, m) else e[3], row, args, m)
     a, b = ev(e[2], row, args, m), ev(e[3], row, args, m)
     if e[1] == 'mul':
         return wrap(a * b)
@@ -74,6 +81,22 @@ class Machine:
         self.prog = prog
         self.data = {c: [] for c in prog.collections}
         self.tasks = {t.name: t for t in prog.tasks}
+        self.changed = False
+        if STATE in prog.collections:       # the single values start out as declared
+            self.data[STATE] = [{f.name: f.init for f in prog.collections[STATE].fields.values()}]
+        self.boot = self.settle()           # what the rules say before the first command
+
+    def settle(self):
+        """Apply the standing rules, in the order written, until a whole round changes nothing."""
+        if not self.prog.rules:
+            return []
+        for _ in range(ROUNDS):
+            self.changed = False
+            for r in self.prog.rules:
+                getattr(self, 'do_' + r.kind)(r, {})
+            if not self.changed:
+                return []
+        return [UNSETTLED]
 
     def show(self, row, fields=None):
         def one(f):
@@ -110,6 +133,10 @@ class Machine:
 
     def run(self, line):
         """Execute one command line; return the lines it prints."""
+        boot, self.boot = self.boot, []
+        return boot + self.command(line)
+
+    def command(self, line):
         line = line[:-1] if line.endswith('\n') else line
         line = line[:-1] if line.endswith('\r') else line
         if not line:
@@ -132,10 +159,11 @@ class Machine:
                 args[p] = v
             else:
                 args[p] = toks[i]
-        return getattr(self, 'do_' + t.kind)(t, args)
+        out = getattr(self, 'do_' + t.kind)(t, args)
+        return out + self.settle() if t.kind in MUTATING else out
 
     def do_calc(self, t, a):
-        return [str(ev(t.expr, None, a))]
+        return [str(ev(t.expr, None, a, self))]
 
     def do_add(self, t, a):
         c = self.prog.collections[t.coll]
@@ -174,6 +202,7 @@ class Machine:
             return [refusal]
         self.data[cname] = [r for r in rows if not goes(r)]
         if gone:
+            self.changed = True
             self.swept(cname)
         return None
 
@@ -181,7 +210,9 @@ class Machine:
         for r in self.data[t.coll]:
             if holds(t.where, r, a, self):
                 for f, e in t.assigns:
-                    r[f] = ev(e, r, a, self)
+                    v = ev(e, r, a, self)
+                    self.changed |= v != r[f]
+                    r[f] = v
         return []
 
     def do_list(self, t, a):

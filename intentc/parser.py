@@ -12,7 +12,8 @@ import copy
 import difflib
 from dataclasses import dataclass, replace
 
-from .ir import Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, negate, walk_expr
+from .ir import (STATE, Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, fmt_expr, negate, task_exprs,
+                 walk_expr)
 from .lexicon import (CONVENTION, COUNT_NOUNS, MAX_PHRASE, PHRASES, SYMS, TYPE_WORDS, UNSUPPORTED_TYPES, all_known_words,
                       singular)
 from .source import Source, Tok, split_sentences, tokenize
@@ -91,6 +92,8 @@ class Parser:
         self.cur = []
         self.readings = []          # (line, sentence text, what it was understood as)
         self.macros = {}            # words the program taught us: (w1, w2..) -> ('phrase'|'noun', tokens)
+        self.state = Collection(STATE, 'single values')     # "The score is a number.": one record of values
+        self.as_rule = False
 
     # ------------------------------------------------------------------ diagnostics
     def p(self, level, where, msg, label='', hint=''):
@@ -109,7 +112,8 @@ class Parser:
 
     def unknown_word(self, c):
         word = c.toks[0].text
-        pool = list(self.prog.field_names()) + list(self.prog.collections) + all_known_words()
+        pool = list(self.state.fields) + list(self.prog.field_names()) + list(self.prog.collections) + \
+            all_known_words()
         close = [w for w in difflib.get_close_matches(word, pool, n=3, cutoff=0.8) if w != word]
         hint = (f'did you mean "{close[0]}"? ' if close else '') + \
             "I never drop a word I don't understand, because it might change the meaning."
@@ -124,6 +128,8 @@ class Parser:
         for f in self.prog.field_names():
             names.update(f.split('_'))
         names.update(w for key in self.macros for w in key)
+        for v in self.state.fields:
+            names.update(v.split('_'))
         words = set(all_known_words()) | names | {n + 's' for n in names}
         return {w for w in words if w.isalpha()}
 
@@ -143,11 +149,13 @@ class Parser:
         return any(edit_distance(singular(word), n) <= (1 if len(n) < 8 else 2) for n in self.prog.collections)
 
     def snapshot(self):
-        return copy.deepcopy(self.prog), list(self.diags), list(self.readings), dict(self.macros)
+        return copy.deepcopy(self.prog), list(self.diags), list(self.readings), dict(self.macros), \
+            copy.deepcopy(self.state)
 
     def restore(self, snap):
         self.prog, self.diags, self.readings = copy.deepcopy(snap[0]), list(snap[1]), list(snap[2])
         self.macros = dict(snap[3])
+        self.state = copy.deepcopy(snap[4])
 
     def respell(self, toks, problem, depth=0):
         """Every way of correcting the unknown word(s) that makes the whole sentence readable.
@@ -251,7 +259,7 @@ class Parser:
         if taught:
             return taught
         toks = self.cur = self.expand_sentence(toks)
-        cts = self.normalize(toks)
+        cts = self.short_names(self.normalize(toks))
         content = [c for c in cts if c.kind != 'FILLER']
         kinds = {c.kind for c in content}
         colls = [c for c in content if c.kind == 'COLL']
@@ -282,6 +290,9 @@ class Parser:
             label = tok.raw if tok.text != name else tok.raw + 's'
             self.prog.collections[name] = Collection(name, label, tok.line)
             return f'collection {name}; ' + self.decl_fields(toks, content, h, self.prog.collections[name])
+        declared = self.decl_value(content)
+        if declared:
+            return declared
         taught = self.teach_noun(toks, content)
         if taught:
             return taught
@@ -359,6 +370,7 @@ class Parser:
     def taken(self, key, where):
         name = ' '.join(key)
         if key in PHRASES or key in self.macros or '_'.join(key) in self.prog.field_names() or \
+                '_'.join(key) in self.state.fields or \
                 (len(key) == 1 and key[0] in self.prog.collections):
             raise self.p('error', where, f'"{name}" already has a meaning',
                          'a word means one thing in one program', 'pick a different word')
@@ -475,6 +487,10 @@ class Parser:
                     if key in fields:
                         el, ev = L, ('FIELD', key)
                         break
+                    raw = '_'.join(x.text for x in seg)
+                    if key in self.state.fields or raw in self.state.fields:
+                        el, ev = L, ('VALUE', key if key in self.state.fields else raw)
+                        break
             if el <= 1 and singular(t.text) in self.prog.collections:
                 el, ev = 1, ('COLL', singular(t.text))      # a collection name, even if a property shares it
             if el:                                          # a declared name beats any built-in phrase
@@ -497,6 +513,68 @@ class Parser:
                 out.append(CT('UNK', t.text, [t]))
                 i += 1
         return out
+
+    def short_names(self, cts):
+        """"take a number a and a number b": here the second "a" is a name, not an article."""
+        if not any(c.kind == 'TAKE' for c in cts):
+            return cts
+        named, out = False, []
+        for i, c in enumerate(cts):
+            if c.kind == 'FILLER' and len(c.toks) == 1 and c.toks[0].text == 'a':
+                nxt = cts[i + 1].kind if i + 1 < len(cts) else None
+                prev = cts[i - 1].kind if i else None
+                if (named and nxt not in ('UNK', 'TYPE', 'FILLER')) or \
+                        (prev == 'TYPE' and nxt not in ('UNK', 'TYPE', 'FILLER', 'NUM')) or \
+                        (prev == 'TAKE' and nxt in ('AND', 'COMMA')):
+                    named = True
+                    c = CT('UNK', 'a', c.toks)
+            out.append(c)
+        return out
+
+    # ------------------------------------------------------------------ single values
+    def decl_value(self, content):
+        """"The score is a number."  "The limit is 100."  "The score starts at 0."  -> one value, kept."""
+        k = 0
+        while k < len(content) and content[k].kind == 'UNK':
+            k += 1
+        rest = [c for c in content[k:] if c.kind != 'WHERE']
+        kinds = [c.kind for c in rest]
+        if k == 0 and kinds[:2] == ['VALUE', 'STARTS'] and len(rest) == 3 and rest[2].kind in ('NUM', 'STR'):
+            f = self.state.fields[rest[0].val]
+            if (f.type == 'int') != (rest[2].kind == 'NUM'):
+                raise self.p('error', rest[2], f'"{f.name}" is {"a number" if f.type == "int" else "text"}, '
+                             f'so it cannot start as this')
+            f.init = rest[2].val
+            return f'value {f.name} starts at {fmt_expr((rest[2].kind.lower(), rest[2].val))}'
+        lit = ('NUM', 'STR')
+        shape = (kinds == ['IS', 'TYPE'] or (kinds[:3] == ['IS', 'TYPE', 'STARTS'] and len(rest) == 4 and
+                                             rest[3].kind in lit) or
+                 (len(rest) == 2 and kinds[0] in ('IS', 'STARTS') and rest[1].kind in lit))
+        if not 1 <= k <= 3 or not shape:
+            return None
+        words = content[:k]
+        name = '_'.join(c.toks[0].text for c in words)
+        known = list(self.state.fields) + list(self.prog.field_names()) + list(self.prog.collections)
+        for c in words:             # "The scroe is 5." is a slip for the score, not a new value
+            w = singular(c.toks[0].text)
+            if any(w != n and edit_distance(w, n) <= (1 if len(n) < 8 else 2) for n in known):
+                raise self.unknown_word(c)
+        self.taken(tuple(c.toks[0].text for c in words), words)
+        typ = rest[1].val if rest[1].kind == 'TYPE' else None
+        first = rest[-1] if rest[-1].kind in lit else None
+        if first is not None:
+            given = 'int' if first.kind == 'NUM' else 'text'
+            if typ and typ != given:
+                raise self.p('error', first, f'this is not {"a number" if typ == "int" else "text"}')
+            typ = given
+        f = Field(name, typ, line=self.cur[0].line)
+        f.init = first.val if first is not None else (0 if typ == 'int' else '')
+        self.state.fields[name] = f
+        self.state.line = self.state.line or f.line
+        if first is None:
+            self.note(words, f'"{name}" starts {"at 0" if typ == "int" else "empty"}, since nothing says otherwise',
+                      f'e.g. "The {name.replace("_", " ")} starts at {"10" if typ == "int" else chr(34) + "hello" + chr(34)}."')
+        return f'value {name}: {"number" if typ == "int" else "text"}, starts at {fmt_expr(("num" if typ == "int" else "str", f.init))}'
 
     # ------------------------------------------------------------------ scope
     def scope(self, content, anchor=None, recent=False):
@@ -812,6 +890,8 @@ class Parser:
                 return ('pfield',) + c.val
             if c.kind == 'PARAM':
                 return ('param', c.val)
+            if c.kind == 'VALUE':
+                return ('value', c.val)
             if c.kind == 'SCALE':
                 return binop('mul', prim(False), ('num', c.val))
             if c.kind == 'LP':
@@ -847,6 +927,46 @@ class Parser:
         if n < len(toks):
             raise self.leftover(toks[n:])
         return e
+
+    def either(self, toks, coll, f=None):
+        """A value that depends on a condition: "2 if the score is over 100, otherwise 1"."""
+        toks = lstrip(toks)
+        o = index_of(toks, 'OTHERWISE')
+        if o is None:
+            w = index_of(toks, 'WHERE')
+            if w is not None and f is None:
+                raise self.p('question', toks[w:], 'and what if not?', 'this gives a value only some of the time',
+                             'finish it: "... if a is over b, otherwise b"')
+            return self.one_value(toks, coll, f)
+        head, tail = rstrip(toks[:o]), toks[o + 1:]
+        w = index_of(head, 'WHERE')
+        if w is None:
+            raise self.p('error', toks[o], '"otherwise" needs an "if" before it',
+                         hint='e.g. "... 2 if the score is over 100, otherwise 1"')
+        if w == 0:
+            end = next((i for i, c in enumerate(head) if i and c.kind in ('COMMA', 'THEN')), None)
+            if end is None:
+                raise self.p('error', head, 'I can\'t see where the condition ends',
+                             hint='put a comma or "then" after it: "if a is over b then a, otherwise b"')
+            cond_t, val_t = head[1:end], head[end + 1:]
+        else:
+            val_t, cond_t = head[:w], head[w + 1:]
+        return ('if', self.parse_cond(cond_t, coll), self.one_value(val_t, coll, f), self.either(tail, coll, f))
+
+    def one_value(self, toks, coll, f):
+        toks = rstrip(lstrip([c for c in toks if not (c.kind == 'ACT' and c.val == 'show')]))
+        if not toks:
+            raise self.p('error', self.cur[-1], 'a value is missing here')
+        if f is not None and (toks[0].kind in ('VERB', 'SCALE', 'HALVE') or
+                              (toks[0].kind == 'FIELD' and len(toks) > 1 and
+                               toks[1].kind in ('BECOMES', 'MODAL', 'EQSYM'))):
+            g, e, rest = self.one_update(toks, coll)        # "... otherwise set it to 1"
+            if g != f:
+                raise self.p('error', toks, f'both outcomes have to set the same thing; the first sets "{f}"')
+            if rest:
+                raise self.leftover(rest)
+            return e
+        return self.whole_expr(toks, f)
 
     def leftover(self, toks):
         return self.p('error', toks, f'I don\'t see how "{" ".join(c.text for c in toks)}" fits in',
@@ -892,8 +1012,9 @@ class Parser:
             return ('cmp', 'eq', ('field', p[0].val), ('param', p[0].val)), p[0].val
         i, lhs = 0, None
         stop = next((k for k, c in enumerate(p) if c.kind in ('IS', 'NOT', 'CMP', 'EQSYM')), len(p))
-        if p[0].kind in ('FIELD', 'PFIELD') or \
-                (p[0].kind in ('NUM', 'LP', 'PARAM', 'SCALE') and any(c.kind == 'OP' for c in p[:stop])):
+        if p[0].kind in ('FIELD', 'PFIELD', 'VALUE') or \
+                (p[0].kind in ('NUM', 'LP', 'PARAM', 'SCALE') and any(c.kind == 'OP' for c in p[:stop])) or \
+                (p[0].kind == 'PARAM' and 0 < stop < len(p)):
             lhs, i = self.parse_expr(p[:stop])       # "whose price times quantity is over 100"
         op, neg, explicit = None, False, False
         while i < len(p) and p[i].kind in ('IS', 'NOT', 'CMP', 'EQSYM'):
@@ -1037,6 +1158,18 @@ class Parser:
     def task(self, content):
         sent = self.cur
         name = None
+        self.as_rule = False
+        if content and (content[0].kind == 'RULE' or
+                        (content[0].kind == 'WHERE' and content[0].toks[0].text in ('when', 'once'))) and \
+                index_of(content, 'COLON') is None and index_of(content, 'TAKE') is None:
+            self.as_rule = True
+        if any(t.kind == 'word' and t.text == 'always' for t in sent) and index_of(content, 'COLON') is None and \
+                index_of(content, 'TAKE') is None and \
+                not any(c.kind in ('INSORDER', 'NOORDER', 'UNIQUE', 'DUP') for c in content):
+            # "The level is always 3 if the score is at least 50, otherwise 1."
+            # "Whenever a player's score passes 100, their level becomes 2.": not a command, a standing rule
+            self.as_rule = True
+        content = [CT('WHERE', None, c.toks) if c.kind == 'RULE' else c for c in content]
         ci = index_of(content, 'COLON')
         if ci is not None:
             pre, post = content[:ci], content[ci + 1:]
@@ -1070,7 +1203,12 @@ class Parser:
         if unk:
             raise self.unknown_word(unk[0])
         content = self.relate(content)
-        coll = self.scope(content)
+        if any(c.kind == 'VALUE' for c in content) and not any(c.kind in ('COLL', 'FIELD', 'PFIELD') for c in content):
+            # only single values are mentioned: the sentence is about them
+            content = [CT('FIELD', c.val, c.toks) if c.kind == 'VALUE' else c for c in content]
+            coll = self.state
+        else:
+            coll = self.scope(content)
         if coll.name in coll.fields:        # several-valued property: "phones whose phone starts with ..."
             mine = [i for i, c in enumerate(content) if c.kind == 'COLL' and c.val == coll.name]
             for i in mine:
@@ -1110,8 +1248,17 @@ class Parser:
                     content.append(CT('WHERE', None, c.toks))
                 content.append(c)
                 break
+        o = index_of(content, 'OTHERWISE')
+        other = None
+        if o is not None:               # "... set the level to 2 if the score is over 100, otherwise 1"
+            other, content = content[o:], rstrip(content[:o])
         main, cond_t = self.split_where(content)
         main = rstrip(lstrip(main))
+        if cond_t and main and index_of(main, 'BY') is None and \
+                any(c.kind == 'VERB' and c.val in ('multiply', 'divide', 'increase', 'decrease') for c in main):
+            b = index_of(cond_t, 'BY')      # "increase the points of the player with a given name by 5"
+            if b:
+                main, cond_t = main + cond_t[b:], cond_t[:b]
         if cond_t:                      # "... with the highest salary": a ranking, not a filter
             for i, c in enumerate(cond_t[:-1]):
                 joiner = ('WHERE', 'AND', 'COMMA')
@@ -1190,10 +1337,19 @@ class Parser:
                 raise self.p('error', sent, 'a limit only works when showing records in this version',
                              hint='e.g. "Show the top 3 customers by salary."')
 
+        if other is not None and not upd:
+            raise self.p('error', other[0], '"otherwise" only goes with a change or a calculation in this version',
+                         hint='e.g. "Set the level to 2 if the score is over 100, otherwise 1."')
         if upd:
             T.kind, T.assigns = 'update', self.parse_updates(main, coll)
             if order:
                 raise self.p('error', sent, 'a change cannot be sorted')
+            if other is not None:
+                if where is None or len(T.assigns) != 1:
+                    raise self.p('error', other[0], '"otherwise" needs one change and one "if" before it',
+                                 hint='e.g. "Set the level to 2 if the score is over 100, otherwise 1."')
+                f, e = T.assigns[0]
+                T.assigns, T.where = [(f, ('if', where, e, self.either(other[1:], coll, f)))], None
             return self.emit(T, coll)
         if order and act in ('remove', 'keep', 'find'):
             raise self.p('error', acts, f'"{acts[0].text}" and sorting don\'t go together in this version')
@@ -1403,6 +1559,8 @@ class Parser:
                     raise self.p('error', c, 'calculations work on whole numbers only in this version')
             elif c.kind == 'UNK':
                 params.append(c.toks[0].text)
+            elif c.kind == 'NUM' and j + 1 < len(content) and content[j + 1].kind == 'TYPE':
+                pass                    # "take two numbers a and b"
             elif c.kind in ('AND', 'COMMA') and params and j + 1 < len(content) and \
                     content[j + 1].kind in ('UNK', 'TYPE'):
                 pass
@@ -1428,6 +1586,11 @@ class Parser:
                 rest.append(c)
         rest = [c for i, c in enumerate(rest) if not (c.kind == 'ACT' and c.val == 'show')]
         rest = lstrip(rest)
+        held = [c for c in rest if c.kind == 'VALUE']
+        if held and rest and (rest[0].kind in ('VERB', 'SCALE', 'HALVE') or any(c.kind == 'BECOMES' for c in rest)):
+            raise self.p('question', held, f'should "{held[0].text}" change, or do you just want the result?',
+                         'this could be read either way',
+                         f'to change it, say e.g. "increase the {held[0].text} by a given {params[0]}"')
         if not rest:
             raise self.p('question', self.cur, 'what should it give back?', hint='e.g. "... and return n times 2"')
         T = Task(name, 'calc', None, self.cur[0].line, self.sent_text(self.cur), named=name is not None)
@@ -1449,30 +1612,18 @@ class Parser:
         elif c.kind == 'HALVE':
             T.expr = binop('div', self.whole_expr(rest[1:]), ('num', 2))
         else:
-            T.expr = self.whole_expr(rest)
+            T.expr = self.either(rest, Collection('input', 'inputs'))
         return P(T)
 
     # ------------------------------------------------------------------ finishing
     def emit(self, T, coll=None):
         seen = []
-
-        def visit(e):
-            if e[0] == 'param' and e[1] not in seen:
-                seen.append(e[1])
-            elif e[0] == 'bin':
-                visit(e[2])
-                visit(e[3])
-
-        def visit_c(c):
-            if c is None:
-                return
-            if c[0] == 'cmp':
-                visit(c[2])
-                visit(c[3])
-            else:
-                visit_c(c[1])
-                visit_c(c[2])
-
+        if coll is self.state:
+            if T.kind not in ('update', 'list') or T.order or T.limit is not None:
+                raise self.p('error', self.cur, 'a single value can be shown or changed, nothing else',
+                             hint='e.g. "Show the score." or "Increase the score by a given amount."')
+            if T.kind == 'list' and not T.fields:
+                T.fields = list(coll.fields)
         if T.kind == 'calc':
             pass
         elif T.kind == 'add':
@@ -1480,10 +1631,23 @@ class Parser:
         elif T.kind in ('find', 'remove_key'):
             T.params = [T.key]
         else:
-            for _, e in T.assigns:
-                visit(e)
-            visit_c(T.where)
+            for e in task_exprs(T):
+                if e[0] == 'param' and e[1] not in seen:
+                    seen.append(e[1])
             T.params = seen
+        if self.as_rule:
+            self.as_rule = False
+            if T.params and T.kind != 'add':
+                raise self.p('error', self.cur, f'a rule applies by itself, so it cannot wait for a given {T.params[0]}',
+                             hint='name it to make it a capability instead: "Promote: ..."')
+            if T.kind not in ('update', 'remove_where') or (T.where is None and
+                                                            not any(e[0] == 'if' for e in task_exprs(T))):
+                raise self.p('error', self.cur, 'a rule says what changes when something becomes true',
+                             'this one changes nothing, or has no condition',
+                             'e.g. "When a player\'s score is over 100, their level becomes 2."')
+            T.name, T.named = f'rule {len(self.prog.rules) + 1}', True
+            self.prog.rules.append(T)
+            return 'rule: ' + canon(T)
         self.prog.tasks.append(T)
         return canon(T)
 
@@ -1525,6 +1689,8 @@ class Parser:
                 n += f'-{t.field}'
         else:
             n = 'calc'
+        if t.coll == STATE:
+            return '-'.join(t.fields) if t.kind == 'list' else n
         if t.coll and len(self.prog.collections) > 1:
             n = f'{t.coll}-{n}'
         return n
@@ -1547,6 +1713,8 @@ class Parser:
                     n = f'{base}-{k}'
                 t.name = n
                 used[n] = t
+        if self.state.fields:
+            self.prog.collections[STATE] = self.state
 
 
 def parse(text, filename='<intent>'):

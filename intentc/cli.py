@@ -6,6 +6,7 @@ import sys
 
 from .check import check
 from .interp import Machine
+from .ir import STATE
 from .llvm import emit
 from .parser import parse
 from .plan import make_plan
@@ -83,7 +84,9 @@ def cmd_explain(a):
                           (' (unique)' if f.unique else '') +
                           ('' if f.how == 'declared' else f' [{f.how}]') for f in c.fields.values())
         print(f'{c.label}  —  {props}')
-        print(f'  order: {"insertion order is kept" if c.ordered else "not part of the meaning"}\n')
+        if c.name != STATE:
+            print(f'  order: {"insertion order is kept" if c.ordered else "not part of the meaning"}')
+        print()
         for title, detail, why in cp.decisions:
             print(f'  {title}: {detail}')
             for line, reason in why:

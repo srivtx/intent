@@ -7,7 +7,7 @@ source lines that caused it.
 """
 from dataclasses import dataclass, field
 
-from .ir import walk_cond_exprs, walk_expr
+from .ir import STATE, task_exprs
 
 
 @dataclass
@@ -26,8 +26,7 @@ class Plan:
 
 def reaches(t, ref):
     """Does this task read a property of the record its rows belong to?"""
-    exprs = [e for _, e in t.assigns] + list(walk_cond_exprs(t.where))
-    return any(e[0] == 'pfield' and e[1] == ref for top in exprs for e in walk_expr(top)) or \
+    return any(e[0] == 'pfield' and e[1] == ref for e in task_exprs(t)) or \
         any(n.startswith(ref + '.') for n in t.fields or [])
 
 
@@ -36,10 +35,13 @@ def make_plan(prog, no_index=False):
     for c in prog.collections.values():
         cp = CollPlan(c.name)
         plan.colls[c.name] = cp
-        tasks = [t for t in prog.tasks if t.coll == c.name]
+        tasks = [t for t in prog.work() if t.coll == c.name]
         adds = [t for t in tasks if t.kind == 'add']
-        cp.decisions.append((
-            'storage', f'one growable array of {c.name} records, {8 * len(c.fields)} bytes each', []))
+        if c.name == STATE:
+            cp.decisions.append(('storage', f'kept side by side in one place, {8 * len(c.fields)} bytes', []))
+        else:
+            cp.decisions.append((
+                'storage', f'one growable array of {c.name} records, {8 * len(c.fields)} bytes each', []))
         for f in c.unique_fields():
             why = []
             if adds:
@@ -49,7 +51,7 @@ def make_plan(prog, no_index=False):
                     why.append((t.line, f'"{t.name}" picks one {c.name} by {f.name} on every call'))
             if prog.key_of(c.name) is f:
                 for d, rf in prog.children_of(c.name):
-                    for t in prog.tasks:
+                    for t in prog.work():
                         if t.coll != d.name:
                             continue
                         if t.kind == 'add':
@@ -122,11 +124,13 @@ def make_plan(prog, no_index=False):
                 plan.colls[c.name].decisions.append((
                     f'each {c.name} stores the {k.name if k else "key"} of its {f.ref}',
                     'a value, not a pointer, so rows on both sides can move freely', [(f.line, 'the relationship')]))
-    for t in prog.tasks:
+    for t in prog.work():
         c = prog.collections.get(t.coll)
         if c is None:
             continue
         cost, how = plan.tasks[t.name]
+        if c.name == STATE:
+            cost, how = 'O(1)', ('read the value' if t.kind == 'list' else 'change the value in place')
         if t.kind == 'add' and any(f.ref for f in c.fields.values()):
             how += ', after checking that what it belongs to exists'
         if t.kind in ('remove_key', 'remove_where'):
@@ -139,4 +143,8 @@ def make_plan(prog, no_index=False):
     for t in prog.tasks:
         if t.kind == 'calc':
             plan.tasks[t.name] = ('O(1)', 'straight-line arithmetic')
+        elif t.kind in ('add', 'remove_key', 'remove_where', 'update') and prog.rules:
+            cost, how = plan.tasks[t.name]
+            n = len(prog.rules)
+            plan.tasks[t.name] = (cost, how + f'; then the {n} rule{"s" if n > 1 else ""} are applied until nothing changes')
     return plan

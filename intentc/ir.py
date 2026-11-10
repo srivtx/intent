@@ -3,6 +3,8 @@
 Expressions are tuples:
     ('num', n) | ('str', s) | ('field', name) | ('param', name) | ('bin', op, a, b)   op in mul add sub div rem
     ('pfield', ref, name)   a property of the record this one belongs to (ref is the linking property)
+    ('value', name)         a single value the program keeps ("the score")
+    ('if', cond, a, b)      a when cond holds, otherwise b
 Conditions are tuples:
     ('cmp', op, a, b)   op in gt ge lt le eq ne
     ('and', a, b) | ('or', a, b)
@@ -22,6 +24,7 @@ class Field:
     ref: str = None             # the collection this property points into ("each order belongs to a customer")
     on_removed: str = None      # what happens to these records when that one is removed: cascade | restrict
     on_removed_line: int = 0
+    init: object = None         # a single value's starting value
 
 
 @dataclass
@@ -60,10 +63,21 @@ class Task:
     ptypes: dict = _f(default_factory=dict)
 
 
+STATE = '(values)'              # the hidden one-record collection that holds the program's single values
+
+
 @dataclass
 class Program:
     collections: dict = _f(default_factory=dict)
     tasks: list = _f(default_factory=list)
+    rules: list = _f(default_factory=list)       # standing rules: applied after every change until nothing moves
+
+    def work(self):
+        return self.tasks + self.rules
+
+    def real(self):
+        """The collections the programmer declared (not the hidden one that holds single values)."""
+        return {n: c for n, c in self.collections.items() if n != STATE}
 
     def field_names(self):
         return {f for c in self.collections.values() for f in c.fields}
@@ -125,6 +139,11 @@ def fmt_expr(e, top=True):
         return f'<{e[1]}>'
     if k == 'pfield':
         return f'{e[1]}.{e[2]}'
+    if k == 'value':
+        return e[1]
+    if k == 'if':
+        s = f'{fmt_expr(e[2], False)} if {fmt_cond(e[1])} else {fmt_expr(e[3], False)}'
+        return s if top else f'({s})'
     s = f'{fmt_expr(e[2], False)} {OPSYM[e[1]]} {fmt_expr(e[3], False)}'
     return s if top else f'({s})'
 
@@ -139,6 +158,10 @@ def fmt_cond(c, top=True):
 def canon(t):
     """One line that states exactly what a task means. Equal meaning <=> equal string."""
     w = f' where {fmt_cond(t.where)}' if t.where else ''
+    if t.coll == STATE:
+        if t.kind == 'update':
+            return 'set ' + ', '.join(f'{f} = {fmt_expr(e)}' for f, e in t.assigns) + w
+        return 'show ' + ', '.join(t.fields or ['every value']) + w
     if t.kind == 'update':
         return f'update {t.coll}: ' + ', '.join(f'{f} = {fmt_expr(e)}' for f, e in t.assigns) + w
     if t.kind == 'add':
@@ -162,10 +185,29 @@ def canon(t):
 
 
 def walk_expr(e):
+    """Every value inside e, including those inside the condition of an "if"."""
     yield e
     if e[0] == 'bin':
         yield from walk_expr(e[2])
         yield from walk_expr(e[3])
+    elif e[0] == 'if':
+        yield from walk_cond_exprs(e[1])
+        yield from walk_expr(e[2])
+        yield from walk_expr(e[3])
+
+
+def task_exprs(t):
+    """Every value a task computes or compares, at any depth."""
+    tops = [e for _, e in t.assigns] + ([t.expr] if t.expr else [])
+    return [e for top in tops for e in walk_expr(top)] + list(walk_cond_exprs(t.where))
+
+
+def task_conds(t):
+    """Every comparison a task makes: its own condition and those inside "if" values."""
+    yield from cond_cmps(t.where)
+    for e in task_exprs(t):
+        if e[0] == 'if':
+            yield from cond_cmps(e[1])
 
 
 def walk_cond_exprs(c):

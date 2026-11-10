@@ -6,8 +6,28 @@ Four tiers, in this order, and each is reported differently:
   assumed   - a naming convention (email -> text); reported as a note, overridable
   asked     - nothing decides it; compilation stops with a question
 """
-from .ir import TEXT_OPS, Diag, cond_cmps, walk_cond_exprs, walk_expr
+from .ir import NEGATE, STATE, TEXT_OPS, Diag, cond_cmps, task_conds, task_exprs, walk_expr
 from .lexicon import CONVENTION
+
+def nonzero(c, yes):
+    """The values that cannot be zero when condition c is true (yes) or false (not yes)."""
+    if c is None:
+        return []
+    if c[0] == 'cmp':
+        op = c[1] if yes else NEGATE.get(c[1])
+        x, y = c[2], c[3]
+        if y[0] == 'num':
+            n = y[1]
+            if (op == 'ne' and n == 0) or (op == 'gt' and n >= 0) or (op == 'ge' and n >= 1) or \
+                    (op == 'lt' and n <= 0) or (op == 'le' and n <= -1):
+                return [x]
+        if x == ('num', 0) and op in ('ne', 'gt', 'lt'):
+            return [y]
+        return []
+    if (c[0] == 'and') == yes:      # every part is known to hold
+        return nonzero(c[1], yes) + nonzero(c[2], yes)
+    return []
+
 
 TYPE_NAME = {'int': 'a number', 'text': 'text'}
 
@@ -38,16 +58,26 @@ class Checker:
             return coll.fields[e[1]].type
         if k == 'pfield':
             return self.prog.collections[coll.fields[e[1]].ref].fields[e[2]].type
+        if k == 'value':
+            return self.prog.collections[STATE].fields[e[1]].type
+        if k == 'if':
+            return self.ty(e[2], coll, t) or self.ty(e[3], coll, t)
         return t.ptypes.get(e[1])
 
     def name_of(self, e):
         if e[0] == 'pfield':
             return f'"{e[1]}\'s {e[2]}"'
+        if e[0] == 'value':
+            return f'"{e[1]}"'
+        if e[0] == 'if':
+            return 'an either-or value'
         return {'field': f'"{e[1]}"', 'param': f'the given {e[1]}', 'num': str(e[1]),
                 'str': f'"{e[1]}"', 'bin': 'a calculation'}[e[0]] if e[0] != 'num' else str(e[1])
 
     def need(self, e, typ, coll, t):
         k = e[0]
+        if k == 'if':               # both outcomes have to be the same kind of value
+            return any([self.need(e[2], typ, coll, t), self.need(e[3], typ, coll, t)])
         cur = self.ty(e, coll, t)
         if cur is None:
             if k == 'pfield':
@@ -81,16 +111,16 @@ class Checker:
         if t.kind == 'calc':
             for p in t.params:
                 t.ptypes[p] = 'int'
-            return False
-        exprs = [e for _, e in t.assigns] + list(walk_cond_exprs(t.where))
-        for top in exprs:
-            for e in walk_expr(top):
-                if e[0] == 'bin':
-                    ch |= self.need(e[2], 'int', coll, t)
-                    ch |= self.need(e[3], 'int', coll, t)
+            ch |= self.need(t.expr, 'int', coll, t)
+        for e in task_exprs(t):
+            if e[0] == 'bin':
+                ch |= self.need(e[2], 'int', coll, t)
+                ch |= self.need(e[3], 'int', coll, t)
+            elif e[0] == 'if':
+                ch |= self.equal(e[2], e[3], coll, t)
         for f, e in t.assigns:
             ch |= self.equal(('field', f), e, coll, t)
-        for c in cond_cmps(t.where):
+        for c in task_conds(t):
             if c[1] in ('eq', 'ne'):
                 ch |= self.equal(c[2], c[3], coll, t)
             elif c[1] in TEXT_OPS:
@@ -119,7 +149,7 @@ class Checker:
 
     def settle(self):
         for _ in range(12):
-            if not any([self.constrain(t) for t in self.prog.tasks] + [self.link()]):
+            if not any([self.constrain(t) for t in self.prog.work()] + [self.link()]):
                 break
 
     def infer(self):
@@ -146,7 +176,7 @@ class Checker:
                     self.d('question', f.line, f'is "{f.name}" text or a number?',
                            'nothing in the program decides this',
                            f'write "{f.name} (text)" or "{f.name} (number)"')
-        for t in self.prog.tasks:
+        for t in self.prog.work():
             coll = self.prog.collections.get(t.coll)
             if t.kind == 'add':
                 t.ptypes = {f.name: f.type for f in coll.fields.values()}
@@ -172,7 +202,7 @@ class Checker:
                 if not f.ref:
                     continue
                 p = P.collections[f.ref]
-                removers = [t for t in P.tasks if t.coll == p.name and t.kind in ('remove_key', 'remove_where')]
+                removers = [t for t in P.work() if t.coll == p.name and t.kind in ('remove_key', 'remove_where')]
                 if removers and f.on_removed is None:
                     self.d('question', removers[0].line,
                            f'what happens to the {c.label.lower()} of a removed {p.name}?',
@@ -186,18 +216,26 @@ class Checker:
                                    f'removing a {p.name} removes its {c.label.lower()}, but a {c.name} with '
                                    f'{d.label.lower()} cannot be removed: which wins?',
                                    'two rules meet here', 'make both rules remove, or both refuse')
-        for t in P.tasks:
+        for t in P.rules:
+            coll = P.collections[t.coll]
+            for f, e in t.assigns:
+                if any(x == ('field', f) for x in walk_expr(e)):
+                    self.d('error', t.line, f'this rule would change "{f}" again every time it looks',
+                           f'the new {f} is worked out from the old {f}, so the rule never comes to rest',
+                           f'give the value outright, e.g. "... the {f} becomes 100"; or make it a capability '
+                           f'by naming it: "Bump: ..."')
+            if t.kind == 'remove_where' and any(rf.on_removed == 'restrict' for _, rf in P.children_of(coll.name)):
+                self.d('error', t.line, f'a rule cannot remove {coll.label.lower()} that other records belong to yet')
+        for t in P.work():
             coll = P.collections.get(t.coll)
-            exprs = [e for _, e in t.assigns] + list(walk_cond_exprs(t.where)) + ([t.expr] if t.expr else [])
-            for top in exprs:
-                for e in walk_expr(top):
-                    if e[0] == 'bin' and e[1] in ('div', 'rem'):
-                        if e[3][0] != 'num' or e[3][1] == 0:
-                            self.d('error', t.line, 'dividing by something that could be zero is not supported yet',
-                                   'I would have to invent what happens at zero',
-                                   'divide by a fixed non-zero number')
-                        elif e[1] == 'div':
-                            self.d('note', t.line, 'whole-number division drops the remainder (7 / 2 is 3)')
+            safe = nonzero(t.where, True)
+            for _, e in t.assigns:
+                self.divisions(e, safe, t)
+            if t.expr:
+                self.divisions(t.expr, [], t)
+            for c in cond_cmps(t.where):
+                self.divisions(c[2], [], t)
+                self.divisions(c[3], [], t)
             if t.kind == 'update':
                 for f, _ in t.assigns:
                     if coll.fields[f].ref:
@@ -216,6 +254,29 @@ class Checker:
                 self.d('note', t.line,
                        f'"{t.key}" is not declared unique, so this can match several {coll.label} and has to look at all of them',
                        hint=f'say "{t.key} is unique" if it is; then I can index it')
+
+    def divisions(self, e, safe, t):
+        """Every division must be by something that cannot be zero where it happens."""
+        if e[0] == 'bin':
+            d = e[3]
+            if e[1] in ('div', 'rem'):
+                if d == ('num', 0):
+                    self.d('error', t.line, 'this divides by zero')
+                elif d[0] != 'num' and d not in safe:
+                    name = self.name_of(d).strip('"')
+                    self.d('question', t.line, f'what should happen when {name} is zero?',
+                           'dividing by zero has no answer, and I will not invent one',
+                           f'say it, e.g. "... divided by {name} if {name} is not 0, otherwise 0"')
+                elif e[1] == 'div':
+                    self.d('note', t.line, 'whole-number division drops the remainder (7 / 2 is 3)')
+            self.divisions(e[2], safe, t)
+            self.divisions(d, safe, t)
+        elif e[0] == 'if':
+            for c in cond_cmps(e[1]):
+                self.divisions(c[2], safe, t)
+                self.divisions(c[3], safe, t)
+            self.divisions(e[2], safe + nonzero(e[1], True), t)
+            self.divisions(e[3], safe + nonzero(e[1], False), t)
 
     def run(self):
         self.infer()

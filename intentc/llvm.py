@@ -5,7 +5,8 @@ The generated module is a small command server: it reads one command per line on
 for I/O, memory and sorting; everything else (records, hash indexes, loops, filters,
 aggregates) is emitted here.
 """
-from .ir import MUTATING, TEXT_OPS, canon, usage
+from .interp import ROUNDS, UNSETTLED
+from .ir import MUTATING, STATE, TEXT_OPS, canon, usage
 
 LL = {'int': 'i64', 'text': 'ptr'}
 FNV_OFFSET = -3750763034362895579      # 14695981039346656037 as a signed 64-bit value
@@ -176,8 +177,32 @@ class Gen:
             key = self.prog.key_of(p.name)
             row = f.r(f'call i64 {g(p.name, key.name, "find")}({LL[key.type]} {self.fload(f, c, rec, e[1])})')
             return self.fload(f, p, self.rec(f, p, row), e[2]), p.fields[e[2]].type
+        if k == 'value':                # a single value lives in the one record of the hidden collection
+            S = self.prog.collections[STATE]
+            return self.fload(f, S, self.rec(f, S, '0'), e[1]), S.fields[e[1]].type
+        if k == 'if':                   # only the chosen side is worked out (the other may divide by zero)
+            yes, no, done = f.lab('then'), f.lab('else'), f.lab('fi')
+            f.cbr(self.cond(f, e[1], c, rec, vals), yes, no)
+            f.at(yes)
+            a, ty = self.expr(f, e[2], c, rec, vals)
+            slot = f.var(LL[ty])
+            f.store(LL[ty], a, slot)
+            f.br(done)
+            f.at(no)
+            b, _ = self.expr(f, e[3], c, rec, vals)
+            f.store(LL[ty], b, slot)
+            f.br(done)
+            f.at(done)
+            return f.load(LL[ty], slot), ty
         a, _ = self.expr(f, e[2], c, rec, vals)
         b, _ = self.expr(f, e[3], c, rec, vals)
+        if e[1] in ('div', 'rem') and e[3][0] != 'num':
+            # the divisor is known not to be zero here; -1 is done by hand because the
+            # most negative number divided by -1 does not fit
+            neg = f.r(f'icmp eq i64 {b}, -1')
+            q = f.r(f'{"sdiv" if e[1] == "div" else "srem"} i64 {a}, {f.r(f"select i1 {neg}, i64 1, i64 {b}")}')
+            flipped = f.r(f'sub i64 0, {a}') if e[1] == 'div' else '0'
+            return f.r(f'select i1 {neg}, i64 {flipped}, i64 {q}'), 'int'
         if e[1] == 'div':
             if e[3][1] == -1:
                 return f.r(f'sub i64 0, {a}'), 'int'
@@ -557,11 +582,16 @@ class Gen:
         f.e(f'call void {g(C, "reindex")}()')
         return kept
 
-    def task(self, t):
+    def mark(self, f, differs):
+        """A rule notes that it really changed something."""
+        was = f.load('i32', '@changed')
+        f.store('i32', f.r(f'or i32 {was}, {f.r(f"zext i1 {differs} to i32")}'), '@changed')
+
+    def task(self, t, rule=False):
         c = self.prog.collections.get(t.coll)
         cp = self.plan.colls.get(t.coll)
         cost, how = self.plan.tasks[t.name]
-        f = self.fn(g('task', t.name), params='ptr %arg',
+        f = self.fn(g('rule' if rule else 'task', t.name), params='ptr %arg',
                     comment=f'line {t.line}: {t.text}\nmeaning: {canon(t)}\nplan: {how}; {cost}')
         vals = self.params(f, t)
         C = t.coll
@@ -640,9 +670,12 @@ class Gen:
                     self.guard(f, goes(rec), cont)
                     self.blocked(f, c, rec)
                 self.rows(f, c, check)
-            f.store('i32', '1', '@dirty')
+            if not rule:
+                f.store('i32', '1', '@dirty')
             before = f.load('i64', g(C, 'len'))
             kept = self.compact(f, c, goes)
+            if rule:
+                self.mark(f, f.r(f'icmp ne i64 {before}, {kept}'))
             if self.kids(c, 'cascade'):
                 more, done = f.lab('more'), f.lab('done')
                 f.cbr(f.r(f'icmp ne i64 {before}, {kept}'), more, done)
@@ -653,7 +686,8 @@ class Gen:
             if k == 'remove_key':
                 self.none_if_zero(f, f.r(f'sub i64 {before}, {kept}'))
         elif k == 'update':
-            f.store('i32', '1', '@dirty')
+            if not rule:
+                f.store('i32', '1', '@dirty')
 
             def body(i, cont):
                 rec = self.rec(f, c, i)
@@ -661,6 +695,10 @@ class Gen:
                 for name, e in t.assigns:
                     v, ty = self.expr(f, e, c, rec, vals)
                     p = self.fptr(f, c, rec, name)
+                    if rule:
+                        old = f.load(LL[ty], p)
+                        self.mark(f, f.r(f'icmp ne i64 {old}, {v}') if ty == 'int' else
+                                  f.r(f'icmp ne i32 {f.r(f"call i32 @strcmp(ptr {old}, ptr {v})")}, 0'))
                     if ty == 'text':
                         v = f.r(f'call ptr @strdup(ptr {v})')
                         f.e(f'call void @free(ptr {f.load("ptr", p)})')
@@ -809,6 +847,8 @@ class Gen:
             f.at(yes)
             f.store('i32', '0', '@dirty')
             f.e(f'call void {g("task", t.name)}(ptr {arg})')
+            if t.kind in MUTATING and self.prog.rules:
+                f.e('call void @settle()')
             f.e(f'ret i32 {f.load("i32", "@dirty")}')
             f.at(no)
         if all(t.name != 'help' for t in self.prog.tasks):
@@ -820,6 +860,42 @@ class Gen:
             f.at(no)
         self.printf(f, 'error: unknown command %s\n', f'ptr {line}')
         f.e('ret i32 0')
+
+    def start(self):
+        """The single values take their starting values, and the standing rules get their first look."""
+        f = self.fn('@start', comment='before the first command: starting values, then the rules')
+        S = self.prog.collections.get(STATE)
+        if S:
+            f.e(f'call void {g(STATE, "grow")}()')
+            rec = self.rec(f, S, '0')
+            for fl in S.fields.values():
+                v = str(fl.init) if fl.type == 'int' else f.r(f'call ptr @strdup(ptr {self.cstr(fl.init)})')
+                f.store(LL[fl.type], v, self.fptr(f, S, rec, fl.name))
+            f.store('i64', '1', g(STATE, 'len'))
+        if self.prog.rules:
+            f.e('call void @settle()')
+        f.e('ret void')
+
+    def settle(self):
+        self.globals.append('@changed = internal global i32 0   ; set when a rule really changed something')
+        f = self.fn('@settle', comment='apply every rule, in the order written, until a whole round changes nothing')
+        rounds = f.var('i64', '0')
+        loop, more, stuck, done = f.lab('round'), f.lab('more'), f.lab('stuck'), f.lab('done')
+        f.br(loop)
+        f.at(loop)
+        f.store('i32', '0', '@changed')
+        for r in self.prog.rules:
+            f.e(f'call void {g("rule", r.name)}(ptr null)')
+        f.cbr(f.r(f'icmp ne i32 {f.load("i32", "@changed")}, 0'), more, done)
+        f.at(more)
+        n = f.r(f'add i64 {f.load("i64", rounds)}, 1')
+        f.store('i64', n, rounds)
+        f.cbr(f.r(f'icmp slt i64 {n}, {ROUNDS}'), loop, stuck)
+        f.at(stuck)
+        self.puts(f, UNSETTLED)
+        f.br(done)
+        f.at(done)
+        f.e('ret void')
 
     def main(self):
         """Commands come from stdin. Given a file name, the program also remembers:
@@ -835,6 +911,7 @@ class Gen:
         self.fns.append(f)
         linep, capp, nv = f.var('ptr', 'null'), f.var('i64', '0'), f.var('i64')
         journal = f.var('ptr', 'null')
+        f.e('call void @start()')
         named, serve = f.lab('named'), f.lab('serve')
         f.cbr(f.r('icmp sgt i32 %argc, 1'), named, serve)
         f.at(named)
@@ -918,6 +995,11 @@ class Gen:
                     self.relation(d, rf)
         for t in self.prog.tasks:
             self.task(t)
+        for r in self.prog.rules:
+            self.task(r, rule=True)
+        if self.prog.rules:
+            self.settle()
+        self.start()
         self.main()
         return (f'; Generated by the Intent compiler from {source_name}.\n'
                 f'; There is no intermediate program in any other language: Intent IR is lowered straight to this.\n\n'

@@ -63,7 +63,7 @@ _add('SCALE', 2, 'double|doubling|doubled|doubles')
 _add('SCALE', 3, 'triple|tripling|tripled|triples')
 _add('SCALE', 4, 'quadruple|quadrupling|quadrupled|quadruples')
 _add('HALVE', None, 'halve|halving|halved|halves')
-_add('BECOMES', None, 'becomes|become|should become|is now|turns into|is set to|gets set to')
+_add('BECOMES', None, 'becomes|become|should become|is now|turns into|is set to|gets set to|is always|are always')
 _add('MODAL', None, 'should be|must be|needs to be|is to be|gets|has to be|should get|will be')
 _add('TO', None, 'to')
 _add('BY', None, 'by|using|via|based on|according to')
@@ -123,6 +123,11 @@ _add('OR', None, 'or')
 _add('THEN', None, 'then|and then')
 _add('GIVEN', None, '''a given|the given|given|a provided|the provided|provided|a supplied|supplied
  |a specified|the specified|specified|a certain|some given''')
+
+# ---- single values, either-or values, standing rules -------------------------------
+_add('STARTS', None, 'starts at|starts as|starts out at|starts out as|start at|begins at|is initially|starting at')
+_add('OTHERWISE', None, 'otherwise|else|or else')
+_add('RULE', None, 'whenever|as soon as|every time|each time|any time|the moment')
 
 # ---- scope ----------------------------------------------------------------------------
 _add('QUANT', None, '''each|every|all|for every|for each|for all|all of|all the|all of the|any|every single
