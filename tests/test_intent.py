@@ -800,5 +800,87 @@ class TestService(unittest.TestCase):
             self.assertEqual(fh.read(), 'add a@x,3\nremove-by-email a@x\n')
 
 
+MANY = """Contacts is a collection where each contact has a name, a city (text) and phones.
+Names are unique. Reject duplicates.
+Teams have a title (text), points and several tags (text).
+Titles are unique. Replace duplicates.
+Add a contact.
+Add a phone to a given contact.
+Show the phones of a given contact.
+How many phones does a given contact have?
+Remove a contact by name.
+Remove the phones of a given contact.
+Show the phones whose contact's city is a given city.
+dial: show the phone and the contact's name of phones whose phone starts with a given prefix.
+Add a team.
+Add a tag to a given team.
+Show the tags of a given team.
+Remove the teams whose points is under a given limit.
+Show the teams.
+Show the contacts.
+Show the phones.
+Show the tags.
+"""
+
+
+class TestDescribing(TestNativeAgainstReference):
+    """Declaring a collection in one breath, and properties that hold several values."""
+
+    def fields(self, text, coll):
+        prog, diags, _ = understand('', text)
+        self.assertEqual(diags, [])
+        return prog, list(prog.collections[coll].fields)
+
+    def test_one_sentence(self):
+        for text in ['Customers is a collection where each customer has a name, an age and an email.',
+                     'Customers is a collection with a name, an age and an email.',
+                     'Customers are a collection of people who have a name, an age and an email.',
+                     'Each customer has a name, an age and an email.',
+                     'Customers have a name, an age and an email.']:
+            with self.subTest(text):
+                self.assertEqual(self.fields(text, 'customer')[1], ['name', 'age', 'email'])
+
+    def test_describing_does_not_swallow_a_typo(self):
+        self.assertNotIn('custmer', parse(BASE + 'Each custmer has a phone.')[0].collections)
+
+    def test_plural_means_several(self):
+        prog, _ = self.fields('Contacts have a name and phones.\nNames are unique.\n', 'contact')
+        self.assertEqual(list(prog.collections['contact'].fields), ['name'])
+        link = prog.collections['phone'].fields['contact']
+        self.assertEqual((link.ref, link.on_removed), ('contact', 'cascade'))
+        self.assertTrue(any('several values' in d.msg for d in parse('Contacts have a name and phones.\n')[1]))
+
+    def test_ways_to_say_one_or_several(self):
+        for text, several in [('Each team has a title and several tags.', True),
+                              ('Each team has a title and a list of tags.', True),
+                              ('Each team has a title and one or more tags.', True),
+                              ('Each team has a title and tags.', True),
+                              ('Each team has a title and a tag.', False),
+                              ('Each team has a title and tags (text).', False),
+                              ('Each team has a title and points.', False)]:
+            with self.subTest(text):
+                prog, _, _ = parse(text + '\nTitles are unique.\n')
+                self.assertEqual(len(prog.collections) == 2, several)
+
+    def test_has_orders_links_an_existing_collection(self):
+        prog, _, _ = parse('Customers have a name.\nNames are unique.\nOrders have an id (number).\n'
+                           'Each customer has orders.\n')
+        self.assertEqual(prog.collections['order'].fields['customer'].ref, 'customer')
+        self.assertNotIn('order', prog.collections['customer'].fields)
+
+    def test_readings(self):
+        base = MANY.split('Add a contact.')[0]
+        for text, want in [('Add a phone to a given contact.', 'add phone'),
+                           ('Show the phones of a given contact.', 'list all of phone where contact == <contact>'),
+                           ('Show the phones whose phone starts with "555".',
+                            'list all of phone where phone starts with "555"'),
+                           ("Show the phone and the contact's name of phones.", 'list phone, contact.name of phone')]:
+            with self.subTest(text):
+                self.assertEqual(meaning(text, base), want)
+
+    def test_native(self):
+        self.differential('many', MANY, seeds=5, n=500)
+
+
 if __name__ == '__main__':
     unittest.main()
