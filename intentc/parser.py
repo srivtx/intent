@@ -254,11 +254,16 @@ class Parser:
         taught = self.teach_noun(toks, content)
         if taught:
             return taught
+        if 'BELONGS' in kinds:
+            return self.decl_ref(content)
+        rule = self.removal_rule(content, kinds)
+        if rule:
+            return rule
         if 'NOTWO' in kinds:
             return self.decl_unique(content)
         h = index_of(content, 'HAS')
         if h is not None and h > 0 and all(c.kind in ('QUANT', 'COLL', 'GEN') for c in content[:h]) and \
-                not kinds & {'CMP', 'WHERE', 'ACT', 'AGG', 'BETWEEN'}:
+                not kinds & {'CMP', 'BETWEEN'} and not any(c.kind == 'ACT' for c in content[:h]):
             return self.decl_fields(toks, content, h)
         if 'UNIQUE' in kinds:
             return self.decl_unique(content)
@@ -494,15 +499,95 @@ class Parser:
         for c in content:
             if c.kind == 'COLL' and c.val not in names:
                 names.append(c.val)
-        if len(names) != 2:
+        cs = self.prog.collections
+        owners = [n for n in names if not any(n in cs[m].fields for m in names if m != n)]
+        if len(names) < 2 or len(owners) != 1:
             return content
+        owner = cs[owners[0]]
+        links = [n for n in names if n != owner.name and n in owner.fields]
+        if not links:
+            return content
+        out, i = [], 0
+        while i < len(content):
+            c = content[i]
+            i += 1
+            if not (c.kind == 'COLL' and c.val in links):
+                out.append(c)
+                continue
+            b = c.val
+            other, link = cs[b], owner.fields[b]
+            nxt = content[i] if i < len(content) else None
+            prev = out[-1] if out else None
+            if link.ref and nxt and nxt.kind in ('FIELD', 'COLL') and nxt.val in other.fields:
+                out.append(CT('PFIELD', (b, nxt.val), c.toks + nxt.toks))       # "the customer's age"
+                i += 1
+            elif link.ref and prev and prev.kind == 'FIELD' and prev.val in other.fields:
+                out[-1] = CT('PFIELD', (b, prev.val), prev.toks + c.toks)       # "the age of the customer"
+            elif link.ref and not ((prev and prev.kind in ('WHERE', 'BY', 'SORTBY', 'AND', 'OR')) or
+                                   (nxt and nxt.kind in ('IS', 'CMP', 'EQSYM', 'NOT'))):
+                raise self.p('error', c, f'asking about {other.label} through their {owner.label} '
+                             f'is not supported yet', 'this would need a summary per ' + other.name,
+                             f'the other direction works: "{owner.label} whose {b}\'s ... is ..."')
+            else:
+                out.append(CT('FIELD', b, c.toks))
+        return out
+
+    def make_ref(self, child, parent, where):
+        if child is parent:
+            raise self.p('error', where, f'a {child.name} that belongs to another {child.name} is not supported yet')
+        f = child.fields.get(parent.name)
+        if f is None:
+            f = child.fields[parent.name] = Field(parent.name, None, line=flat(where)[0].line)
+        elif not f.ref and f.type:
+            raise self.p('error', where, f'"{parent.name}" is already a plain property of {child.label}',
+                         hint='drop its type to make it the relationship')
+        f.ref = parent.name
+        return f
+
+    def decl_ref(self, content):
+        unk = [c for c in content if c.kind == 'UNK']
+        if unk:
+            raise self.unknown_word(unk[0])
+        b = index_of(content, 'BELONGS')
+        left = [c for c in content[:b] if c.kind == 'COLL']
+        right = [c for c in content[b + 1:] if c.kind == 'COLL']
+        if len(left) != 1 or len(right) != 1:
+            raise self.p('error', content[b], 'what belongs to what?',
+                         hint='e.g. "Each order belongs to a customer." (both must be collections)')
+        child, parent = self.prog.collections[left[0].val], self.prog.collections[right[0].val]
+        self.make_ref(child, parent, right)
+        self.prog.recent = child.name
+        return f'{child.name} belongs to {parent.name}'
+
+    def removal_rule(self, content, kinds):
+        """'When a customer is removed, remove its orders.' / 'A customer with orders cannot be removed.'"""
+        names = []
+        for c in content:
+            if c.kind == 'COLL' and c.val not in names:
+                names.append(c.val)
+        removes = [c for c in content if c.kind == 'ACT' and c.val == 'remove']
+        if len(names) != 2 or not removes or kinds & {'FIELD', 'PARAM', 'CMP', 'NUM', 'STR', 'AGG', 'BY', 'UNK'}:
+            return None
         cs = self.prog.collections
         a, b = names
-        if a in cs[b].fields and b not in cs[a].fields:
+        if cs[b].fields.get(a) and cs[b].fields[a].ref:
             a, b = b, a
-        elif b not in cs[a].fields:
-            return content
-        return [CT('FIELD', b, c.toks) if c.kind == 'COLL' and c.val == b else c for c in content]
+        elif not (cs[a].fields.get(b) and cs[a].fields[b].ref):
+            return None
+        child, parent, link = cs[a], cs[b], cs[a].fields[b]
+        if 'CANNOT' in kinds:
+            link.on_removed = 'restrict'
+        elif len(removes) >= 2:
+            link.on_removed = 'cascade'
+        else:
+            raise self.p('question', removes, f'should removing a {parent.name} also remove its '
+                         f'{child.label.lower()}, or be refused?', 'I can read this either way',
+                         f'say "When a {parent.name} is removed, remove its {child.label.lower()}." or '
+                         f'"A {parent.name} with {child.label.lower()} cannot be removed."')
+        link.on_removed_line = self.cur[0].line
+        if link.on_removed == 'cascade':
+            return f'removing {parent.name} removes its {child.label.lower()}'
+        return f'a {parent.name} with {child.label.lower()} cannot be removed'
 
     # ------------------------------------------------------------------ declarations
     def decl_collection(self, content):
@@ -539,7 +624,8 @@ class Parser:
         if not added:
             raise self.p('error', self.cur, f'I expected the properties of {coll.label} here')
         return f'{coll.name} has ' + ', '.join(
-            f'{f.name}' + (f': {f.type}' if f.type else '') + (' (unique)' if f.unique else '') for f in added)
+            f'{f.name}' + (f': {f.type}' if f.type else '') + (' (unique)' if f.unique else '') +
+            (f' (the {f.ref} it belongs to)' if f.ref else '') for f in added)
 
     def field_item(self, item, coll):
         ws = list(item)
@@ -587,6 +673,8 @@ class Parser:
         if not ws or any(w.kind != 'word' for w in ws) or len(ws) > 3:
             raise self.p('error', whole, 'I can\'t read this as a property name')
         name = '_'.join([w.text for w in ws[:-1]] + [singular(ws[-1].text)])
+        if name in self.prog.collections and name != coll.name and ftype is None and name not in coll.fields:
+            return self.make_ref(coll, self.prog.collections[name], ws)      # "each order has a customer"
         f = coll.fields.get(name)
         if f is None:
             f = coll.fields[name] = Field(name, ftype, line=ws[0].line)
@@ -656,6 +744,8 @@ class Parser:
                 return ('str', c.val)
             if c.kind == 'FIELD':
                 return ('field', c.val)
+            if c.kind == 'PFIELD':
+                return ('pfield',) + c.val
             if c.kind == 'PARAM':
                 return ('param', c.val)
             if c.kind == 'SCALE':
@@ -936,6 +1026,15 @@ class Parser:
         content = self.between(content)
         order, content = self.take_order(content, coll)
         order, limit, content = self.take_limit(content, coll, order)
+        for i, c in enumerate(content):     # "the orders of a given customer": the owner picks the records
+            if c.kind == 'PARAM' and c.val in coll.fields and coll.fields[c.val].ref and \
+                    (i == 0 or content[i - 1].kind not in ('WHERE', 'AND', 'OR', 'IS', 'CMP', 'EQSYM', 'NOT', 'OP',
+                                                           'TO', 'BY', 'BECOMES', 'MODAL', 'FROM')):
+                content = content[:i] + content[i + 1:]
+                if not content or content[-1].kind != 'WHERE':
+                    content.append(CT('WHERE', None, c.toks))
+                content.append(c)
+                break
         main, cond_t = self.split_where(content)
         main = rstrip(lstrip(main))
         if cond_t:                      # "... with the highest salary": a ranking, not a filter
@@ -1098,6 +1197,8 @@ class Parser:
         for c in rest:
             if c.kind == 'FIELD':
                 fs.append(c.val)
+            elif c.kind == 'PFIELD':
+                fs.append('.'.join(c.val))
             elif c.kind not in ('COMMA', 'AND'):
                 raise self.leftover([c])
         if not acts and not fs and where is None and not order:
