@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 *.ll
 intent_language_research_conversation.txt
+.DS_Store
