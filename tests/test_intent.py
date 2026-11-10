@@ -2377,6 +2377,59 @@ class TestNetwork(TestNativeAgainstReference):
         self.assertEqual(from_path('/count'), 'count')
 
 
+LAYERS = (
+    'The board is 10 wide and 4 high.\n'
+    'Shapes is a collection.\n'
+    'Each shape has an x (number), a y (number), a depth (number) and a look (text).\n'
+    'At the start there is a shape whose x is 3, whose y is 2, whose depth is 1 and whose look is "near".\n'
+    'At the start there is a shape whose x is 3, whose y is 2, whose depth is 5 and whose look is "far".\n'
+    'At the start there is a shape whose x is 6, whose y is 3, whose depth is 3 and whose look is "".\n'
+    'At the start there is a shape whose x is 7, whose y is 3, whose depth is 3 and whose look is "\u00e9t\u00e9".\n'
+    'At the start there is a shape whose x is 3, whose y is 2, whose depth is 3 and whose look is " gap".\n'
+    'The mark is text that starts as "*".\n'
+    'Draw each shape sorted by depth descending as its look at its x and its y.\n'
+    'Draw the mark at 1 and 1.\n'
+    'When the space key is pressed, decrease the depth of each shape whose look is "far" by 3.\n'
+    'When the up key is pressed, the mark becomes "+".\n'
+)
+
+
+class TestLayers(unittest.TestCase):
+    """A drawing can choose the order records are drawn in, so the nearest is on top, and each record can
+    say what it looks like."""
+    setUpClass = classmethod(TestNativeAgainstReference.setUpClass.__func__)
+    tearDownClass = classmethod(TestNativeAgainstReference.tearDownClass.__func__)
+    script = TestLive.script
+
+    def test_drawn_nearest_last(self):
+        _, out = self.script('layers', LAYERS, ['picture', 'press space', 'picture', 'press up', 'press space', 'screen'])
+        boards = [out[i + 1:i + 5] for i, line in enumerate(out) if line == '+----------+'][::2]
+        self.assertEqual(boards[0], ['|*         |', '|  n       |', '|          |', '|          |'])
+        self.assertEqual(boards[1][1], '|  n       |')      # far is depth 2 now: still behind near (1)
+        self.assertEqual(boards[2][0], '|+         |')
+        self.assertEqual(boards[2][1], '|  f       |')      # far is depth -1 now: nearest, so on top
+
+    def test_each_record_has_its_own_colour(self):
+        text = ('The board is 6 wide and 2 high.\n'
+                'Dots have an x (number), a y (number) and a hue (text).\n'
+                'At the start there is a dot whose x is 1, whose y is 1 and whose hue is "red".\n'
+                'At the start there is a dot whose x is 2, whose y is 1 and whose hue is "cyan".\n'
+                'At the start there is a dot whose x is 3, whose y is 1 and whose hue is "plaid".\n'
+                'The paint is text that starts as "green".\n'
+                'Draw each dot as "o" in its hue at its x and its y.\n'
+                'Draw "#" in the paint at 6 and 2.\n'
+                'When the space key is pressed, the paint becomes "yellow".\n'
+                'When the up key is pressed, set the hue of each dot to "blue".\n')
+        _, out = self.script('hues', text, ['picture', 'press space', 'press up', 'picture'])
+        cuts = [i for i, line in enumerate(out) if line == '~']
+        self.assertEqual(out[cuts[0] + 1:cuts[0] + 3], ['rc....', '.....g'])    # "plaid" names no colour: plain
+        self.assertEqual(out[cuts[1] + 1:cuts[1] + 3], ['bbb...', '.....y'])
+
+    def test_what_is_drawn_must_be_text(self):
+        level, _, d = problem('Draw each shape as its depth at its x and its y.\n', LAYERS.split('Draw')[0])
+        self.assertEqual((level, d.msg), ('error', '"depth" is a number'))
+
+
 MATHS = (
     'Sin: take an angle and return the sine of angle.\n'
     'Cos: take an angle and return the cosine of angle.\n'
