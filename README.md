@@ -7,7 +7,7 @@
 
 <p align="center">
   <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-f59e0b">
-  <img alt="version 0.6.0" src="https://img.shields.io/badge/version-0.6.0-6366f1">
+  <img alt="version 0.7.0" src="https://img.shields.io/badge/version-0.7.0-6366f1">
   <a href="https://github.com/srivtx/intent/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/srivtx/intent/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
   <img alt="backend: LLVM IR" src="https://img.shields.io/badge/backend-LLVM%20IR-262d3a">
@@ -288,6 +288,63 @@ by a fixed step, so `seed 7` followed by the same waits and keys gives the same 
 and in the reference. Played in a terminal, the starting number comes from the clock and is
 written to the journal, so even a game someone played by hand can be replayed exactly.
 
+Records of two collections can meet, and records can be counted in the middle of a sentence.
+[examples/shooter.intent](examples/shooter.intent) checks every shot against every alien:
+
+```
+Every 60 milliseconds, set the hit of the aliens to 1 if any shot has the same x and y.
+Every 60 milliseconds, remove the shots that have the same x and y as an alien.
+Every 60 milliseconds, increase the score by the number of aliens whose hit is 1.
+When space is pressed, add a shot whose x is the column and whose y is 13 if the number of shots is under 3.
+The game is over when the number of aliens is 0.
+```
+
+Inside such a condition, `its x`, `the alien's x` and `the same x` speak of the record the
+sentence is about. When a change asks about the other records of its own collection
+(`remove the cells if the number of cells with the same y is 10`), which records change is
+decided before any of them does, so the order they happen to be stored in can never matter.
+
+## On the network, and in a window
+
+A program is a set of commands. Served, it takes the same commands from many callers at once,
+one at a time in the order they arrive:
+
+```bash
+./intent build examples/customers.intent -o build/customers
+```
+
+```bash
+./build/customers serve 8080 customers.log
+```
+
+```bash
+curl http://127.0.0.1:8080/find-by-email/ana%40x.io
+```
+
+```bash
+curl -d 'add Ana,31,ana@x.io' http://127.0.0.1:8080/
+```
+
+A plain connection (`nc 127.0.0.1 8080`) sends one command per line and reads the answers.
+`GET /<command>/<arguments>` runs one command, `POST /` runs every line of the body, and
+`GET /` is a page: a console for a program of commands, and for a program with a board, the
+board itself, painted in colour and played with the keyboard.
+
+```bash
+./intent window examples/shooter.intent
+```
+
+opens that page in a window of its own:
+
+<p align="center"><img alt="the shooter example in its window" src="assets/window-shooter.jpg" width="560"></p>
+
+The compiled game does the same without the compiler:
+`./build/snake serve 8080`, then open `http://127.0.0.1:8080/`. While it is served, a game
+lives in real time, and everyone who opens the page sees and steers the same game. The server
+is part of the generated LLVM IR (sockets, `poll`, HTTP), like everything else; `serve` listens
+on this machine only and `serve-public` on every address. With a journal file, what callers
+changed is remembered, as on stdin.
+
 ## Small programs written in it
 
 | file | what it is |
@@ -359,37 +416,48 @@ dicts). It is the definition of meaning. The tests build native programs and fee
 the same random command streams — unordered and ordered collections, text and numeric keys,
 reject and replace, with and without indexes, including malformed input and 64-bit overflow
 — and require identical output (as a multiset where order is not part of the meaning).
-187 tests pass, including the example apps, three-collection relationship programs and two
+217 tests pass, including the example apps, three-collection relationship programs and three
 games, run against the reference on random commands, with chance seeded the same on both
 sides. The games are also played through a real terminal (keys, colour, signals, a window that
 is too small, losing and playing again), and randomly mangled copies must end in a diagnosis
-or a program, never a crash. They run on macOS and Linux on every push.
+or a program, never a crash. The same conversation is held with the compiled server and the
+reference server over plain connections and HTTP, and both must say the same. They run on
+macOS and Linux on every push.
 
 This shows the backend agrees with the reference. It does not show the reference agrees
 with what you meant; that is what `check` is for — read the right-hand column.
 
 ## What this version cannot do
 
-- Relationships go one way: from a record to its owner. No summaries per owner, no grouping.
+- Relationships go one way: from a record to its owner. A sentence can count, total or match
+  the records of another collection, but there is no grouping yet (`the average salary per city`).
 - Whole numbers (64-bit, wrapping) and text only. No decimals, dates, or missing values.
 - Text may not contain commas (the command format is comma-separated).
 - Conditions are a flat list of `and` or of `or`; no grouping.
 - No constraints other than uniqueness; a unique property cannot be changed in bulk.
-- **Games are terminal games.** A board of coloured characters; no window, no sound. A period
-  is fixed when compiled (a game cannot speed up). A random number's two ends are written as
-  numbers. A condition about other records (`if any rock ...`) looks into one other collection
-  and cannot be mixed with `or`. A record that belongs to another cannot appear by itself yet.
-- **No network.** No server yet.
+- **A board is a grid of coloured characters**, in a terminal or in a window; the window is a
+  page drawn by a browser, and there is no sound and no pictures of your own. A period is fixed
+  when compiled (a game cannot speed up). A random number's two ends are written as numbers. A
+  condition about other records (`if any rock ...`) looks into one other collection and cannot
+  be mixed with `or`; "any other stone" (a record of the same collection that is not this one)
+  cannot be said, count them instead. Looking into another collection passes over all of it for
+  every record that asks. A record that belongs to another cannot appear by itself yet.
+- **The server is small.** Sixty-four callers at once, requests up to 8 KB, no TLS, no logins:
+  put it behind something that has them. The largest or smallest of no records is 0. The
+  reference server does not keep a journal; the compiled one does. A program cannot call
+  other servers.
 - Calculations work on whole numbers only (no text, no decimals), and cannot read a collection.
 - Rules look only at the record a command added or changed when every rule in the program
   reads and changes one record. As soon as one rule reads a single value, an owner or another
   collection, all rules are re-applied in full after every change, as before.
 - No summaries of a calculation (`total of price times stock`), no grouping
-  (`average salary per city`), no loops written by the programmer.
+  (`average salary per city`), no loops written by the programmer. Counts and totals inside a
+  sentence work in what happens by itself, in rules and endings and in named changes; a named
+  capability that only shows something cannot yet show two things at once.
 - A change applies to the records a condition selects. Something that happens by itself can
   be several steps (`..., and then ...`); a named capability still cannot, and capabilities
   cannot call each other.
-- Remembering is a growing command log, never compacted. Nothing else touches files or the network.
+- Remembering is a growing command log, never compacted. Nothing else touches files.
 - Rankings with ties are broken by storage order unless insertion order is declared.
 - A condition that fixes a unique property goes through the index (`the player with a given
   name`); every other condition scans, including "the orders of a given customer". Sorted and
@@ -424,20 +492,28 @@ and pinned by tests (`TestStressFindings`, `TestService`). My reading of what th
 experiments say about the language is in [gemini-build/REVIEW.md](gemini-build/REVIEW.md).
 Its `build-04` test now fails on purpose: it asserts the old buggy behaviour.
 
+Three later builds (an invaders game, a breakout that plays itself for an hour, a tetris) tested
+0.6.0. Its verdict: the runtime held, and the language had four sharp edges: two collections
+could not meet in one condition, a sentence could not count, some word orders were rejected,
+and numbered names were taken for slips. All four were right, and 0.7.0 answers each
+(`TestAcross`). The tetris needed a script to write 206 sentences for 14 row counters; the
+sentence it was missing is `remove the cells if the number of cells with the same y is 10`.
+
 ## Where it can go next
 
 Done so far: definitions, spelling tolerance, rankings, remembering, text tests, relationships,
 single values, values that depend on a condition, standing rules, time, keys and a board,
-colour, chance, records that appear, conditions about another collection, steps, playing again.
+colour, chance, records that appear, conditions about another collection, steps, playing again,
+counting and matching across collections, a server, a window.
 The stress experiments show the same thing from eight directions: people fall back to
 arithmetic tricks when the language cannot *say* something. So, in order:
 
 1. **An index on linking properties**, so "the orders of a given customer" and removing a
    customer's orders stop looking at every order. The rows on both sides move, so this needs
    care; it is the one scan left that grows with someone else's data.
-2. **Faces.** The program stays the same and one sentence says how it meets the world:
-   `Serve this on the web.` turns every capability into an endpoint; a window instead of
-   terminal characters is another face.
+2. **More faces.** A program can already be served and shown in a window. Next: answers as
+   JSON, a form per capability on the page, pictures and sound for a board, and a program that
+   calls another served program.
 3. **Summaries per owner and per group.** `customers with more than 3 orders`,
    `the total of the lines of each order`, `the average salary for each city`.
 4. **Rules on data.** `Stock is never under 0.` checked on every add and change, with the
@@ -467,7 +543,8 @@ intentc/plan.py         representation discovery, with reasons
 intentc/interp.py       reference interpreter (the meaning)
 intentc/llvm.py         Intent IR + plan -> LLVM IR
 intentc/play.py         playing in a terminal with the reference interpreter
+intentc/web.py          serving over the network with the reference interpreter, and the page
 tests/                  phrasings, questions, planner, spelling, definitions, apps, native-vs-reference
 bench/bench.py          the table above
-examples/               customers, questions, leaderboard, todo, shop, store, calculator, arcade, dodge, snake
+examples/               customers, questions, leaderboard, todo, shop, store, calculator, arcade, dodge, snake, shooter
 ```

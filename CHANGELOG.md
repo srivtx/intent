@@ -3,6 +3,54 @@
 Intent is experimental. Until 1.0, any version may change what a sentence means; `./intent check`
 always shows the current reading.
 
+## 0.7.0 — 2026-11-11
+
+Records of different collections can meet, a sentence can count, and a program can be served
+and shown in a window. A second model's review of 0.6.0 named four limits; all four were real,
+and all four are gone.
+
+### Added
+- **Two collections in one condition.** `set the hit of the aliens to 1 if any shot has an x
+  equal to the alien's x and a y equal to its y`, `... if any shot has the same x and y`,
+  `the aliens that have the same x and y as a shot`, `the aliens whose x is the x of any shot`,
+  `the bombs that do not have the same x as an alien`. Inside a condition about other records,
+  `its x`, `the alien's x` and `the same x` are the record the sentence is about. If there is no
+  such record the compiler asks whose it is.
+- **Counting inside a sentence.** `the number of cells whose y is 3`, `the count of ...`,
+  `the total of the x of the cells`, `the largest y of the cells where ...`, anywhere a number
+  can stand: in a condition, in a new value, in a record that appears, in an ending
+  (`The game is over when the number of aliens is 0.`). They nest, and `with the same y`
+  compares with the record that asks, which gives per-group counts:
+  `remove the cells if the number of cells with the same y is 10`.
+- **Decided first.** When a change asks about other records of the collection it changes,
+  every record is asked before any is changed or removed, in the reference and natively, so
+  storage order cannot leak into the answer. A new value worked out from the property being
+  changed in the other records is refused with the reason.
+- **A server.** `./program serve 8080 [journal]` (`serve-public` for every address): plain
+  connections with a command per line, `GET /<command>/<arguments>`, `POST /` with commands in
+  the body, many callers at once through `poll`. Emitted as LLVM IR like the rest.
+  `./intent serve file.intent` does the same from the reference interpreter.
+- **A window.** `GET /` is a page generated from the program: the board painted in colour and
+  played with the keyboard, or a console for a program of commands. `./intent window
+  file.intent` opens it in a window of its own. A served game lives in real time and everyone
+  who opens the page shares it.
+- `picture`: the board plus the colour of every cell, for a page to paint.
+- `examples/shooter.intent`.
+
+### Fixed
+- **Word order.** `if the hurt is 1, remove the bombs whose y is at least 14` and
+  `increase the y of the cells whose y is under 1 by 1 if the clear is 1` were rejected while
+  their rearrangements were read. A condition can now stand in front, behind, or both.
+- **Names with a number in them.** `The fill1 starts at 0. The fill2 starts at 0.` was taken
+  for a slip of the first name. A digit in a name is deliberate; `hurtt` for `hurt` is still
+  caught.
+- `remove the aliens if any shot ...` asked "remove which alien?".
+- A program whose only ending counts records needs no single value to exist.
+
+### Changed
+- `./intent explain` says when a sentence passes over another collection for every record.
+- A served or built program lists `picture` among its commands when it has a board.
+
 ## 0.6.0 — 2026-11-10
 
 A snake game can now be written, and two things that scanned no longer do.

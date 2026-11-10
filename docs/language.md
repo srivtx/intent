@@ -247,6 +247,47 @@ Whenever any rock has a y over 12, the alarm becomes "low".
 `any` and `no` are the two forms. A sentence that goes on to speak about those same records
 (`if any rock's y is over 12, its y becomes 1`) is about each of them, as before.
 
+Inside such a condition the record the sentence is about can be spoken of too, so records of
+two collections can meet:
+```
+Every 60 milliseconds, set the hit of the aliens to 1 if any shot has an x equal to the alien's x and a y equal to its y.
+Every 60 milliseconds, remove the aliens if any shot has the same x and y.
+Every 60 milliseconds, remove the shots that have the same x and y as an alien.
+Every second, remove the aliens whose x is the x of any shot.
+Every second, remove the bombs that do not have the same x as an alien.
+```
+After a comparison, `its x` and `the alien's x` are the x of the record the sentence is about;
+`the same x` is short for "an x equal to its x". If the sentence is not about any one record
+(`set the lives to 0 if any rock has an x equal to its y`) the compiler asks whose it is.
+
+**Counting inside a sentence.** Wherever a number can stand, so can a count, a total, or the
+largest or smallest of a property, over all records of a collection or those a condition picks:
+```
+When space is pressed, add a shot whose x is the column and whose y is 13 if the number of shots is under 3.
+Every second, increase the score by the number of aliens whose hit is 1.
+Every second, set the weight to the total of the size of the rocks whose y is over 5.
+Every second, set the top to the smallest y of the cells.
+The game is over when the number of aliens is 0.
+Every second, remove the cells if the number of cells with the same y is 10.
+Every second, set the gap to the largest y of the cells where the number of cells with the same y is 10.
+```
+`the number of`, `the count of`; `the total of`, `the sum of`; `the largest`, `the highest`,
+`the smallest`, `the lowest`. The largest or smallest of no records is 0. A count that is
+asked for (`How many cells have a y of 3?`) is still a command, and `the cell with the largest y`
+is still a ranking.
+
+When a change asks about the other records of the collection it changes, as in the last two
+lines, every record is asked first and only then do any change, so the answer never depends on
+the order the records are kept in. A new value may not be worked out from the very property
+that is being changed in the other records (the compiler says so); put it in a single value first.
+
+**Word order.** A condition can stand in front, behind, or both:
+```
+Every second, if the hurt is 1, remove the bombs whose y is at least 14.
+Every second, remove the bombs whose y is at least 14 if the hurt is 1.
+Every second, increase the y of the cells whose y is under 1 by 1 if the clear is 1.
+```
+
 **Several steps.** `and then` puts steps in order within one moment:
 ```
 When space is pressed, add a shot with x the column and y 11, and then the score decreases by 1.
@@ -265,6 +306,7 @@ keys and the board are three more commands, so a game can be scripted and tested
 wait 450          let 450 milliseconds pass
 press left        as if the left key was pressed
 screen            print the board
+picture           the board, then "~", then one letter per cell for its colour (for a page to paint)
 seed 7            where chance starts (only if the program uses chance)
 restart           back to the start (only if the game can end)
 ```
@@ -304,10 +346,39 @@ Answers: records print as comma-separated values; `none` when nothing matches a 
 `duplicate email`, `no such member`, `member still has visits` when a rule refuses;
 `error: ...` when the command itself is malformed.
 
+## On the network, and in a window
+
+```bash
+./build/tour serve 8080 members.log
+```
+
+The program now takes its commands from the network instead of stdin: the same commands, the
+same answers, the same journal. Callers are answered one command at a time, in the order the
+commands arrive.
+
+| How it is asked | What happens |
+| --- | --- |
+| a plain connection, one command per line | each answer comes back on that connection |
+| `GET /join/Ana,ana@x.io,31,0` | that one command runs (`%40` and the like are decoded; the first `/` after the name parts it from its arguments) |
+| `POST /` with commands in the body | every line runs; the answers are the body of the reply |
+| `GET /` | a page: a console, or the board in colour |
+
+`serve` listens on this machine only; `serve-public 8080` on every address. There is room for
+64 callers at once and 8 KB per request. `./intent serve file.intent --port 8080` serves from
+the reference interpreter in exactly the same way (without a journal), and
+`./intent window file.intent` serves on a free port and opens the page in a window of its own.
+
+A program with a board lives in real time while it is served, as it does in a terminal: the
+clock becomes `wait` commands (written to the journal, with the seed, so the game can be
+replayed). The page asks for `picture` about 25 times a second, paints each cell in its colour
+(a `#` as a filled block), and sends `press <key>` for the keys the program listens to; when
+the game is over, Enter sends `restart`. Everyone who opens the page sees the same game.
+
 ## Not yet
 
 Decimals, dates and yes/no values; text in calculations; a random number between two values
-that are not written as numbers; a game that speeds up; windows and sound; a network;
+that are not written as numbers; a game that speeds up; sound and pictures; calling other servers;
+a record of the same collection "other than this one";
 properties defined by a calculation; summaries per owner or per group
 (`members with more than 3 visits`); named capabilities made of several steps; mixing `and` with
 `or`; commas inside text. See the [README](../README.md#what-this-version-cannot-do).
