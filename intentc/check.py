@@ -6,7 +6,8 @@ Four tiers, in this order, and each is reported differently:
   assumed   - a naming convention (email -> text); reported as a note, overridable
   asked     - nothing decides it; compilation stops with a question
 """
-from .ir import NEGATE, STATE, TEXT_OPS, Diag, cond_anys, cond_cmps, task_conds, task_exprs, walk_cond_exprs, walk_expr
+from .ir import (NEGATE, STATE, TEXT_OPS, Diag, cond_cmps, lookups, task_conds, task_exprs, walk_cond_exprs,
+                 walk_expr)
 from .lexicon import CONVENTION
 
 def nonzero(c, yes):
@@ -37,6 +38,7 @@ class Checker:
         self.prog, self.src = prog, src
         self.diags = []
         self.seen = set()
+        self.outer = None           # while a condition about other records is checked: where it is asked from
 
     def d(self, level, line, msg, label='', hint=''):
         key = (level, line, msg)
@@ -50,8 +52,10 @@ class Checker:
     # ------------------------------------------------------------------ types
     def ty(self, e, coll, t):
         k = e[0]
-        if k in ('num', 'bin', 'rand'):
+        if k in ('num', 'bin', 'rand', 'agg'):
             return 'int'
+        if k == 'outer':
+            return self.outer.fields[e[1]].type
         if k == 'str':
             return 'text'
         if k == 'field':
@@ -73,6 +77,10 @@ class Checker:
             return 'an either-or value'
         if e[0] == 'rand':
             return 'a random number'
+        if e[0] == 'agg':
+            return 'a count' if e[1] == 'count' else f'the {e[1]} of "{e[3]}"'
+        if e[0] == 'outer':
+            return f'"{e[1]}"'
         return {'field': f'"{e[1]}"', 'param': f'the given {e[1]}', 'num': str(e[1]),
                 'str': f'"{e[1]}"', 'bin': 'a calculation'}[e[0]] if e[0] != 'num' else str(e[1])
 
@@ -87,6 +95,9 @@ class Checker:
                 f.type, f.how = typ, 'inferred'
             elif k == 'field':
                 f = coll.fields[e[1]]
+                f.type, f.how = typ, 'inferred'
+            elif k == 'outer':
+                f = self.outer.fields[e[1]]
                 f.type, f.how = typ, 'inferred'
             else:
                 t.ptypes[e[1]] = typ
@@ -123,13 +134,17 @@ class Checker:
         for f, e in t.assigns:
             ch |= self.equal(('field', f), e, coll, t)
         ch |= self.compared(task_conds(t), coll, t)
-        for node in cond_anys(t.where):     # "if any rock ...": its properties are the rock's
-            other = self.prog.collections[node[1]]
-            for e in walk_cond_exprs(node[2]):
+        for frm, node in lookups(t):        # "if any rock ...", "the number of rocks whose ...": the rock's properties
+            other = self.prog.collections[node[2] if node[0] == 'agg' else node[1]]
+            self.outer = self.prog.collections.get(frm)
+            for e in walk_cond_exprs(node[-1]):
                 if e[0] == 'bin':
                     ch |= self.need(e[2], 'int', other, t)
                     ch |= self.need(e[3], 'int', other, t)
-            ch |= self.compared(cond_cmps(node[2]), other, t)
+            ch |= self.compared(cond_cmps(node[-1]), other, t)
+            if node[0] == 'agg' and node[3]:
+                ch |= self.need(('field', node[3]), 'int', other, t)
+            self.outer = None
         for e in t.at or ():            # a place on the board is two numbers
             ch |= self.need(e, 'int', coll, t)
         if t.kind == 'agg' and t.field:
@@ -205,7 +220,7 @@ class Checker:
     def validate(self):
         P = self.prog
         for c in P.collections.values():
-            if not c.fields:
+            if not c.fields and c.name != STATE:
                 self.d('question', c.line, f'what does each {c.name} have?', 'no properties declared',
                        f'e.g. "Each {c.name} has a name and an age."')
             if c.on_dup == 'replace' and len(c.unique_fields()) > 1:
@@ -281,10 +296,20 @@ class Checker:
                 self.divisions(e, safe, t)
             if t.expr:
                 self.divisions(t.expr, [], t)
-            for c in list(cond_cmps(t.where)) + [c for node in cond_anys(t.where) for c in cond_cmps(node[2])]:
+            for c in list(cond_cmps(t.where)) + [c for _, node in lookups(t) for c in cond_cmps(node[-1])]:
                 self.divisions(c[2], [], t)
                 self.divisions(c[3], [], t)
             if t.kind == 'update':
+                changed = {f for f, _ in t.assigns}
+                probe = type(t)('', 'update', t.coll, assigns=t.assigns)
+                for frm, node in lookups(probe):    # a new value worked out from the other records of the same kind
+                    read = {e[1] for e in walk_cond_exprs(node[-1]) if e[0] == 'field'} | \
+                        ({node[3]} if node[0] == 'agg' and node[3] else set())
+                    if (node[2] if node[0] == 'agg' else node[1]) == t.coll and read & changed:
+                        f = sorted(read & changed)[0]
+                        self.d('error', t.line, f'this works out the new "{f}" from the "{f}" of the other {coll.label.lower()} '
+                               f'while changing them', 'the answer would depend on which one is changed first',
+                               'work it out into a single value first, in a sentence of its own')
                 for f, _ in t.assigns:
                     if coll.fields[f].ref:
                         self.d('error', t.line, f'moving a {coll.name} to another {f} is not supported yet')

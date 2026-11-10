@@ -146,6 +146,7 @@ def cmd_build(a):
     print('commands: ' + ' | '.join([usage(prog, t) for t in prog.tasks] + [u for _, u in builtins(prog)]))
     if prog.board:
         print(f'play it: run {out} in a terminal (q, Esc or Ctrl-C stops)')
+    print(f'serve it: {out} serve 8080   (then open http://127.0.0.1:8080/)')
     return 0
 
 
@@ -163,6 +164,43 @@ def cmd_run(a):
     return 0
 
 
+def cmd_serve(a, opened=None):
+    """The same commands as on stdin, over the network; a program with a board lives in real time."""
+    from .web import Server, title_of
+    prog, diags, p, plan = load(a.file)
+    if not report(diags, p, quiet_notes=True):
+        return 1
+    try:
+        server = Server(Machine(prog), title_of(a.file), a.port, getattr(a, 'public', False))
+    except OSError as e:
+        print(f'error: cannot listen on port {a.port} ({e.strerror})', file=sys.stderr)
+        return 1
+    print(f'serving on port {server.port}: http://127.0.0.1:{server.port}/  (Ctrl-C stops)', flush=True)
+    if opened:
+        opened(f'http://127.0.0.1:{server.port}/')
+    server.forever()
+    return 0
+
+
+def cmd_window(a):
+    """Show the program in a window of its own: its board as a picture, or a console for its commands."""
+    import shutil
+    import webbrowser
+
+    def opened(url):
+        chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        for exe in ([chrome] if os.path.exists(chrome) else []) + \
+                [x for x in map(shutil.which, ('google-chrome', 'chromium', 'chromium-browser', 'microsoft-edge')) if x]:
+            try:                        # a window with nothing in it but the program
+                subprocess.Popen([exe, f'--app={url}', '--new-window'], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+                return
+            except OSError:
+                pass
+        webbrowser.open(url)
+    return cmd_serve(a, opened)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='intent', description='Intent: describe behaviour, get native code.')
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -170,7 +208,9 @@ def main(argv=None):
                             ('explain', cmd_explain, 'show the chosen representation and why'),
                             ('ir', cmd_ir, 'print the generated LLVM IR'),
                             ('build', cmd_build, 'compile to a native executable'),
-                            ('run', cmd_run, 'run in the reference interpreter (commands on stdin)')):
+                            ('run', cmd_run, 'run in the reference interpreter (commands on stdin)'),
+                            ('serve', cmd_serve, 'answer commands over the network (plain lines or HTTP)'),
+                            ('window', cmd_window, 'show the program in a window: its board, or a console')):
         sp = sub.add_parser(name, help=help_)
         sp.add_argument('file')
         sp.set_defaults(fn=fn)
@@ -178,6 +218,10 @@ def main(argv=None):
             sp.add_argument('--no-index', action='store_true', help='experiment: forbid hash indexes')
         if name == 'build':
             sp.add_argument('-o', '--output')
+        if name in ('serve', 'window'):
+            sp.add_argument('--port', type=int, default=8080 if name == 'serve' else 0)
+        if name == 'serve':
+            sp.add_argument('--public', action='store_true', help='let other machines connect, not only this one')
     a = ap.parse_args(argv)
     return a.fn(a)
 

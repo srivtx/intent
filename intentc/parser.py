@@ -33,6 +33,8 @@ BOARD_FILL = {'show', 'draw', 'make', 'the', 'a', 'an', 'is', 'are', 'has', 'hav
 OPENERS = [('at', 'the', 'start', 'there', 'is'), ('at', 'the', 'start', 'there', 'are'), ('to', 'begin', 'with'),
            ('at', 'first', 'there', 'is'), ('start', 'with'), ('begin', 'with'), ('starting', 'with'),
            ('there', 'is'), ('there', 'are'), ('at', 'the', 'start')]
+VALUE_BEFORE = ('WHERE', 'AND', 'OR', 'TO', 'BECOMES', 'EQSYM', 'IS', 'CMP', 'OP', 'BY', 'NOT', 'MODAL', 'FROM')
+COND_STARTS = ('if', 'when', 'whenever', 'once', 'as', 'only', 'unless')
 IF_WORDS = {'if', 'when', 'whenever', 'once', 'as', 'only', 'every', 'each', 'any', 'the'}   # first word of an "if"
 BESIDE = {'above': 'above', 'over': 'above', 'below': 'below', 'under': 'below', 'beneath': 'below'}
 
@@ -61,6 +63,8 @@ class CT:
     kind: str
     val: object
     toks: list
+    own: bool = False           # a property said with "its" / "their"
+    claims: tuple = ()          # a value that looks into a collection: what it says about "the outer record"
 
     @property
     def text(self):
@@ -107,6 +111,7 @@ class Parser:
         self.as_rule = False
         self.trigger = None         # set while reading a sentence that happens by itself, is drawn, or ends the game
         self.other = None           # a condition about another collection, waiting to join the sentence's own
+        self.claims = []            # what this sentence's look-ups say about the record the sentence is about
 
     # ------------------------------------------------------------------ diagnostics
     def p(self, level, where, msg, label='', hint=''):
@@ -536,6 +541,10 @@ class Parser:
             else:
                 out.append(CT('UNK', t.text, [t]))
                 i += 1
+        for i, c in enumerate(out[:-1]):        # "its x", "their y": said of the record the sentence is about
+            if c.kind == 'FILLER' and len(c.toks) == 1 and c.toks[0].text in ('its', 'their') and \
+                    out[i + 1].kind == 'FIELD':
+                out[i + 1] = replace(out[i + 1], own=True)
         return out
 
     def chance(self, toks, i):
@@ -772,23 +781,72 @@ class Parser:
             return 'a', toks[0].val, toks[1:]
         return None
 
-    def other_cond(self, how, name, clause):
-        """A condition about another collection: "any rock has an x equal to the column and ..."."""
+    def other_cond(self, how, name, clause, empty_ok=False):
+        """A condition about another collection: "any rock has an x equal to the column and ...".
+
+        Returns (node, claims). Inside it, "the alien's x", "its x" after a comparison and "the same x"
+        speak of the record the sentence itself is about; each such mention is a claim
+        (collection or None, property, the words) that is checked once that record is known.
+        """
         coll = self.prog.collections[name]
-        inner = []
-        for c in clause:
+        inner, claims, i = [], [], 0
+        while i < len(clause):
+            c = clause[i]
+            i += 1
             if c.kind == 'UNK':
                 raise self.unknown_word(c)
             if c.kind in ('QUANT', 'GEN') or (c.kind == 'COLL' and c.val == name):
                 continue
             if c.kind == 'COLL':
-                raise self.p('error', c, 'a condition can look into one other collection in this version')
+                if i < len(clause) and clause[i].kind == 'FIELD':       # "the alien's x"
+                    inner.append(CT('OUTER', (c.val, clause[i].val), c.toks + clause[i].toks))
+                    claims.append(inner[-1])
+                    i += 1
+                    continue
+                raise self.p('error', c, 'a condition can look into one other collection in this version',
+                             hint=f'to compare with the {c.val} the sentence is about, name its property: '
+                                  f'"... equal to the {c.val}\'s x"')
+            if c.kind == 'LOOK':
+                self.settle_claims(c.claims, coll, True)        # a look-up inside this one is asked from here
             if c.kind == 'HAS':
                 c = CT('WHERE', None, c.toks)
+            if c.kind == 'SAME':                                    # "with the same y", "the same x and y as the alien"
+                fs = []
+                while i < len(clause) and clause[i].kind == 'FIELD':
+                    fs.append(clause[i])
+                    i += 1
+                    if i + 1 < len(clause) and clause[i].kind == 'AND' and clause[i + 1].kind == 'FIELD':
+                        i += 1
+                    else:
+                        break
+                if not fs:
+                    raise self.p('error', c, 'the same what?', hint='e.g. "with the same y"')
+                whose = None
+                if i < len(clause) and clause[i].kind == 'UNK' and clause[i].toks[0].text == 'as':
+                    i += 1
+                    while i < len(clause) and clause[i].kind in ('QUANT', 'GEN'):
+                        i += 1
+                    if i < len(clause) and clause[i].kind == 'COLL':
+                        whose, i = clause[i].val, i + 1
+                for k, fc in enumerate(fs):
+                    if fc.val not in coll.fields:
+                        raise self.p('error', fc, f'{coll.label} has no property "{fc.val}"', self.could_be(coll))
+                    if k:
+                        inner.append(CT('AND', None, fc.toks))
+                    inner += [CT('FIELD', fc.val, fc.toks), CT('CMP', 'eq', c.toks),
+                              CT('OUTER', (whose, fc.val), c.toks + fc.toks)]
+                    claims.append(inner[-1])
+                continue
+            if c.kind == 'FIELD' and c.own and inner and inner[-1].kind in ('IS', 'CMP', 'EQSYM', 'OP', 'NOT', 'TO'):
+                inner.append(CT('OUTER', (None, c.val), c.toks))    # "... equal to its x"
+                claims.append(inner[-1])
+                continue
             if c.kind == 'FIELD' and c.val not in coll.fields:
                 raise self.p('error', c, f'{coll.label} has no property "{c.val}"', self.could_be(coll))
             inner.append(c)
         if not inner:
+            if empty_ok:
+                return None, claims
             raise self.p('error', clause or self.cur, f'what about the {name}?', 'a condition is missing here',
                          f'e.g. "if any {name} has ..."')
         cond = self.parse_cond(self.between(self.resolve_pronouns(inner, coll)), coll)
@@ -796,34 +854,242 @@ class Parser:
             if e[0] in ('param', 'pfield', 'rand'):
                 raise self.p('error', clause, 'this is more than a condition about another collection can use yet',
                              'it can compare its properties with numbers, text and single values')
-        return ('none' if how == 'none' else 'any', name, cond)
+        return ('none' if how == 'none' else 'any', name, cond), claims
+
+    def settle_claims(self, claims, coll, real):
+        """What a look-up said about "the outer record" has to be true of the record it is asked from."""
+        for c in claims:
+            whose, field = c.val
+            if not real:
+                raise self.p('question', c, f'whose {field} is this?',
+                             'this sentence is not about any one record, so there is no "its" here',
+                             f'compare with a number or a single value, or say the sentence about the records: '
+                             f'"Remove the rocks if ..."')
+            if whose and whose != coll.name:
+                raise self.p('error', c, f'this sentence is about {coll.label}, not about a {whose}',
+                             'a condition about other records can also speak of the record the sentence is about')
+            if field not in coll.fields:
+                raise self.p('error', c, f'{coll.label} has no property "{field}"', self.could_be(coll))
+
+    def lookup_at(self, content, i):
+        """Does a value that looks into a collection start here? "the number of cells whose y is 3"."""
+        c, n = content[i], len(content)
+        if c.kind != 'AGG' or c.val not in ('count', 'sum', 'max', 'min') or i == 0 or \
+                content[i - 1].kind not in VALUE_BEFORE:
+            return None
+        if content[i - 1].kind == 'WHERE' and content[i - 1].toks[0].text not in COND_STARTS and \
+                c.val in ('max', 'min'):
+            return None             # "the customer with the highest age" ranks; it does not look anything up
+        if content[i - 1].kind == 'IS' and (i < 2 or content[i - 2].kind not in
+                                            ('FIELD', 'VALUE', 'PFIELD', 'NUM', 'LOOK', 'RP')):
+            return None             # "What is the total of ...?" asks for it; it is not a value inside a sentence
+        j, field = i + 1, None
+        if j < n and content[j].kind == 'FIELD':
+            field, j = content[j], j + 1
+        while j < n and content[j].kind == 'QUANT':
+            j += 1
+        if j >= n or content[j].kind != 'COLL':
+            return None
+        name, j = content[j].val, j + 1
+        if field is None and c.val != 'count' and j < n and content[j].kind == 'FIELD':
+            field, j = content[j], j + 1            # "the sum of the aliens' hits"
+        if (field is None) != (c.val == 'count'):
+            return None
+        return name, field, j
+
+    def clause_end(self, content, k, coll):
+        """Where the condition of a look-up stops: "... whose y is 3 [is 8]" stops before the second "is"."""
+        n = len(content)
+
+        def term(k):
+            if k < n and content[k].kind in ('WHERE', 'HAS'):
+                k += 1
+            if k >= n:
+                return None
+            c = content[k]
+            if c.kind == 'SAME':
+                k += 1
+                while k < n and content[k].kind == 'FIELD':
+                    k += 1
+                    if k + 1 < n and content[k].kind == 'AND' and content[k + 1].kind == 'FIELD':
+                        k += 1
+                    else:
+                        break
+                if k < n and content[k].kind == 'UNK' and content[k].toks[0].text == 'as':
+                    k += 1
+                    while k < n and content[k].kind in ('QUANT', 'GEN'):
+                        k += 1
+                    if k < n and content[k].kind == 'COLL':
+                        k += 1
+                return k
+            if c.kind == 'LOOK' or (c.kind == 'FIELD' and c.val in coll.fields):
+                k += 1
+            elif c.kind not in ('CMP', 'NOT', 'IS', 'BETWEEN'):
+                return None
+            while k < n and content[k].kind in ('IS', 'NOT', 'CMP', 'EQSYM', 'BETWEEN'):
+                k += 1
+            first = k
+            while k < n:
+                x = content[k]
+                if x.kind in ('NUM', 'STR', 'VALUE', 'LOOK', 'OP', 'LP', 'RP', 'SCALE', 'PARITY') or \
+                        (x.kind == 'FIELD' and (k == first or content[k - 1].kind in ('OP', 'LP', 'COLL'))) or \
+                        (x.kind == 'COLL' and k + 1 < n and content[k + 1].kind == 'FIELD') or \
+                        (x.kind == 'AND' and k + 1 < n and content[k + 1].kind == 'NUM' and
+                         any(y.kind == 'BETWEEN' for y in content[first - 1:first])):
+                    k += 1
+                else:
+                    break
+            return k
+        end = term(k)
+        if end is None:
+            return k
+        while end + 1 < n and content[end].kind in ('AND', 'OR'):
+            x = content[end + 1]
+            more = (x.kind == 'WHERE' and x.toks[0].text not in COND_STARTS) or x.kind in ('HAS', 'CMP', 'SAME') or \
+                (x.kind == 'FIELD' and x.val in coll.fields and not x.own)
+            nxt = term(end + 1) if more else None
+            if nxt is None:
+                break
+            end = nxt
+        return end
+
+    def lookups(self, content):
+        """Turn every "the number of cells whose y is 3" into one value, the innermost first."""
+        while True:
+            at = next((i for i in range(len(content) - 1, -1, -1) if self.lookup_at(content, i)), None)
+            if at is None:
+                return content
+            name, field, j = self.lookup_at(content, at)
+            coll = self.prog.collections[name]
+            if field is not None and field.val not in coll.fields:
+                raise self.p('error', field, f'{coll.label} has no property "{field.val}"', self.could_be(coll))
+            k = j
+            if k < len(content) and (content[k].kind == 'HAS' or (
+                    content[k].kind == 'WHERE' and content[k].toks[0].text not in COND_STARTS)):
+                k = self.clause_end(content, k, coll)
+            node, claims = self.other_cond('any', name, content[j:k], empty_ok=True)
+            look = ('agg', content[at].val, name, field.val if field is not None else None, node[2] if node else None)
+            toks = [t for c in content[at:k] for t in c.toks]
+            content = content[:at] + [CT('LOOK', look, toks, claims=tuple(claims))] + content[k:]
+
+    def relatives(self, content):
+        """Two ways of saying that a record matches some record of another collection:
+        "the aliens that have the same x and y as a shot", "the aliens whose x is the x of any shot"."""
+        cs = self.prog.collections
+        out, i = list(content), 0
+
+        def others(name):
+            return any(c.kind == 'COLL' and c.val != name for c in out)
+
+        def fields_from(k):
+            fs = []
+            while k < len(out) and out[k].kind == 'FIELD':
+                fs.append(out[k])
+                k += 1
+                if k + 1 < len(out) and out[k].kind == 'AND' and out[k + 1].kind == 'FIELD':
+                    k += 1
+                else:
+                    break
+            return fs, k
+
+        def toks(a, b):
+            return [t for c in out[a:b] for t in c.toks]
+        while i < len(out):
+            c = out[i]
+            if c.kind == 'SAME':
+                fs, k = fields_from(i + 1)
+                if fs and k < len(out) and out[k].kind == 'UNK' and out[k].toks[0].text == 'as':
+                    k += 1
+                    while k < len(out) and out[k].kind == 'QUANT':
+                        k += 1
+                    lead = i - 1 if i and out[i - 1].kind in ('WHERE', 'HAS', 'IS') else i
+                    said_of_any = lead >= 2 and out[lead - 1].kind == 'COLL' and \
+                        out[lead - 2].toks[0].text in ('any', 'no')     # "if any shot has the same x as the alien"
+                    if k < len(out) and out[k].kind == 'COLL' and others(out[k].val) and not said_of_any:
+                        other = cs[out[k].val]
+                        cond = None
+                        for f in fs:
+                            if f.val not in other.fields:
+                                raise self.p('error', f, f'{other.label} has no property "{f.val}"', self.could_be(other))
+                            part = ('cmp', 'eq', ('field', f.val), ('outer', f.val))
+                            cond = part if cond is None else ('and', cond, part)
+                            self.claims.append(CT('OUTER', (None, f.val), f.toks))
+                        a = i
+                        if a and out[a - 1].kind == 'UNK' and out[a - 1].toks[0].text == 'at':
+                            a -= 1
+                        how = 'any'
+                        if a and out[a - 1].kind in ('WHERE', 'HAS', 'IS'):
+                            a -= 1
+                        if a and out[a - 1].kind == 'NOT':
+                            how, a = 'none', a - 1
+                            if a and out[a - 1].kind in ('WHERE', 'HAS', 'IS'):
+                                a -= 1
+                        out[a:k + 1] = [CT('WHERE', None, out[a].toks), CT('COND', (how, other.name, cond), toks(a, k + 1))]
+                        i = a + 1
+            elif c.kind == 'FIELD':
+                k, neg, op = i + 1, False, None
+                while k < len(out) and out[k].kind in ('IS', 'NOT', 'CMP', 'EQSYM'):
+                    neg ^= out[k].kind == 'NOT'
+                    if out[k].kind == 'CMP':
+                        op = out[k].val if op is None else 'twice'
+                    k += 1
+                flip = {'eq': 'eq', 'ne': 'ne', 'gt': 'lt', 'ge': 'le', 'lt': 'gt', 'le': 'ge'}
+                if k > i + 1 and k < len(out) and out[k].kind == 'FIELD' and (op or 'eq') in flip:
+                    g, j = out[k], k + 1
+                    while j < len(out) and out[j].kind == 'QUANT':
+                        j += 1
+                    if j < len(out) and out[j].kind == 'COLL' and others(out[j].val) and g.val in cs[out[j].val].fields \
+                            and not any(out[j].val in cs[x.val].fields for x in out if x.kind == 'COLL') \
+                            and (j + 1 == len(out) or out[j + 1].kind in ('AND', 'OR', 'COMMA', 'WHERE', 'THEN', 'TO', 'BY')):
+                        op = op or 'eq'
+                        if op == 'ne':
+                            op, neg = 'eq', not neg
+                        node = ('none' if neg else 'any', out[j].val,
+                                ('cmp', flip[op], ('field', g.val), ('outer', c.val)))
+                        self.claims.append(CT('OUTER', (None, c.val), c.toks))
+                        out[i:j + 1] = [CT('COND', node, toks(i, j + 1))]
+            i += 1
+        return out
 
     def split_other(self, content):
         """Take "if any rock ..." out of a sentence that is itself about something else."""
         for w, c in enumerate(content):
             if c.kind != 'WHERE' or c.toks[0].text not in IF_WORDS:
                 continue
-            q = self.quantified(content[w + 1:])
-            if not q:
-                continue
-            how, name, _ = q
+            end = len(content)
             if w == 0:
                 end = next((i for i, x in enumerate(content) if i and x.kind in ('COMMA', 'THEN')), None)
                 if end is None:
                     continue
-                clause, main = content[1:end], content[end + 1:]
-            else:
-                clause, main = content[w + 1:], rstrip(content[:w])
-            if not main or any(x.kind in ('FIELD', 'PFIELD') or (x.kind == 'COLL' and x.val == name) for x in main):
+            q = None
+            for s in [w + 1] + [i + 1 for i in range(w + 1, end) if content[i].kind == 'AND']:
+                got = self.quantified(content[s:end])
+                if got and (s == w + 1 or got[0] != 'a'):
+                    q = s
+                    break
+            if q is None:
+                continue
+            how, name, rest = self.quantified(content[q:end])
+            main = content[end + 1:] if w == 0 else rstrip(content[:w])
+            inner = self.prog.collections[name]
+            named = [x.val for x in main if x.kind == 'COLL']
+            if not main or name in named or \
+                    (not named and any(x.kind in ('FIELD', 'PFIELD') and
+                                       (x.val if x.kind == 'FIELD' else x.val[0]) in inner.fields for x in main)):
                 continue                # the sentence is about those records themselves
             if how == 'a' and not any(x.kind == 'VALUE' for x in main):
                 continue
-            self.other = self.other_cond(how, name, self.quantified(clause)[2])
-            return main
+            self.other, claims = self.other_cond(how, name, rest)
+            self.claims += claims
+            own = content[w + 1:q - 1]          # the part of the condition that is the sentence's own
+            if w == 0:
+                return ([content[w]] + own + [content[end]] if own else []) + main
+            return main + ([content[w]] + own if own else [])
         return content
 
     def make_record(self, content, on):
         """Something appears by itself: "add a segment whose x is the column and whose y is the row"."""
+        self.claims = []
         lead, body = None, content
         if body and body[0].kind == 'WHERE' and body[0].toks[0].text in IF_WORDS:
             end = next((i for i, c in enumerate(body) if i and c.kind in ('COMMA', 'THEN')), None)
@@ -832,6 +1098,9 @@ class Parser:
             lead, body = body[1:end], body[end + 1:]
         if not body or not (body[0].kind == 'VERB' and body[0].val in ('addv', 'insert')):
             return None
+        if lead is not None:
+            lead = self.lookups([content[0]] + lead)[1:]
+        body = self.lookups(body)
         j = 1
         while j + 1 < len(body) and (body[j].kind == 'QUANT' or (body[j].kind == 'NUM' and body[j].val == 1)):
             j += 1
@@ -844,7 +1113,7 @@ class Parser:
         if k is not None:
             if lead is not None:
                 raise self.p('error', tail[k:], 'this already has a condition at the front')
-            lead, tail = tail[k + 1:], tail[:k]
+            lead, tail = self.lookups(tail[k:])[1:], tail[:k]
         if any(f.ref for f in coll.fields.values()):
             raise self.p('error', self.cur, f'{coll.label} that belong to something cannot appear by themselves yet')
         given, i = {}, 0
@@ -878,7 +1147,14 @@ class Parser:
                 if c.kind == 'UNK' and not (c.toks[0].text == 'no' and c is lead[0]):
                     raise self.unknown_word(c)
             q = self.quantified(lead)
-            where = self.other_cond(*q) if q else self.parse_cond(lead, coll)
+            if q:
+                where, claims = self.other_cond(*q)
+                self.claims += claims
+            else:
+                where = self.parse_cond(lead, coll)
+        self.claims += [x for c in list(lead or []) + tail if c.kind == 'LOOK' for x in c.claims]
+        self.settle_claims(self.claims, coll, False)
+        self.claims = []
         T = Task(f'{"timer" if on[0] == "every" else "key"} {len(self.prog.events) + 1}', 'make', coll.name,
                  self.cur[0].line, self.sent_text(self.cur), True)
         T.assigns, T.where, T.on = list(given.items()), where, on
@@ -1114,6 +1390,8 @@ class Parser:
         known = list(self.state.fields) + list(self.prog.field_names()) + list(self.prog.collections)
         for c in words:             # "The scroe is 5." is a slip for the score, not a new value
             w = singular(c.toks[0].text)
+            if any(ch.isdigit() for ch in w):
+                continue            # "fill1", "fill2": a number in a name is put there on purpose
             if len(w) > 3 and any(w != n and edit_distance(w, n) <= (1 if len(n) < 8 else 2) for n in known):
                 raise self.unknown_word(c)
         self.taken(tuple(c.toks[0].text for c in words), words)
@@ -1451,6 +1729,10 @@ class Parser:
                 return ('value', c.val)
             if c.kind == 'RAND':
                 return ('rand',) + c.val
+            if c.kind == 'LOOK':
+                return c.val
+            if c.kind == 'OUTER':
+                return ('outer', c.val[1])
             if c.kind == 'SCALE':
                 return binop('mul', prim(False), ('num', c.val))
             if c.kind == 'LP':
@@ -1567,11 +1849,15 @@ class Parser:
         p = rstrip(p)
         if not p:
             raise self.p('error', anchor or self.cur[-1], 'a condition is missing here')
+        if p[0].kind == 'COND':         # already read: "... the same x and y as a shot"
+            if len(p) > 1:
+                raise self.leftover(p[1:])
+            return p[0].val, prev
         if p[0].kind == 'PARAM' and len(p) == 1 and p[0].val in coll.fields:
             return ('cmp', 'eq', ('field', p[0].val), ('param', p[0].val)), p[0].val
         i, lhs = 0, None
         stop = next((k for k, c in enumerate(p) if c.kind in ('IS', 'NOT', 'CMP', 'EQSYM')), len(p))
-        if p[0].kind in ('FIELD', 'PFIELD', 'VALUE') or \
+        if p[0].kind in ('FIELD', 'PFIELD', 'VALUE', 'LOOK') or \
                 (p[0].kind in ('NUM', 'LP', 'PARAM', 'SCALE') and any(c.kind == 'OP' for c in p[:stop])) or \
                 (p[0].kind == 'PARAM' and 0 < stop < len(p)):
             lhs, i = self.parse_expr(p[:stop])       # "whose price times quantity is over 100"
@@ -1758,7 +2044,11 @@ class Parser:
         content = [c for c in content if c.kind not in ('ISCOLL', 'COLLWORD')]
         if not content:
             raise self.p('error', sent, 'this sentence has nothing I can act on')
-        self.other = None
+        self.other, self.claims = None, []
+        if index_of(content, 'TAKE') is None:
+            content = self.lookups(content)
+            self.claims = [x for c in content if c.kind == 'LOOK' for x in c.claims]
+            content = self.relatives(content)
         if not (self.trigger and self.trigger[0] in ('end', 'draw')) and index_of(content, 'OTHERWISE') is None and \
                 index_of(content, 'TAKE') is None:
             content = self.split_other(content)
@@ -1774,7 +2064,8 @@ class Parser:
         if unk:
             raise self.unknown_word(unk[0])
         content = self.relate(content)
-        if any(c.kind == 'VALUE' for c in content) and not any(c.kind in ('COLL', 'FIELD', 'PFIELD') for c in content):
+        if any(c.kind in ('VALUE', 'LOOK') for c in content) and \
+                not any(c.kind in ('COLL', 'FIELD', 'PFIELD') for c in content):
             # only single values are mentioned: the sentence is about them
             content = [CT('FIELD', c.val, c.toks) if c.kind == 'VALUE' else c for c in content]
             coll = self.state
@@ -1829,7 +2120,11 @@ class Parser:
                 any(c.kind == 'VERB' and c.val in ('multiply', 'divide', 'increase', 'decrease') for c in main):
             b = index_of(cond_t, 'BY')      # "increase the points of the player with a given name by 5"
             if b:
-                main, cond_t = main + cond_t[b:], cond_t[:b]
+                moved, cond_t = cond_t[b:], cond_t[:b]
+                w = index_of(moved, 'WHERE')    # "... whose y is under 1 by 1 if the clear is 1"
+                if w:
+                    moved, cond_t = moved[:w], cond_t + moved[w:]
+                main = main + moved
         if cond_t:                      # "... with the highest salary": a ranking, not a filter
             for i, c in enumerate(cond_t[:-1]):
                 joiner = ('WHERE', 'AND', 'COMMA')
@@ -1951,7 +2246,7 @@ class Parser:
                 key, T.where = where[2][1], None
             if key:
                 T.kind, T.key = ('find' if act == 'find' else 'remove_key'), key
-            elif where is not None:
+            elif where is not None or (self.other is not None and act == 'remove'):
                 T.kind = 'list' if act == 'find' else 'remove_where'
             elif act == 'remove' and everyone:
                 T.kind = 'remove_where'     # "Remove all customers.": said outright, so nothing to ask
@@ -2118,7 +2413,12 @@ class Parser:
             end = next((i for i, c in enumerate(content) if i and c.kind in ('COMMA', 'THEN')), None)
             if end is None:
                 return [], content[1:]
-            return content[end + 1:], content[1:end]
+            lead, body = content[1:end], content[end + 1:]
+            w = index_of(body, 'WHERE')
+            if not w:
+                return body, lead
+            # "if the hurt is 1, remove the bombs whose y is at least 14": both conditions have to hold
+            return body[:w], lead + [CT('AND', None, body[w].toks)] + body[w + 1:]
         return content[:w], content[w + 1:]
 
     def calc(self, content, ti, name):
@@ -2189,6 +2489,8 @@ class Parser:
     # ------------------------------------------------------------------ finishing
     def emit(self, T, coll=None):
         seen = []
+        claims, self.claims = self.claims, []
+        self.settle_claims(claims, coll, coll is not None and coll is not self.state and T.kind != 'calc')
         if self.other is not None:
             node, self.other = self.other, None
             if T.kind not in ('update', 'remove_where'):
@@ -2327,7 +2629,7 @@ class Parser:
                     n = f'{base}-{k}'
                 t.name = n
                 used[n] = t
-        if self.state.fields:
+        if self.state.fields or any(t.coll == STATE for t in self.prog.work() + self.prog.looks()):
             self.prog.collections[STATE] = self.state
 
 

@@ -6,6 +6,10 @@ Expressions are tuples:
     ('value', name)         a single value the program keeps ("the score")
     ('if', cond, a, b)      a when cond holds, otherwise b
     ('rand', lo, hi)        a whole number from lo to hi, drawn by chance (see CHANCE_*)
+    ('agg', fn, coll, field, cond)   fn in count sum max min, over the records of coll that satisfy cond
+                            (field is None for count; the largest or smallest of nothing is 0)
+    ('outer', name)         inside a condition about other records: a property of the record the
+                            sentence itself is about ("... any shot has an x equal to the alien's x")
 Conditions are tuples:
     ('cmp', op, a, b)   op in gt ge lt le eq ne
     ('and', a, b) | ('or', a, b)
@@ -175,6 +179,11 @@ def fmt_expr(e, top=True):
         return e[1]
     if k == 'rand':
         return f'random({e[1]}..{e[2]})'
+    if k == 'outer':
+        return f'its {e[1]}'
+    if k == 'agg':
+        what = f'{e[2]}s' if e[1] == 'count' else f'{e[3]} of {e[2]}s'
+        return f'{e[1]}({what}{" where " + fmt_cond(e[4]) if e[4] else ""})'
     if k == 'if':
         s = f'{fmt_expr(e[2], False)} if {fmt_cond(e[1])} else {fmt_expr(e[3], False)}'
         return s if top else f'({s})'
@@ -294,6 +303,59 @@ def conjuncts(c):
         yield c
 
 
+def lookups(t):
+    """Every place a task looks into a collection from inside a sentence about something else:
+    [(the collection the looking is done from, the node)], inner ones after the one they sit in.
+    A node is ('any'|'none', coll, cond) or ('agg', fn, coll, field, cond)."""
+    out = []
+
+    def from_cond(c, frm):
+        if c is None:
+            return
+        if c[0] == 'cmp':
+            from_expr(c[2], frm)
+            from_expr(c[3], frm)
+        elif c[0] in ('any', 'none'):
+            out.append((frm, c))
+            from_cond(c[2], c[1])
+        else:
+            from_cond(c[1], frm)
+            from_cond(c[2], frm)
+
+    def from_expr(e, frm):
+        if e[0] == 'bin':
+            from_expr(e[2], frm)
+            from_expr(e[3], frm)
+        elif e[0] == 'if':
+            from_cond(e[1], frm)
+            from_expr(e[2], frm)
+            from_expr(e[3], frm)
+        elif e[0] == 'agg':
+            out.append((frm, e))
+            from_cond(e[4], e[2])
+    for _, e in t.assigns:
+        from_expr(e, t.coll)
+    for e in ([t.expr] if t.expr else []) + list(t.at or ()):
+        from_expr(e, t.coll)
+    from_cond(t.where, t.coll)
+    return out
+
+
+def looks_into(t):
+    """The collections a task reads from inside its conditions and values (see lookups)."""
+    return {n[2] if n[0] == 'agg' else n[1] for _, n in lookups(t)}
+
+
+def decides_first(t):
+    """Does the condition of this change look at other records of the very collection it changes?
+    Then which records change is decided before any of them does, so the order they are kept
+    in can never matter."""
+    if t.kind not in ('update', 'remove_where') or t.where is None:
+        return False
+    probe = Task('', 'list', t.coll, where=t.where)
+    return t.coll in looks_into(probe)
+
+
 def uses_chance(prog):
     return any(e[0] == 'rand' for t in prog.work() for e in task_exprs(t))
 
@@ -314,6 +376,7 @@ def builtins(prog):
         out.append(('press', 'press <' + '|'.join(prog.keys()) + '>'))
     if prog.board:
         out.append(('screen', 'screen'))
+        out.append(('picture', 'picture'))
     if uses_chance(prog):
         out.append(('seed', 'seed <number>'))
     if prog.ends:
@@ -354,6 +417,10 @@ MUTATING = ('add', 'remove_key', 'remove_where', 'update')
 # Colours a drawing can have, and the number a terminal knows each by.
 COLOURS = {'red': 31, 'green': 32, 'yellow': 33, 'blue': 34, 'magenta': 35, 'purple': 35, 'pink': 35,
            'cyan': 36, 'white': 37, 'grey': 90, 'gray': 90}
+
+# "picture": the board for a page to paint. After the plain screen comes a line "~", then one
+# letter per cell saying its colour, then one more line while the game is over.
+INK_LETTER = {0: '.', 31: 'r', 32: 'g', 33: 'y', 34: 'b', 35: 'm', 36: 'c', 37: 'w', 90: 'k'}
 
 # Chance. One 64-bit number is kept; every draw moves it on by the same fixed step, so a run
 # that starts from the same number ("seed <number>") draws the same numbers again.

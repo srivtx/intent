@@ -7,7 +7,7 @@ source lines that caused it.
 """
 from dataclasses import dataclass, field
 
-from .ir import STATE, cond_anys, conjuncts, task_exprs, walk_cond_exprs, walk_expr
+from .ir import STATE, conjuncts, lookups, looks_into, task_exprs, walk_cond_exprs, walk_expr
 
 
 @dataclass
@@ -49,8 +49,13 @@ def pick_of(prog, t):
 
 def one_record(t):
     """Does this rule read and change nothing but the record it is looking at?"""
-    return t.kind == 'update' and not list(cond_anys(t.where)) and \
+    return t.kind == 'update' and not lookups(t) and \
         all(e[0] in ('num', 'str', 'field', 'bin', 'if') for e in task_exprs(t))
+
+
+def c_each(prog, t):
+    """Is the look into other records asked again for every record this task visits?"""
+    return t.coll in prog.real() and t.kind not in ('make', 'add', 'calc')
 
 
 def reaches(t, ref):
@@ -197,6 +202,14 @@ def make_plan(prog, no_index=False):
     for t in prog.tasks:
         if t.kind == 'calc':
             plan.tasks[t.name] = ('O(1)', 'straight-line arithmetic')
+    for t in prog.work():
+        seen = sorted(looks_into(t))
+        if seen:                        # "if any shot ...", "the number of cells whose ...": asked by passing over them
+            cost, how = plan.tasks[t.name]
+            those = ' and '.join(prog.collections[n].label.lower() for n in seen)
+            each = c_each(prog, t)
+            plan.tasks[t.name] = (cost if not each else 'O(n x m)',
+                                  how + f'; {"for each one, " if each else ""}a pass over the {those} to answer what it asks of them')
     plan.local_rules = bool(prog.rules) and all(one_record(r) for r in prog.rules)
     for t in prog.tasks + prog.events:
         if t.kind in ('add', 'remove_key', 'remove_where', 'update', 'make') and prog.rules:

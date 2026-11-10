@@ -8,10 +8,11 @@ aggregates) is emitted here.
 from .interp import ROUNDS, UNSETTLED
 import sys
 
-from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, ENTER_PLAY, KEY_CODES, LEAVE_PLAY, LONGEST_STEP,
-                 LONGEST_WAIT, MUTATING, OVER, OVER_HINT, STATE, TEXT_OPS, TOO_SMALL, builtins, canon, fmt_cond,
-                 fmt_event, room, usage, uses_chance, walk_cond_exprs)
+from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, ENTER_PLAY, INK_LETTER, KEY_CODES, LEAVE_PLAY, LONGEST_STEP,
+                 LONGEST_WAIT, MUTATING, OVER, OVER_HINT, STATE, TEXT_OPS, TOO_SMALL, builtins, canon, decides_first,
+                 fmt_cond, fmt_event, fmt_expr, room, usage, uses_chance, walk_cond_exprs)
 from .plan import narrow_settle
+from .web import HTML, MOST, PLAIN, ROOM, page, title_of
 
 LL = {'int': 'i64', 'text': 'ptr'}
 FNV_OFFSET = -3750763034362895579      # 14695981039346656037 as a signed 64-bit value
@@ -60,6 +61,14 @@ declare i32 @tcgetattr(i32, ptr)
 declare i32 @tcsetattr(i32, i32, ptr)
 declare i32 @ioctl(i32, i64, ...)
 declare i32 @putchar(i32)
+'''
+NET_DECLS = '''declare i32 @socket(i32, i32, i32)
+declare i32 @bind(i32, ptr, i32)
+declare i32 @listen(i32, i32)
+declare i32 @accept(i32, ptr, ptr)
+declare i32 @setsockopt(i32, i32, i32, ptr, i32)
+declare ptr @strcasestr(ptr, ptr)
+declare ptr @memchr(ptr, i32, i64)
 '''
 
 
@@ -122,6 +131,7 @@ class Gen:
         self.prog, self.plan = prog, plan
         self.strs, self.globals, self.fns = {}, [], []
         self.others = {}                # conditions about another collection -> the function that answers each
+        self.outers = []                # while such a function is written: the collection it is asked from
 
     # ------------------------------------------------------------------ helpers
     def cstr(self, s):
@@ -202,6 +212,11 @@ class Gen:
             return self.fload(f, S, self.rec(f, S, '0'), e[1]), S.fields[e[1]].type
         if k == 'rand':
             return f.r(f'call i64 @rand(i64 {e[1]}, i64 {e[2] - e[1] + 1})'), 'int'
+        if k == 'outer':                # the record this was asked from
+            o = self.outers[-1]
+            return self.fload(f, o, '%outer', e[1]), o.fields[e[1]].type
+        if k == 'agg':
+            return f.r(f'call i64 {self.other(e, c)}(ptr {rec or "null"})'), 'int'
         if k == 'if':                   # only the chosen side is worked out (the other may divide by zero)
             yes, no, done = f.lab('then'), f.lab('else'), f.lab('fi')
             f.cbr(self.cond(f, e[1], c, rec, vals), yes, no)
@@ -258,7 +273,7 @@ class Gen:
                 return f.r(f'icmp {ICMP[cnd[1]]} i64 {a}, {b}')
             return f.r(f'icmp {ICMP[cnd[1]]} i32 {f.r(f"call i32 @strcmp(ptr {a}, ptr {b})")}, 0')
         if cnd[0] in ('any', 'none'):
-            hit = f.r(f'call i1 {self.other(cnd)}()')
+            hit = f.r(f'call i1 {self.other(cnd, c)}(ptr {rec or "null"})')
             return hit if cnd[0] == 'any' else f.r(f'xor i1 {hit}, true')
         a = self.cond(f, cnd[1], c, rec, vals)
         if any(e[0] == 'rand' for e in walk_cond_exprs(cnd[2])):
@@ -275,23 +290,58 @@ class Gen:
         b = self.cond(f, cnd[2], c, rec, vals)
         return f.r(f'{cnd[0]} i1 {a}, {b}')
 
-    def other(self, node):
-        """The function that answers "does this hold for any record of that collection?"."""
-        key = (node[1], repr(node[2]))
+    def other(self, node, frm):
+        """The function that looks into another collection for one record of this one: "is there
+        any ...?" or "how many / the total / the largest ...". %outer is the record that asks."""
+        key = (repr(node), frm.name if frm else None)
         if key not in self.others:
-            name = self.others[key] = g('any', str(len(self.others) + 1))
-            c = self.prog.collections[node[1]]
-            h = self.fn(name, 'i1', comment=f'is there a {c.name} with {fmt_cond(node[2])}?')
+            agg = node[0] == 'agg'
+            name = self.others[key] = g('count' if agg else 'any', str(len(self.others) + 1))
+            c = self.prog.collections[node[2] if agg else node[1]]
+            h = self.fn(name, 'i64' if agg else 'i1', 'ptr %outer',
+                        comment=fmt_expr(node) if agg else f'is there a {c.name} with {fmt_cond(node[2])}?')
+            self.outers.append(frm)
+            if agg:
+                acc, cnt = h.var('i64', '0'), h.var('i64', '0')
 
-            def body(i, cont):
-                hit = h.lab('hit')
-                h.cbr(self.cond(h, node[2], c, self.rec(h, c, i), {}), hit, cont)
-                h.at(hit)
-                h.e('ret i1 true')
-                h.at(h.lab('dead'))
-            self.rows(h, c, body)
-            h.e('ret i1 false')
+                def body(i, cont):
+                    rec = self.rec(h, c, i)
+                    self.guard(h, self.cond(h, node[4], c, rec, {}), cont)
+                    cv = h.load('i64', cnt)
+                    if node[1] != 'count':
+                        v, a = self.fload(h, c, rec, node[3]), h.load('i64', acc)
+                        if node[1] == 'sum':
+                            nv = h.r(f'add i64 {a}, {v}')
+                        else:
+                            better = h.r(f'icmp {"sgt" if node[1] == "max" else "slt"} i64 {v}, {a}')
+                            take = h.r(f'or i1 {better}, {h.r(f"icmp eq i64 {cv}, 0")}')
+                            nv = h.r(f'select i1 {take}, i64 {v}, i64 {a}')
+                        h.store('i64', nv, acc)
+                    h.store('i64', h.r(f'add i64 {cv}, 1'), cnt)
+                self.rows(h, c, body)
+                h.e(f'ret i64 {h.load("i64", cnt if node[1] == "count" else acc)}')
+            else:
+                def body(i, cont):
+                    hit = h.lab('hit')
+                    h.cbr(self.cond(h, node[2], c, self.rec(h, c, i), {}), hit, cont)
+                    h.at(hit)
+                    h.e('ret i1 true')
+                    h.at(h.lab('dead'))
+                self.rows(h, c, body)
+                h.e('ret i1 false')
+            self.outers.pop()
         return self.others[key]
+
+    def decided(self, f, t, c, vals):
+        """One byte per record: does the condition hold for it, as things stand before anything changes?"""
+        n = f.load('i64', g(c.name, 'len'))
+        marks = f.r(f'call ptr @malloc(i64 {f.r(f"add i64 {n}, 1")})')
+
+        def body(i, cont):
+            hit = self.cond(f, t.where, c, self.rec(f, c, i), vals)
+            f.store('i8', f.r(f'zext i1 {hit} to i8'), f.r(f'getelementptr i8, ptr {marks}, i64 {i}'))
+        self.rows(f, c, body)
+        return marks
 
     def chance(self):
         self.globals.append('@chance = internal global i64 0    ; where the run of chance stands')
@@ -317,10 +367,14 @@ class Gen:
         f.br(cont)
         f.at(cont)
 
-    def update_body(self, f, t, c, vals, rule):
+    def update_body(self, f, t, c, vals, rule, marks=None):
         def body(i, cont):
             rec = self.rec(f, c, i)
-            self.guard(f, self.cond(f, t.where, c, rec, vals), cont)
+            if marks:
+                m = f.load('i8', f.r(f'getelementptr i8, ptr {marks}, i64 {i}'))
+                self.guard(f, f.r(f'icmp ne i8 {m}, 0'), cont)
+            else:
+                self.guard(f, self.cond(f, t.where, c, rec, vals), cont)
             for name, e in t.assigns:
                 v, ty = self.expr(f, e, c, rec, vals)
                 p = self.fptr(f, c, rec, name)
@@ -410,7 +464,7 @@ class Gen:
                     comment=f'remove every {d.name} whose {p.name} no longer exists, then whatever belonged to those')
         before = f.load('i64', g(d.name, 'len'))
 
-        def orphan(rec):
+        def orphan(rec, _i=None):
             row = f.r(f'call i64 {g(p.name, key.name, "find")}({KT} {self.fload(f, d, rec, rf.name)})')
             return f.r(f'icmp slt i64 {row}, 0')
         kept = self.compact(f, d, orphan)
@@ -663,7 +717,7 @@ class Gen:
         def body(i, cont):
             rec = self.rec(f, c, i)
             drop, keep = f.lab('drop'), f.lab('keep')
-            f.cbr(remove_if(rec), drop, keep)
+            f.cbr(remove_if(rec, i), drop, keep)
             f.at(drop)
             f.e(f'call void {g(C, "free")}(ptr {rec})')
             f.br(cont)
@@ -783,13 +837,17 @@ class Gen:
         elif k in ('remove_key', 'remove_where'):
             if k == 'remove_key':
                 kv, kt = vals[t.key]
-                goes = lambda rec: self.eq(f, kt, self.fload(f, c, rec, t.key), kv)       # noqa: E731
+                goes = lambda rec, i: self.eq(f, kt, self.fload(f, c, rec, t.key), kv)    # noqa: E731
+            elif decides_first(t):      # it asks about the other records: all answers first, then the removing
+                marks = self.decided(f, t, c, vals)
+                goes = lambda rec, i: f.r(     # noqa: E731
+                    f'icmp ne i8 {f.load("i8", f.r(f"getelementptr i8, ptr {marks}, i64 {i}"))}, 0')
             else:
-                goes = lambda rec: self.cond(f, t.where, c, rec, vals)                    # noqa: E731
+                goes = lambda rec, i: self.cond(f, t.where, c, rec, vals)                 # noqa: E731
             if self.kids(c, 'restrict'):
                 def check(i, cont):
                     rec = self.rec(f, c, i)
-                    self.guard(f, goes(rec), cont)
+                    self.guard(f, goes(rec, i), cont)
                     self.blocked(f, c, rec)
                 self.rows(f, c, check)
             if not rule:
@@ -805,13 +863,20 @@ class Gen:
                 self.swept(f, c)
                 f.br(done)
                 f.at(done)
+            if k == 'remove_where' and decides_first(t):
+                f.e(f'call void @free(ptr {marks})')
             if k == 'remove_key':
                 self.none_if_zero(f, f.r(f'sub i64 {before}, {kept}'))
         elif k == 'update':
             if not rule:
                 f.store('i32', '1', '@dirty')
 
-            self.visit(f, t, c, self.update_body(f, t, c, vals, rule), vals)
+            if decides_first(t) and t.name not in self.plan.picks:
+                marks = self.decided(f, t, c, vals)
+                self.rows(f, c, self.update_body(f, t, c, vals, rule, marks))
+                f.e(f'call void @free(ptr {marks})')
+            else:
+                self.visit(f, t, c, self.update_body(f, t, c, vals, rule), vals)
         elif k == 'list':
             names = t.fields or list(c.fields)
             if not t.order:
@@ -1315,6 +1380,33 @@ class Gen:
         if name == 'screen':
             f.e('call void @screen(i1 false)')
             f.e('ret i32 0')
+        elif name == 'picture':         # the board for a page to paint: the screen, "~", a letter per cell for its colour
+            w, h = P.board
+            f.e('call void @screen(i1 false)')
+            self.puts(f, '~')
+            inked = any(d.colour for d in P.draws)
+
+            def ink_line(i, cont):
+                def ink_cell(j, cont2):
+                    code = '0'
+                    if inked:
+                        at = f.r(f'add i64 {f.r(f"mul i64 {i}, {w}")}, {j}')
+                        code = f.r(f'zext i8 {f.load("i8", f.r(f"getelementptr i8, ptr @ink, i64 {at}"))} to i32')
+                    ch = '46'
+                    for k, letter in INK_LETTER.items():
+                        if k:
+                            ch = f.r(f'select i1 {f.r(f"icmp eq i32 {code}, {k}")}, i32 {ord(letter)}, i32 {ch}')
+                    f.e(f'call i32 @putchar(i32 {ch})')
+                self.rows(f, None, ink_cell, count=str(w))
+                f.e('call i32 @putchar(i32 10)')
+            self.rows(f, None, ink_line, count=str(h))
+            ended, alive = f.lab('ended'), f.lab('alive')
+            f.cbr(f.r('call i1 @over()'), ended, alive)
+            f.at(ended)
+            self.puts(f, OVER)
+            f.br(alive)
+            f.at(alive)
+            f.e('ret i32 0')
         elif name == 'restart':
             f.e('call void @reset()')
             f.e('ret i32 1')
@@ -1367,6 +1459,355 @@ class Gen:
             self.printf(f, 'error: no key called %s is used here\n', f'ptr {arg}')
             f.e('ret i32 0')
         f.at(no)
+
+    # ------------------------------------------------------------------ the network
+    def net(self, source_name):
+        """Serving: the same commands, from many connections, one at a time in the order they arrive.
+
+        While a command runs, what it prints goes to the connection that sent it: the program's
+        output is pointed at that connection and pointed back afterwards. See web.py for the
+        protocol; the interpreter serves in exactly the same way.
+        """
+        P = self.prog
+        live = bool(P.board and P.timers())
+        N = MOST + 1
+        PF = '{ i32, i16, i16 }'
+        self.globals += [f'@pfds = internal global [{N} x {PF}] zeroinitializer    ; who is connected (0 is the door)',
+                         f'@fill = internal global [{N} x i64] zeroinitializer    ; how much each has sent so far',
+                         f'@bufs = internal global [{N} x [{ROOM} x i8]] zeroinitializer',
+                         '@out = internal global i32 1       ; where output goes when nobody is being answered']
+
+        def pf(f, i, k):
+            return f.r(f'getelementptr [{N} x {PF}], ptr @pfds, i64 0, i64 {i}, i32 {k}')
+
+        def buf_of(f, i):
+            return f.r(f'getelementptr [{N} x [{ROOM} x i8]], ptr @bufs, i64 0, i64 {i}, i64 0')
+
+        def fill_of(f, i):
+            return f.r(f'getelementptr [{N} x i64], ptr @fill, i64 0, i64 {i}')
+
+        def answer_to(f, fd):
+            f.e('call i32 @fflush(ptr null)')
+            f.e(f'call i32 @dup2(i32 {fd}, i32 1)')
+
+        def answered(f):
+            f.e('call i32 @fflush(ptr null)')
+            f.e(f'call i32 @dup2(i32 {f.load("i32", "@out")}, i32 1)')
+
+        def diff(f, a, b):
+            return f.r(f'sub i64 {f.r(f"ptrtoint ptr {a} to i64")}, {f.r(f"ptrtoint ptr {b} to i64")}')
+
+        f = self.fn('@run_line', params='ptr %src, i64 %n, ptr %jf',
+                    comment='run one command that arrived over the network; remember it if it changed anything')
+        a = f.r(f'call ptr @malloc(i64 {f.r("add i64 %n, 2")})')
+        f.e(f'call ptr @memmove(ptr {a}, ptr %src, i64 %n)')
+        f.store('i8', '0', f.r(f'getelementptr i8, ptr {a}, i64 %n'))
+        b = f.r(f'call ptr @strdup(ptr {a})')
+        changed = f.r(f'call i32 @dispatch(ptr {a}, i64 %n)')
+        keep, write, nl, flush, done = (f.lab(x) for x in ('keep', 'write', 'newline', 'flush', 'done'))
+        f.cbr(f.r(f'icmp ne i32 {changed}, 0'), keep, done)
+        f.at(keep)
+        f.cbr(f.r('icmp eq ptr %jf, null'), done, write)
+        f.at(write)
+        f.e(f'call i32 @fputs(ptr {b}, ptr %jf)')
+        lastc = f.load('i8', f.r(f'getelementptr i8, ptr {b}, i64 {f.r("sub i64 %n, 1")}'))
+        f.cbr(f.r(f'icmp eq i8 {lastc}, 10'), flush, nl)
+        f.at(nl)
+        f.e('call i32 @fputc(i32 10, ptr %jf)')
+        f.br(flush)
+        f.at(flush)
+        f.e('call i32 @fflush(ptr %jf)')
+        f.br(done)
+        f.at(done)
+        f.e(f'call void @free(ptr {a})')
+        f.e(f'call void @free(ptr {b})')
+        f.e('ret void')
+
+        f = self.fn('@http', 'i32', 'i64 %i, ptr %jf',
+                    'a browser or another program asked over HTTP; returns 1 once it has been answered')
+        buf, n = buf_of(f, '%i'), f.load('i64', fill_of(f, '%i'))
+        fd = f.load('i32', pf(f, '%i', 0))
+        full = f.r(f'zext i1 {f.r(f"icmp sge i64 {n}, {ROOM - 1}")} to i32')
+        end = f.r(f'call ptr @strstr(ptr {buf}, ptr {self.cstr(chr(13) + chr(10) + chr(13) + chr(10))})')
+        more, whole, get, post = (f.lab(x) for x in ('more', 'whole', 'get', 'post'))
+        f.cbr(f.r(f'icmp eq ptr {end}, null'), more, whole)
+        f.at(more)
+        f.e(f'ret i32 {full}')
+        f.at(whole)
+        body = f.r(f'getelementptr i8, ptr {end}, i64 4')
+        f.cbr(f.r(f'icmp eq i32 {f.r(f"call i32 @strncmp(ptr {buf}, ptr {self.cstr("GET ")}, i64 4)")}, 0'), get, post)
+        f.at(post)                      # every line of the body is a command
+        size = f.var('i64', '0')
+        cl = f.r(f'call ptr @strcasestr(ptr {buf}, ptr {self.cstr("content-length:")})')
+        sized, count, ready = f.lab('sized'), f.lab('count'), f.lab('ready')
+        f.cbr(f.r(f'icmp eq ptr {cl}, null'), ready, sized)
+        f.at(sized)
+        f.cbr(f.r(f'icmp slt i64 {diff(f, cl, body)}, 0'), count, ready)
+        f.at(count)
+        f.store('i64', f.r(f'call i64 @strtoll(ptr {f.r(f"getelementptr i8, ptr {cl}, i64 15")}, ptr null, i32 10)'), size)
+        f.br(ready)
+        f.at(ready)
+        want = f.load('i64', size)
+        have = f.r(f'sub i64 {n}, {diff(f, body, buf)}')
+        short, go = f.lab('short'), f.lab('go')
+        f.cbr(f.r(f'icmp slt i64 {have}, {want}'), short, go)
+        f.at(short)
+        f.e(f'ret i32 {full}')
+        f.at(go)
+        answer_to(f, fd)
+        self.printf(f, PLAIN)
+        pos = f.var('i64', '0')
+        head, line, cut, rest, run, fin = (f.lab(x) for x in ('head', 'line', 'cut', 'rest', 'run', 'fin'))
+        length = f.var('i64')
+        f.br(head)
+        f.at(head)
+        pv = f.load('i64', pos)
+        f.cbr(f.r(f'icmp slt i64 {pv}, {want}'), line, fin)
+        f.at(line)
+        at = f.r(f'getelementptr i8, ptr {body}, i64 {pv}')
+        left = f.r(f'sub i64 {want}, {pv}')
+        nlp = f.r(f'call ptr @memchr(ptr {at}, i32 10, i64 {left})')
+        f.cbr(f.r(f'icmp eq ptr {nlp}, null'), rest, cut)
+        f.at(cut)
+        f.store('i64', f.r(f'add i64 {diff(f, nlp, at)}, 1'), length)
+        f.br(run)
+        f.at(rest)
+        f.store('i64', left, length)
+        f.br(run)
+        f.at(run)
+        L = f.load('i64', length)
+        f.e(f'call void @run_line(ptr {at}, i64 {L}, ptr %jf)')
+        f.store('i64', f.r(f'add i64 {pv}, {L}'), pos)
+        f.br(head)
+        f.at(fin)
+        answered(f)
+        f.e('ret i32 1')
+        f.at(get)                       # "/" is the page; anything else names a command: /find-by-name/ann
+        path = f.r(f'getelementptr i8, ptr {buf}, i64 4')
+        sp = f.r(f'call ptr @strchr(ptr {path}, i32 32)')
+        bad, named, home, cmd = (f.lab(x) for x in ('bad', 'named', 'home', 'command'))
+        f.cbr(f.r(f'icmp eq ptr {sp}, null'), bad, named)
+        f.at(bad)
+        f.e('ret i32 1')
+        f.at(named)
+        f.store('i8', '0', sp)
+        answer_to(f, fd)
+        f.cbr(f.r(f'icmp eq i32 {f.r(f"call i32 @strcmp(ptr {path}, ptr {self.cstr("/")})")}, 0'), home, cmd)
+        f.at(home)
+        self.printf(f, HTML)
+        f.e(f'call i32 @puts(ptr {self.cstr(page(P, title_of(source_name)))})')
+        answered(f)
+        f.e('ret i32 1')
+        f.at(cmd)
+        self.printf(f, PLAIN)
+        start = f.r(f'getelementptr i8, ptr {path}, i64 1')
+        rp, wp, first = f.var('ptr', start), f.var('ptr', start), f.var('i1', 'true')
+        hexs = f.var('[3 x i8]')
+        loop, look, slash, notslash, pct, pct2, pct3, plain, put, stop = (
+            f.lab(x) for x in ('loop', 'look', 'slash', 'notslash', 'pct', 'pct2', 'pct3', 'plain', 'put', 'stop'))
+        ch = f.var('i8')
+        f.br(loop)
+        f.at(loop)
+        r = f.load('ptr', rp)
+        c = f.load('i8', r)
+        ends = f.r(f'or i1 {f.r(f"icmp eq i8 {c}, 0")}, {f.r(f"icmp eq i8 {c}, 63")}')
+        f.cbr(ends, stop, look)
+        f.at(look)
+        f.store('i8', c, ch)
+        f.store('ptr', f.r(f'getelementptr i8, ptr {r}, i64 1'), rp)
+        f.cbr(f.r(f'and i1 {f.r(f"icmp eq i8 {c}, 47")}, {f.load("i1", first)}'), slash, notslash)
+        f.at(slash)                     # the first "/" parts the command from what it is given
+        f.store('i8', '32', ch)
+        f.store('i1', 'false', first)
+        f.br(put)
+        f.at(notslash)
+        f.cbr(f.r(f'icmp eq i8 {c}, 37'), pct, put)
+        f.at(pct)                       # %41 is the character with that number
+        h1 = f.load('i8', f.r(f'getelementptr i8, ptr {r}, i64 1'))
+        f.cbr(f.r(f'icmp eq i8 {h1}, 0'), put, pct2)
+        f.at(pct2)
+        h2 = f.load('i8', f.r(f'getelementptr i8, ptr {r}, i64 2'))
+        f.cbr(f.r(f'icmp eq i8 {h2}, 0'), put, pct3)
+        f.at(pct3)
+        f.store('i8', h1, hexs)
+        f.store('i8', h2, f.r(f'getelementptr i8, ptr {hexs}, i64 1'))
+        f.store('i8', '0', f.r(f'getelementptr i8, ptr {hexs}, i64 2'))
+        f.store('i8', f.r(f'trunc i64 {f.r(f"call i64 @strtoll(ptr {hexs}, ptr null, i32 16)")} to i8'), ch)
+        f.store('ptr', f.r(f'getelementptr i8, ptr {r}, i64 3'), rp)
+        f.br(put)
+        f.at(put)
+        w = f.load('ptr', wp)
+        f.store('i8', f.load('i8', ch), w)
+        f.store('ptr', f.r(f'getelementptr i8, ptr {w}, i64 1'), wp)
+        f.br(loop)
+        f.at(stop)
+        w = f.load('ptr', wp)
+        f.store('i8', '0', w)
+        f.e(f'call void @run_line(ptr {start}, i64 {diff(f, w, start)}, ptr %jf)')
+        answered(f)
+        f.e('ret i32 1')
+
+        f = self.fn('@feed', 'i32', 'i64 %i, ptr %jf',
+                    'something arrived on a connection: run every whole command in it; returns 1 to hang up')
+        buf, n = buf_of(f, '%i'), f.load('i64', fill_of(f, '%i'))
+        fd = f.load('i32', pf(f, '%i', 0))
+        isget = f.r(f'icmp eq i32 {f.r(f"call i32 @strncmp(ptr {buf}, ptr {self.cstr("GET ")}, i64 4)")}, 0')
+        ispost = f.r(f'icmp eq i32 {f.r(f"call i32 @strncmp(ptr {buf}, ptr {self.cstr("POST ")}, i64 5)")}, 0')
+        web, raw = f.lab('web'), f.lab('raw')
+        f.cbr(f.r(f'or i1 {isget}, {ispost}'), web, raw)
+        f.at(web)
+        f.e(f'ret i32 {f.r("call i32 @http(i64 %i, ptr %jf)")}')
+        f.at(raw)
+        answer_to(f, fd)
+        start = f.var('i64', '0')
+        head, line, tail = f.lab('head'), f.lab('line'), f.lab('tail')
+        f.br(head)
+        f.at(head)
+        sv = f.load('i64', start)
+        at = f.r(f'getelementptr i8, ptr {buf}, i64 {sv}')
+        nlp = f.r(f'call ptr @memchr(ptr {at}, i32 10, i64 {f.r(f"sub i64 {n}, {sv}")})')
+        f.cbr(f.r(f'icmp eq ptr {nlp}, null'), tail, line)
+        f.at(line)
+        L = f.r(f'add i64 {diff(f, nlp, at)}, 1')
+        f.e(f'call void @run_line(ptr {at}, i64 {L}, ptr %jf)')
+        f.store('i64', f.r(f'add i64 {sv}, {L}'), start)
+        f.br(head)
+        f.at(tail)
+        answered(f)
+        left = f.r(f'sub i64 {n}, {sv}')
+        f.e(f'call ptr @memmove(ptr {buf}, ptr {at}, i64 {left})')
+        f.store('i64', left, fill_of(f, '%i'))
+        f.e(f'ret i32 {f.r(f"zext i1 {f.r(f"icmp sge i64 {left}, {ROOM - 1}")} to i32")}')
+
+        f = self.fn('@serve', 'i32', 'i64 %port, i32 %public, ptr %jf',
+                    'listen on a port and answer whoever connects' +
+                    ('; real time passes meanwhile, as when it is played' if live else ''))
+        f.e('call ptr @signal(i32 13, ptr inttoptr (i64 1 to ptr))')       # a caller that hangs up is not an error
+        f.store('i32', f.r('call i32 @dup(i32 1)'), '@out')
+        sock = f.r('call i32 @socket(i32 2, i32 1, i32 0)')
+        one = f.var('i32', '1')
+        level, reuse = (65535, 4) if sys.platform == 'darwin' else (1, 2)
+        f.e(f'call i32 @setsockopt(i32 {sock}, i32 {level}, i32 {reuse}, ptr {one}, i32 4)')
+        addr = f.var('[16 x i8]')
+        f.e(f'call ptr @memset(ptr {addr}, i32 0, i64 16)')
+        if sys.platform == 'darwin':    # the address of a listener is laid out a little differently on each system
+            f.store('i8', '16', addr)
+            f.store('i8', '2', f.r(f'getelementptr i8, ptr {addr}, i64 1'))
+        else:
+            f.store('i8', '2', addr)
+        f.store('i8', f.r(f'trunc i64 {f.r("lshr i64 %port, 8")} to i8'), f.r(f'getelementptr i8, ptr {addr}, i64 2'))
+        f.store('i8', f.r('trunc i64 %port to i8'), f.r(f'getelementptr i8, ptr {addr}, i64 3'))
+        local, bound = f.lab('local'), f.lab('bound')
+        f.cbr(f.r('icmp eq i32 %public, 0'), local, bound)
+        f.at(local)                     # only this machine can connect, unless it was started with serve-public
+        f.store('i8', '127', f.r(f'getelementptr i8, ptr {addr}, i64 4'))
+        f.store('i8', '1', f.r(f'getelementptr i8, ptr {addr}, i64 7'))
+        f.br(bound)
+        f.at(bound)
+        failed, open_ = f.lab('failed'), f.lab('open')
+        got = f.r(f'call i32 @bind(i32 {sock}, ptr {addr}, i32 16)')
+        f.cbr(f.r(f'icmp ne i32 {got}, 0'), failed, open_)
+        f.at(failed)
+        self.printf(f, 'error: cannot listen on port %lld\n', 'i64 %port')
+        f.e('ret i32 1')
+        f.at(open_)
+        f.e(f'call i32 @listen(i32 {sock}, i32 64)')
+        self.printf(f, 'serving on port %lld\n', 'i64 %port')
+        f.e('call i32 @fflush(ptr null)')
+        self.rows(f, None, lambda i, cont: f.store('i32', '-1', pf(f, i, 0)), count=str(N))
+        f.store('i32', sock, pf(f, '0', 0))
+        f.store('i16', '1', pf(f, '0', 1))
+        if live:
+            last = f.var('i64', f.r('call i64 @now()'))
+            if uses_chance(P):
+                first = f.load('i64', last)
+                f.store('i64', first, '@chance')
+                seeded, unseeded = f.lab('seeded'), f.lab('unseeded')
+                f.cbr(f.r('icmp eq ptr %jf, null'), unseeded, seeded)
+                f.at(seeded)
+                f.e(f'call i32 (ptr, ptr, ...) @fprintf(ptr %jf, ptr {self.cstr("seed %lld" + chr(10))}, i64 {first})')
+                f.br(unseeded)
+                f.at(unseeded)
+        loop = f.lab('loop')
+        f.br(loop)
+        f.at(loop)
+        wait = '-1'
+        if live:
+            d = '1000'
+            for i in range(len(P.timers())):
+                x = f.load('i64', g('left', str(i)))
+                d = f.r(f'select i1 {f.r(f"icmp slt i64 {x}, {d}")}, i64 {x}, i64 {d}')
+            d = f.r(f'select i1 {f.r(f"icmp slt i64 {d}, 1")}, i64 1, i64 {d}')
+            wait = f.r(f'trunc i64 {d} to i32')
+        f.e(f'call i32 @poll(ptr @pfds, i64 {N}, i32 {wait})')
+        if live:                        # real time becomes "wait", the same thing a script would send
+            tick, adv, log, ticked = f.lab('tick'), f.lab('advance'), f.lab('log'), f.lab('ticked')
+            now = f.r('call i64 @now()')
+            el = f.r(f'sub i64 {now}, {f.load("i64", last)}')
+            el = f.r(f'select i1 {f.r(f"icmp sgt i64 {el}, {LONGEST_STEP}")}, i64 {LONGEST_STEP}, i64 {el}')
+            f.cbr(f.r(f'icmp sgt i64 {el}, 0'), tick, ticked)
+            f.at(tick)
+            f.store('i64', now, last)
+            f.cbr(f.r('call i1 @over()'), ticked, adv)
+            f.at(adv)
+            f.e(f'call void @advance(i64 {el})')
+            f.cbr(f.r('icmp eq ptr %jf, null'), ticked, log)
+            f.at(log)
+            f.e(f'call i32 (ptr, ptr, ...) @fprintf(ptr %jf, ptr {self.cstr("wait %lld" + chr(10))}, i64 {el})')
+            f.br(ticked)
+            f.at(ticked)
+        knock, seat, none_free, heard = f.lab('knock'), f.lab('seat'), f.lab('nofree'), f.lab('heard')
+        door = f.load('i16', pf(f, '0', 2))
+        f.cbr(f.r(f'icmp ne i16 {f.r(f"and i16 {door}, 1")}, 0'), knock, heard)
+        f.at(knock)
+        conn = f.r(f'call i32 @accept(i32 {sock}, ptr null, ptr null)')
+        slot = f.var('i64', '0')
+        f.store('i64', '0', slot)
+
+        def find(i, cont):
+            free = f.r(f'icmp slt i32 {f.load("i32", pf(f, i, 0))}, 0')
+            unset = f.r(f'icmp eq i64 {f.load("i64", slot)}, 0')
+            self.guard(f, f.r(f'and i1 {free}, {unset}'), cont)
+            f.store('i64', i, slot)
+        self.rows(f, None, find, count=str(N))
+        sv = f.load('i64', slot)
+        usable = f.r(f'and i1 {f.r(f"icmp sgt i64 {sv}, 0")}, {f.r(f"icmp sge i32 {conn}, 0")}')
+        f.cbr(usable, seat, none_free)
+        f.at(seat)
+        f.store('i32', conn, pf(f, sv, 0))
+        f.store('i16', '1', pf(f, sv, 1))
+        f.store('i16', '0', pf(f, sv, 2))
+        f.store('i64', '0', fill_of(f, sv))
+        f.br(heard)
+        f.at(none_free)
+        f.e(f'call i32 @close(i32 {conn})')
+        f.br(heard)
+        f.at(heard)
+
+        def hear(i, cont):
+            self.guard(f, f.r(f'icmp sgt i64 {i}, 0'), cont)
+            fd = f.load('i32', pf(f, i, 0))
+            self.guard(f, f.r(f'icmp sge i32 {fd}, 0'), cont)
+            self.guard(f, f.r(f'icmp ne i16 {f.load("i16", pf(f, i, 2))}, 0'), cont)
+            f.store('i16', '0', pf(f, i, 2))
+            n = f.load('i64', fill_of(f, i))
+            buf = buf_of(f, i)
+            got = f.r(f'call i64 @read(i32 {fd}, ptr {f.r(f"getelementptr i8, ptr {buf}, i64 {n}")}, '
+                      f'i64 {f.r(f"sub i64 {ROOM - 1}, {n}")})')
+            some, gone = f.lab('some'), f.lab('gone')
+            f.cbr(f.r(f'icmp sgt i64 {got}, 0'), some, gone)
+            f.at(some)
+            total = f.r(f'add i64 {n}, {got}')
+            f.store('i64', total, fill_of(f, i))
+            f.store('i8', '0', f.r(f'getelementptr i8, ptr {buf}, i64 {total}'))
+            f.cbr(f.r(f'icmp ne i32 {f.r(f"call i32 @feed(i64 {i}, ptr %jf)")}, 0'), gone, cont)
+            f.at(gone)
+            f.e(f'call i32 @close(i32 {fd})')
+            f.store('i32', '-1', pf(f, i, 0))
+        self.rows(f, None, hear, count=str(N))
+        f.br(loop)
+        f.at(f.lab('never'))
+        f.e('ret i32 0')
 
     # ------------------------------------------------------------------ main
     def dispatch(self):
@@ -1533,6 +1974,7 @@ class Gen:
         commands rebuilds exactly the same data.
         """
         self.dispatch()
+        self.net(self.source_name)
         f = Fn('@main', 'i32', 'i32 %argc, ptr %argv',
                'read one command per line and run it; with a file argument, remember across runs')
         f.text = lambda: Fn.text(f).replace('define internal', 'define', 1)
@@ -1540,10 +1982,30 @@ class Gen:
         linep, capp, nv = f.var('ptr', 'null'), f.var('i64', '0'), f.var('i64')
         journal = f.var('ptr', 'null')
         f.e('call void @start()')
+        # "serve 8080 [file]" answers over the network; "serve-public" lets other machines connect too
+        mode, jarg = f.var('i32', '0'), f.var('i64', '1')
+        asked, plainly, chosen, noport, withport = (f.lab(x) for x in ('asked', 'plainly', 'chosen', 'noport', 'withport'))
+        f.cbr(f.r('icmp sgt i32 %argc, 1'), asked, chosen)
+        f.at(asked)
+        word = f.load('ptr', f.r('getelementptr ptr, ptr %argv, i64 1'))
+        loc = f.r(f'icmp eq i32 {f.r(f"call i32 @strcmp(ptr {word}, ptr {self.cstr("serve")})")}, 0')
+        pub = f.r(f'icmp eq i32 {f.r(f"call i32 @strcmp(ptr {word}, ptr {self.cstr("serve-public")})")}, 0')
+        f.cbr(f.r(f'or i1 {loc}, {pub}'), plainly, chosen)
+        f.at(plainly)
+        f.cbr(f.r('icmp sgt i32 %argc, 2'), withport, noport)
+        f.at(noport)
+        self.puts(f, 'error: serve needs a port, e.g. "serve 8080"')
+        f.e('ret i32 1')
+        f.at(withport)
+        f.store('i32', f.r(f'select i1 {pub}, i32 2, i32 1'), mode)
+        f.store('i64', '3', jarg)
+        f.br(chosen)
+        f.at(chosen)
         named, serve = f.lab('named'), f.lab('serve')
-        f.cbr(f.r('icmp sgt i32 %argc, 1'), named, serve)
+        jat = f.load('i64', jarg)
+        f.cbr(f.r(f'icmp sgt i64 {f.r("sext i32 %argc to i64")}, {jat}'), named, serve)
         f.at(named)
-        path = f.load('ptr', f.r('getelementptr ptr, ptr %argv, i64 1'))
+        path = f.load('ptr', f.r(f'getelementptr ptr, ptr %argv, i64 {jat}'))
         old = f.r(f'call ptr @fopen(ptr {path}, ptr {self.cstr("r")})')
         replay, opened = f.lab('replay'), f.lab('open')
         f.cbr(f.r(f'icmp eq ptr {old}, null'), opened, replay)
@@ -1577,6 +2039,13 @@ class Gen:
         f.e('ret i32 1')
         f.at(serve)
         jf = f.load('ptr', journal)
+        net, local = f.lab('net'), f.lab('local')
+        f.cbr(f.r(f'icmp ne i32 {f.load("i32", mode)}, 0'), net, local)
+        f.at(net)
+        port = f.r(f'call i64 @strtoll(ptr {f.load("ptr", f.r("getelementptr ptr, ptr %argv, i64 2"))}, ptr null, i32 10)')
+        public = f.r(f'zext i1 {f.r(f"icmp eq i32 {f.load("i32", mode)}, 2")} to i32')
+        f.e(f'ret i32 {f.r(f"call i32 @serve(i64 {port}, i32 {public}, ptr {jf})")}')
+        f.at(local)
         if self.prog.board:             # at a terminal the program is played; over a pipe it takes commands
             both = f.r(f'and i32 {f.r("call i32 @isatty(i32 0)")}, {f.r("call i32 @isatty(i32 1)")}')
             play, commands = f.lab('play'), f.lab('commands')
@@ -1622,6 +2091,7 @@ class Gen:
         f.e('ret i32 0')
 
     def module(self, source_name):
+        self.source_name = source_name
         for c in self.prog.collections.values():
             self.collection(c, self.plan.colls[c.name])
         for d in self.prog.collections.values():
@@ -1643,7 +2113,7 @@ class Gen:
         self.main()
         return (f'; Generated by the Intent compiler from {source_name}.\n'
                 f'; There is no intermediate program in any other language: Intent IR is lowered straight to this.\n\n'
-                + DECLS + (LIVE_DECLS if self.prog.events or self.prog.board else '') + '\n' + '\n'.join(self.globals) + '\n\n' + '\n'.join(f.text() for f in self.fns))
+                + DECLS + LIVE_DECLS + NET_DECLS + '\n' + '\n'.join(self.globals) + '\n\n' + '\n'.join(f.text() for f in self.fns))
 
 
 def emit(prog, plan, source_name='<intent>'):

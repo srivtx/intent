@@ -8,8 +8,8 @@ Numbers are 64-bit and wrap on overflow. Division truncates toward zero.
 import functools
 import re
 
-from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, LONGEST_WAIT, MUTATING, OVER, STATE, builtins,
-                 usage)
+from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, INK_LETTER, LONGEST_WAIT, MUTATING, OVER, STATE, builtins,
+                 decides_first, usage)
 
 UNSETTLED = 'error: the rules keep changing each other'
 ROUNDS = 100
@@ -55,6 +55,16 @@ def ev(e, row, args, m=None):
         return m.data[STATE][0][e[1]]
     if k == 'rand':
         return m.draw(e[1], e[2])
+    if k == 'outer':
+        return m.outer[e[1]]
+    if k == 'agg':
+        rows = among(e[2], e[4], row, args, m)
+        if e[1] == 'count':
+            return len(rows)
+        vals = [r[e[3]] for r in rows]
+        if e[1] == 'sum':
+            return wrap(sum(vals))
+        return (max(vals) if e[1] == 'max' else min(vals)) if vals else 0
     if k == 'if':
         return ev(e[2] if holds(e[1], row, args, m) else e[3], row, args, m)
     a, b = ev(e[2], row, args, m), ev(e[3], row, args, m)
@@ -69,13 +79,22 @@ def ev(e, row, args, m=None):
     return tdiv(a, b)
 
 
+def among(coll, cond, row, args, m):
+    """The records of another collection for which cond holds; inside cond, `row` is "the outer one"."""
+    was, m.outer = m.outer, row
+    try:
+        return [r for r in m.data[coll] if holds(cond, r, args, m)]
+    finally:
+        m.outer = was
+
+
 def holds(c, row, args, m=None):
     if c is None:
         return True
     if c[0] == 'cmp':
         return CMP[c[1]](ev(c[2], row, args, m), ev(c[3], row, args, m))
     if c[0] in ('any', 'none'):     # about another collection: its records are looked at one by one
-        return any(holds(c[2], r, args, m) for r in m.data[c[1]]) == (c[0] == 'any')
+        return bool(among(c[1], c[2], row, args, m)) == (c[0] == 'any')
     if c[0] == 'and':
         return holds(c[1], row, args, m) and holds(c[2], row, args, m)
     return holds(c[1], row, args, m) or holds(c[2], row, args, m)
@@ -86,6 +105,7 @@ class Machine:
         self.prog = prog
         self.tasks = {t.name: t for t in prog.tasks}
         self.changed = False
+        self.outer = None                   # the record a condition about other records is asked from
         self.chance = 0                     # where the run of chance stands; "seed <number>" sets it
         self.timers = prog.timers()
         self.builtin = dict(builtins(prog))
@@ -133,10 +153,8 @@ class Machine:
                 getattr(self, 'do_' + t.kind)(t, {})
         return self.settle()
 
-    def screen(self, colour=False):
-        """The board as lines of text: later sentences draw over earlier ones, off the board is not drawn.
-
-        Colour is only put in for a terminal that is being played in; as a command the board is plain text."""
+    def paint(self):
+        """What is in every cell of the board, and its colour (0 where none was said)."""
         w, h = self.prog.board
         grid = [[' '] * w for _ in range(h)]
         ink = [[0] * w for _ in range(h)]
@@ -147,6 +165,19 @@ class Machine:
                     if 1 <= x <= w and 1 <= y <= h:
                         grid[y - 1][x - 1] = d.glyph
                         ink[y - 1][x - 1] = COLOURS[d.colour] if d.colour else 0
+        return grid, ink
+
+    def picture(self):
+        ink = self.paint()[1]
+        return self.screen() + ['~'] + [''.join(INK_LETTER[k] for k in row) for row in ink] + \
+            ([OVER] if self.over() else [])
+
+    def screen(self, colour=False):
+        """The board as lines of text: later sentences draw over earlier ones, off the board is not drawn.
+
+        Colour is only put in for a terminal that is being played in; as a command the board is plain text."""
+        w, h = self.prog.board
+        grid, ink = self.paint()
         edge = '+' + '-' * w + '+'
 
         def line(cells, inks):
@@ -170,6 +201,8 @@ class Machine:
     def builtin_command(self, cmd, arg):
         if cmd == 'screen':
             return self.screen()
+        if cmd == 'picture':
+            return self.picture()
         if cmd == 'restart':
             return self.reset()
         if cmd == 'seed':
@@ -312,7 +345,8 @@ class Machine:
             ([] if self.removed else ['none'])
 
     def do_remove_where(self, t, a):
-        return self.remove(t.coll, lambda r: holds(t.where, r, a, self)) or []
+        goes = {id(r) for r in self.data[t.coll] if holds(t.where, r, a, self)}     # decided before any goes
+        return self.remove(t.coll, lambda r: id(r) in goes) or []
 
     def remove(self, cname, goes):
         rows = self.data[cname]
@@ -329,8 +363,11 @@ class Machine:
         return None
 
     def do_update(self, t, a):
-        for r in self.data[t.coll]:
-            if holds(t.where, r, a, self):
+        rows = self.data[t.coll]
+        if decides_first(t):            # the condition looks at the other records: decide, then change
+            rows = [r for r in rows if holds(t.where, r, a, self)]
+        for r in rows:
+            if rows is not self.data[t.coll] or holds(t.where, r, a, self):
                 for f, e in t.assigns:
                     v = ev(e, r, a, self)
                     self.changed |= v != r[f]
