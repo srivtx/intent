@@ -6,7 +6,7 @@ Four tiers, in this order, and each is reported differently:
   assumed   - a naming convention (email -> text); reported as a note, overridable
   asked     - nothing decides it; compilation stops with a question
 """
-from .ir import (NEGATE, STATE, TEXT_OPS, Diag, cond_cmps, lookups, task_conds, task_exprs, walk_cond_exprs,
+from .ir import (NEGATE, STATE, TEXT_OPS, Diag, cond_cmps, fmt_dec, lookups, task_conds, task_exprs, walk_cond_exprs,
                  walk_expr)
 from .lexicon import CONVENTION
 
@@ -52,7 +52,7 @@ class Checker:
     # ------------------------------------------------------------------ types
     def ty(self, e, coll, t):
         k = e[0]
-        if k in ('num', 'bin', 'rand', 'agg'):
+        if k in ('num', 'bin', 'rand', 'agg', 'dec', 'cents'):
             return 'int'
         if k == 'outer':
             return self.outer.fields[e[1]].type
@@ -77,6 +77,10 @@ class Checker:
             return 'an either-or value'
         if e[0] == 'rand':
             return 'a random number'
+        if e[0] == 'dec':
+            return fmt_dec(e[1])
+        if e[0] == 'cents':
+            return self.name_of(e[1])
         if e[0] == 'agg':
             return 'a count' if e[1] == 'count' else f'the {e[1]} of "{e[3]}"'
         if e[0] == 'outer':
@@ -333,14 +337,14 @@ class Checker:
         if e[0] == 'bin':
             d = e[3]
             if e[1] in ('div', 'rem'):
-                if d == ('num', 0):
+                if d in (('num', 0), ('dec', 0)):
                     self.d('error', t.line, 'this divides by zero')
-                elif d[0] != 'num' and d not in safe:
+                elif d[0] not in ('num', 'dec') and d not in safe:
                     name = self.name_of(d).strip('"')
                     self.d('question', t.line, f'what should happen when {name} is zero?',
                            'dividing by zero has no answer, and I will not invent one',
                            f'say it, e.g. "... divided by {name} if {name} is not 0, otherwise 0"')
-                elif e[1] == 'div':
+                elif e[1] == 'div' and not self.isdec(e, self.prog.collections.get(t.coll), t):
                     self.d('note', t.line, 'whole-number division drops the remainder (7 / 2 is 3)')
             self.divisions(e[2], safe, t)
             self.divisions(d, safe, t)
@@ -351,9 +355,193 @@ class Checker:
             self.divisions(e[2], safe + nonzero(e[1], True), t)
             self.divisions(e[3], safe + nonzero(e[1], False), t)
 
+    # ------------------------------------------------------------------ decimal numbers
+    # A decimal number is kept exactly, as a whole number of hundredths. Which numbers are decimal
+    # follows from how they are declared and used; then every place where a decimal meets a whole
+    # number is made explicit, so that running the program is plain whole-number arithmetic.
+    def isdec(self, e, coll, t):
+        k, cs = e[0], self.prog.collections
+        if k in ('dec', 'cents'):
+            return True
+        if k == 'field':
+            return coll is not None and e[1] in coll.fields and coll.fields[e[1]].dec
+        if k == 'pfield':
+            return cs[coll.fields[e[1]].ref].fields[e[2]].dec
+        if k == 'value':
+            return cs[STATE].fields[e[1]].dec
+        if k == 'outer':
+            return self.outer is not None and self.outer.fields[e[1]].dec
+        if k == 'param':
+            return e[1] in t.pdec
+        if k == 'agg':
+            return e[1] != 'count' and cs[e[2]].fields[e[3]].dec
+        if k in ('if', 'bin'):
+            return self.isdec(e[2], coll, t) or self.isdec(e[3], coll, t)
+        return False
+
+    def make_dec(self, e, coll, t):
+        """A bare name that meets a decimal number is one itself, unless it was declared whole."""
+        if e[0] == 'param' and e[1] not in t.pdec and t.ptypes.get(e[1], 'int') == 'int':
+            t.pdec.add(e[1])
+            return True
+        f = None
+        if e[0] == 'field' and coll is not None:
+            f = coll.fields[e[1]]
+        elif e[0] == 'value':
+            f = self.prog.collections[STATE].fields[e[1]]
+        elif e[0] == 'outer' and self.outer is not None:
+            f = self.outer.fields[e[1]]
+        if f is not None and not f.dec and f.type == 'int' and not f.unique and not f.ref and \
+                (f.how != 'declared' or e[0] == 'value' or (coll is not None and coll.name == STATE)):
+            f.dec = True
+            if isinstance(f.init, int):
+                f.init *= 100
+            return True
+        return False
+
+    def spread(self, t):
+        ch = False
+        coll = self.prog.collections.get(t.coll)
+        if t.kind == 'add':
+            new = {f.name for f in coll.fields.values() if f.dec} - t.pdec
+            t.pdec |= new
+            ch |= bool(new)
+        if t.kind in ('find', 'remove_key') and coll.fields[t.key].dec and t.key not in t.pdec:
+            t.pdec.add(t.key)
+            ch = True
+
+        def meet(a, b, c):
+            if self.isdec(a, c, t) != self.isdec(b, c, t):
+                return self.make_dec(b if self.isdec(a, c, t) else a, c, t)
+            return False
+
+        def exprs(e, c):
+            nonlocal ch
+            if e[0] == 'bin':
+                exprs(e[2], c)
+                exprs(e[3], c)
+                if e[1] in ('add', 'sub'):
+                    ch |= meet(e[2], e[3], c)
+            elif e[0] == 'if':
+                conds(e[1], c)
+                exprs(e[2], c)
+                exprs(e[3], c)
+            elif e[0] == 'agg' and e[4] is not None:
+                was, self.outer = self.outer, c
+                conds(e[4], self.prog.collections[e[2]])
+                self.outer = was
+
+        def conds(cnd, c):
+            nonlocal ch
+            if cnd is None:
+                return
+            if cnd[0] == 'cmp':
+                exprs(cnd[2], c)
+                exprs(cnd[3], c)
+                if cnd[1] not in TEXT_OPS and 'text' not in (self.ty(cnd[2], c, t), self.ty(cnd[3], c, t)):
+                    ch |= meet(cnd[2], cnd[3], c)
+            elif cnd[0] in ('any', 'none'):
+                was, self.outer = self.outer, c
+                conds(cnd[2], self.prog.collections[cnd[1]])
+                self.outer = was
+            else:
+                conds(cnd[1], c)
+                conds(cnd[2], c)
+        for f, e in t.assigns:
+            exprs(e, coll)
+            if coll.fields[f].type == 'int':
+                ch |= meet(('field', f), e, coll)
+        for e in ([t.expr] if t.expr else []) + list(t.at or ()):
+            exprs(e, coll)
+        conds(t.where, coll)
+        return ch
+
+    def lower(self, t):
+        coll = self.prog.collections.get(t.coll)
+        cs = self.prog.collections
+
+        def cents(e):
+            return ('cents', e)
+
+        def low(e, c):
+            k = e[0]
+            if k == 'agg':
+                was, self.outer = self.outer, c
+                cond = lowc(e[4], cs[e[2]])
+                self.outer = was
+                e = e[:4] + (cond,)
+                return e, self.isdec(e, c, t)
+            if k == 'if':
+                cond = lowc(e[1], c)
+                (a, da), (b, db) = low(e[2], c), low(e[3], c)
+                if da != db and self.ty(e[2], c, t) == 'int':
+                    a, b = (a if da else cents(a)), (b if db else cents(b))
+                return ('if', cond, a, b), da or db
+            if k != 'bin':
+                return e, self.isdec(e, c, t)
+            (a, da), (b, db) = low(e[2], c), low(e[3], c)
+            op = e[1]
+            if not (da or db):
+                return ('bin', op, a, b), False
+            if op in ('add', 'sub'):
+                return ('bin', op, a if da else cents(a), b if db else cents(b)), True
+            if op == 'mul':
+                return ('bin', 'dmul' if da and db else 'mul', a, b), True
+            if op == 'div':
+                if da and db:
+                    return ('bin', 'rdiv', cents(a), b), True
+                if da:
+                    return ('bin', 'rdiv', a, b), True
+                return ('bin', 'rdiv', cents(cents(a)), b), True
+            self.d('error', t.line, 'the remainder of a decimal number is not supported yet')
+            return ('bin', op, a, b), True
+
+        def lowc(cnd, c):
+            if cnd is None:
+                return None
+            if cnd[0] == 'cmp':
+                if cnd[1] in TEXT_OPS:
+                    return cnd
+                (a, da), (b, db) = low(cnd[2], c), low(cnd[3], c)
+                if da != db:
+                    a, b = (a if da else cents(a)), (b if db else cents(b))
+                return ('cmp', cnd[1], a, b)
+            if cnd[0] in ('any', 'none'):
+                was, self.outer = self.outer, c
+                inner = lowc(cnd[2], cs[cnd[1]])
+                self.outer = was
+                return (cnd[0], cnd[1], inner)
+            return (cnd[0], lowc(cnd[1], c), lowc(cnd[2], c))
+
+        fitted = []
+        for f, e in t.assigns:
+            e, d = low(e, coll)
+            want = coll.fields[f].dec
+            if want and not d:
+                e = cents(e)
+            elif d and not want:
+                self.d('error', t.line, f'"{f}" is a whole number, and this would give it a decimal one',
+                       f'line {coll.fields[f].line} says so', f'declare it as "{f} (decimal)" if it should keep cents')
+            fitted.append((f, e))
+        t.assigns = fitted
+        t.where = lowc(t.where, coll)
+        if t.expr:
+            t.expr, t.dec = low(t.expr, coll)
+        if t.at:
+            at = [low(e, coll) for e in t.at]
+            if any(d for _, d in at):
+                self.d('error', t.line, 'a place on the board is a whole number')
+            t.at = tuple(e for e, _ in at)
+
     def run(self):
+        work = self.prog.work() + self.prog.looks()
         self.infer()
+        for _ in range(12):
+            if not any([self.spread(t) for t in work]):
+                break
         self.validate()
+        for t in work:
+            self.lower(t)
         return self.diags
 
 
