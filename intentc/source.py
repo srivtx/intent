@@ -102,6 +102,18 @@ class Source:
                 i += 1
                 continue
             toks = drop_bullet(tokenize(raw, i + 1))
+            if raw.rstrip().endswith(':') and not pending and re.search(r'\blooks\s+like\b', raw, re.I):
+                # a figure: the indented lines below are its rows, read as they are ("#" is not a comment there)
+                ind = indent_of(raw)
+                rows, j = [], i + 1
+                while j < n and self.lines[j].strip() and indent_of(self.lines[j]) > ind:
+                    rows.append((j + 1, self.lines[j].rstrip()))
+                    j += 1
+                if rows:
+                    cut = min(indent_of(r) for _, r in rows)
+                    yield ('figure', toks[:-1], [(ln, r[cut:]) for ln, r in rows])
+                    i = j
+                    continue
             if raw.rstrip().endswith(':') and not pending:
                 ind = indent_of(raw)
                 items = []
