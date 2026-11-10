@@ -13,6 +13,8 @@ and for the flexibility added after the first version:
  10. Relationships between collections                             (TestRelationships)
  11. Calculations, single values and standing rules                (TestThinking)
  12. Time, keys, a board, and playing in a terminal                (TestLive)
+ 13. Colour, chance, records that appear, hits, steps, restarting  (TestLive, from test_colour_phrasings on)
+ 14. One record is found through the index; rules look only where needed (TestLive.test_one_record_*)
 """
 import os
 import random
@@ -1487,6 +1489,417 @@ class TestLive(TestNativeAgainstReference):
                     self.assertEqual((os.waitstatus_to_exitcode(status), restored in (True, None)), (1, True))
             status, out, _ = self.in_a_terminal(cmd, [b'q'], 7, 32)
             self.assertIn('\x1b[?1049h', out)                       # exactly big enough: it plays
+
+    # ------------------------------------------------------------------ colour
+    def draws(self, text, base=GAME):
+        prog, diags, _ = understand('The board is 9 wide and 5 high.\n' + text, base)
+        self.assertEqual([d.msg for d in diags], [], text)
+        return [(d.glyph, d.colour) for d in prog.draws]
+
+    def test_colour_phrasings(self):
+        for text in ['Draw each rock at its x and y as a red "#".',
+                     'Draw each rock at its x and y as "#" in red.',
+                     'Draw each rock in red at its x and y as "#".',
+                     'Draw a red "#" at the x and the y of each rock.',
+                     'Paint every rock at its x and y with a red "#".']:
+            self.assertEqual(self.draws(text), [('#', 'red')], text)
+        self.assertEqual(self.draws('Draw a green "@" at the column and 2. Draw "*" at 1 and 1.'),
+                         [('@', 'green'), ('*', None)])
+        self.assertEqual(self.draws('Draw "@" in grey at the column and 2.'), [('@', 'grey')])
+        level, where, d = problem('The board is 9 wide and 5 high. Draw each rock at its x and y as a red "#" in blue.',
+                                  GAME)
+        self.assertEqual((level, where, d.msg), ('error', 'in blue', 'one thing is drawn in one colour'))
+
+    def test_a_colour_word_is_not_reserved(self):
+        base = 'Paints is a collection. Each paint has a red (number) and a blue (number).\n'
+        self.assertEqual(self.draws('Draw each paint at its red and blue as "#".', base), [('#', None)])
+
+    COLOURED = ('The board is 9 wide and 3 high. The column starts at 4. The score is a number.\n'
+                'Every 200 milliseconds, the score increases by 1.\n'
+                'Draw a green "@" at the column and 2. Draw "*" at 6 and 2. Draw a red "#" at 7 and 2.\n')
+
+    def test_colour_is_only_for_a_terminal(self):
+        exe, out = self.script('ink', self.COLOURED, ['screen'])
+        self.assertEqual(out, ['+---------+', '|         |', '|   @ *#  |', '|         |', '+---------+'])
+
+    @unittest.skipUnless(sys.platform != 'win32', 'needs a pseudo-terminal')
+    def test_colour_in_a_terminal(self):
+        exe, _ = self.script('ink', self.COLOURED, ['screen'])
+        for cmd in [exe], [sys.executable, os.path.join(ROOT, 'intent'), 'run', os.path.join(self.dir, 'ink.intent')]:
+            with self.subTest(cmd[0]):
+                status, out, _ = self.in_a_terminal(cmd, [b'q'])
+                self.assertEqual(status, 0)
+                played, _, after = out.partition('\x1b[?1049l')
+                self.assertIn('|   \x1b[32m@\x1b[0m *\x1b[31m#\x1b[0m  |', played)
+                self.assertIn('|   @ *#  |', after)            # what stays on the terminal is plain
+
+    # ------------------------------------------------------------------ chance
+    def test_chance_phrasings(self):
+        for text in ['When space is pressed, the column becomes a random number between 1 and 30.',
+                     'When space is pressed, set the column to a random number from 1 to 30.',
+                     'When space is pressed, the column becomes a random whole number between one and 30.',
+                     'When space is pressed, make the column a random value between 1 and 30.']:
+            self.assertEqual(self.events(text), [(('key', 'space'), 'set column = random(1..30)')], text)
+        self.assertEqual(self.events('Every second, the column increases by a random number between -1 and 1.'),
+                         [(('every', 1000), 'set column = column + random(-1..1)')])
+
+    def test_chance_that_cannot_be_read(self):
+        for text, where, msg in [
+                ('When space is pressed, the column becomes a random number.', 'random number',
+                 'a random number between what and what?'),
+                ('When space is pressed, the column becomes a random number up to 9.', 'random number',
+                 'a random number between what and what?'),
+                ('When space is pressed, the column becomes a random number between 9 and 2.', '9 and 2',
+                 'the lower number has to come first')]:
+            level, got, d = problem(text, GAME)
+            self.assertEqual((level, got, d.msg), ('error', where, msg), text)
+        for text in ['Whenever the score is over 5, the column becomes a random number between 1 and 9.',
+                     'The board is 9 wide and 5 high. Draw "@" at a random number between 1 and 9 and 2.',
+                     'Every second, remove the rocks whose x is a random number between 1 and 9.']:
+            _, diags, _ = understand(text, GAME)
+            self.assertEqual([d.msg for d in diags], ['chance cannot be used here'], text)
+
+    def test_random_is_not_reserved(self):
+        base = 'Draws is a collection. Each draw has a random (number) and a name.\n'
+        self.assertEqual(meaning('Show the draws whose random is over 5.', base), 'list all of draw where random > 5')
+
+    CHANCY = ('The board is 12 wide and 4 high. The column starts at 3. The score is a number. The lives start at 3.\n'
+              'Rocks is a collection. Each rock has an x (number) and a y (number).\n'
+              'Every 100 milliseconds, add a rock whose x is a random number between 1 and 12 and whose y is '
+              'a random number from 1 to 4.\n'
+              'Every 300 milliseconds, remove the rocks whose y is over 3.\n'
+              'Every 100 milliseconds, if the score is over 2 and the lives are a random number between 1 and 3, '
+              'the score becomes 0.\n'
+              'Every 100 milliseconds, if the score is under 1 or the lives are a random number between 1 and 3, '
+              'the score increases by 1.\n'
+              'When space is pressed, the column becomes a random number between 1 and 12.\n'
+              'The game is over when the score is over 6.\n'
+              'Shuffle: set the column to a random number between 1 and 12.\n'
+              'Draw each rock at its x and y as "#". Draw "@" at the column and 2. Show the score above the board.\n')
+
+    def test_the_same_seed_draws_the_same_numbers(self):
+        prog, diags, _ = understand('', self.CHANCY)
+        self.assertEqual([d.msg for d in diags], [])
+        cmds = ['wait 700', 'press space', 'screen']
+
+        def run(seed):
+            m = Machine(prog)
+            return [o for c in [f'seed {seed}'] + cmds for o in m.run(c)]
+        self.assertEqual(run(11), run(11))
+        self.assertEqual(len({tuple(run(s)) for s in range(8)}), 8)        # and another seed, other numbers
+        m = Machine(prog)
+        self.assertEqual(m.run('seed x'), ['error: seed takes a number'])
+        got = [m.draw(1, 6) for _ in range(600)]
+        self.assertEqual(sorted(set(got)), [1, 2, 3, 4, 5, 6])              # both ends come up
+        self.assertTrue(all(60 < got.count(k) < 140 for k in range(1, 7)))
+
+    def test_chance_natively(self):
+        for seed in range(4):
+            rng = random.Random(seed)
+            cmds = [f'seed {rng.randrange(-5, 10 ** 12)}']
+            for _ in range(120):
+                cmds.append(rng.choice(['wait 100', 'wait 250', 'press space', 'screen', 'score', 'restart', 'shuffle',
+                                        f'seed {rng.randrange(99)}', 'seed', 'seed 1x']))
+            self.script(f'chancy{seed}', self.CHANCY, cmds)
+
+    def test_chance_is_replayed_from_the_journal(self):
+        exe, _ = self.script('chancy', self.CHANCY, ['screen'])
+        journal = os.path.join(self.dir, 'chancy.journal')
+
+        def run(cmds):
+            return subprocess.run([exe, journal], input='\n'.join(cmds) + '\n', capture_output=True, text=True,
+                                  timeout=60).stdout
+        first = run(['seed 5', 'wait 400', 'press space', 'restart', 'wait 300', 'press space', 'screen', 'score'])
+        self.assertEqual(run(['screen', 'score']), first)       # chance, time, keys and the restart all came back
+        with open(journal) as fh:
+            self.assertEqual(fh.read().split('\n')[:4], ['seed 5', 'wait 400', 'press space', 'restart'])
+
+    # ------------------------------------------------------------------ records that appear
+    def test_records_that_appear(self):
+        new = 'new rock: x = column, y = 1'
+        for text, want in [
+                ('Every second, add a rock whose x is the column and whose y is 1.', new),
+                ('Every second, add a rock with x the column and y 1.', new),
+                ('Every second, add a rock at x the column, y 1.', new),
+                ('Every second, add a new rock whose x equals the column and whose y is 1.', new),
+                ('Every second, add a rock whose y is 1 and whose x is the column.', 'new rock: y = 1, x = column'),
+                ('Every second, if the score is over 3, add a rock whose x is the column and whose y is 1.',
+                 new + ' where score > 3'),
+                ('Every second, add a rock whose x is the column and whose y is 1 if the score is over 3.',
+                 new + ' where score > 3'),
+                ('Every second, if no rock has a y under 2, add a rock whose x is the column and whose y is 1.',
+                 new + ' where no rock has y < 2')]:
+            self.assertEqual(self.events(text), [(('every', 1000), want)], text)
+        self.assertEqual(self.events('When space is pressed, add a rock whose x is the column plus 1 and whose y is 1.'),
+                         [(('key', 'space'), 'new rock: x = column + 1, y = 1')])
+        self.assertEqual(self.events('Every second, add 1 to the score.'), [(('every', 1000), 'set score = score + 1')])
+
+    def test_a_record_that_appears_needs_every_property(self):
+        level, where, d = problem('Every second, add a rock whose x is the column.', GAME)
+        self.assertEqual((level, d.msg), ('question', 'what is the y of the new rock?'))
+        level, where, d = problem('Every second, add a rock whose x is the y and whose y is 1.', GAME)
+        self.assertEqual((level, d.msg), ('error', 'there is no "y" to read: the rock is not there yet'))
+        level, where, d = problem('Every second, add a rock whose x is a given spot and whose y is 1.', GAME)
+        self.assertEqual((level, d.msg), ('error', 'there is nobody to give the spot here'))
+        level, where, d = problem('Every second, add a rock whose x is 1, whose y is 1 and whose x is 2.', GAME)
+        self.assertEqual((level, where, d.msg), ('error', 'x', '"x" is given twice'))
+
+    def test_records_that_appear_natively(self):
+        for policy in ('Reject duplicates.', 'Replace duplicates.'):
+            text = ('The tick is a number. The spot starts at 1.\n'
+                    'Cars is a collection. Each car has a lane (number), a name and a made (number).\n'
+                    f'Lanes are unique. {policy}\n'
+                    'Every 100 milliseconds, the tick increases by 1.\n'
+                    'Every 100 milliseconds, add a car whose lane is the spot, whose name is "auto" and whose made '
+                    'is the tick.\n'
+                    'Every 300 milliseconds, the spot becomes the spot plus 1 if the spot is under 4, otherwise 1.\n'
+                    'When space is pressed, add a car whose lane is 9, whose name is "key" and whose made is the tick.\n'
+                    'Every 700 milliseconds, remove the cars whose lane is 2.\n'
+                    'Park: add a car. Fleet: show all cars. How many: count the cars. Find: find a car by lane.\n')
+            rng = random.Random(policy)
+            cmds = [rng.choice(['wait 100', 'wait 350', 'press space', 'fleet', 'how-many', 'find 9', 'find 2',
+                                f'park {rng.randrange(1, 6)},hand,0']) for _ in range(200)]
+            _, out = self.script('cars' + policy[:3], text, cmds)
+            made = {line for line in out if line.startswith('9,key,')}
+            self.assertEqual(len(made) == 1, policy.startswith('Rej'))      # kept as first made, or made again
+
+    # ------------------------------------------------------------------ a hit that changes a value
+    def test_conditions_about_other_records(self):
+        hit = 'set lives = lives - 1 where any rock has (x == column and y == 5)'
+        for text in ['Every second, if any rock has an x equal to the column and a y equal to 5, the lives decrease by 1.',
+                     "Every second, if any rock's x is the column and its y is 5, the lives decrease by 1.",
+                     'Every second, the lives decrease by 1 if any rock has an x equal to the column and a y equal to 5.',
+                     "Every second, when a rock's x is the column and its y is 5, the lives decrease by 1.",
+                     'Every second, if any rock has x = the column and y = 5 then decrease the lives by 1.']:
+            self.assertEqual(self.events(text), [(('every', 1000), hit)], text)
+        self.assertEqual(self.events('When space is pressed, if no rock has a y over 3, the score increases by 1.'),
+                         [(('key', 'space'), 'set score = score + 1 where no rock has y > 3')])
+        base = GAME + 'Shots is a collection. Each shot has a height (number).\n'
+        self.assertEqual(self.events('Every second, if any rock has a y under 1, remove all shots.', base),
+                         [(('every', 1000), 'remove shot where any rock has y < 1')])
+        prog, diags, _ = understand('Whenever any rock has a y over 9, the lives become 0.', GAME)
+        self.assertEqual(([d.msg for d in diags], [canon(r) for r in prog.rules]),
+                         ([], ['set lives = 0 where any rock has y > 9']))
+
+    def test_a_sentence_about_the_records_themselves_is_unchanged(self):
+        self.assertEqual(self.events("Every second, if any rock's y is over 9, its y becomes 1."),
+                         [(('every', 1000), 'update rock: y = 1 where y > 9')])
+        level, where, d = problem('Every second, if any rock has a wobble over 3, the lives decrease by 1.', GAME)
+        self.assertEqual((level, where, d.msg), ('error', 'wobble', 'I don\'t know the word "wobble"'))
+
+    def test_conditions_about_other_records_natively(self):
+        text = ('The board is 8 wide and 4 high. The column starts at 2. The lives start at 9. The score is a number.\n'
+                'The alarm is text. The alarm starts at "calm".\n'
+                'Rocks is a collection. Each rock has an x (number), a y (number) and a kind.\n'
+                'Start with a rock at x 2, y 1, kind "stone". Start with a rock at x 5, y 3, kind "ice".\n'
+                'Every 100 milliseconds, increase the y of every rock by 1.\n'
+                "Every 100 milliseconds, if a rock's y is over 4, its y becomes 1.\n"
+                'Every 100 milliseconds, if any rock has an x equal to the column and a y equal to 2, '
+                'the lives decrease by 1.\n'
+                'Every 100 milliseconds, if no rock has a y of 4, the score increases by 1.\n'
+                'Whenever any rock has a kind of "ice" and a y under 2, the alarm becomes "cold".\n'
+                'Whenever no rock has a y under 2, the alarm becomes "calm".\n'
+                'When the right key is pressed, the column becomes 5 if the column is 2, otherwise 2.\n'
+                'Melt: remove the rocks whose kind is a given kind. Drop: add a rock. Status: show the lives, the score '
+                'and the alarm.\n'
+                'Draw each rock at its x and y as "#". Draw "@" at the column and 2.\n')
+        for seed in range(3):
+            rng = random.Random(seed)
+            cmds = [rng.choice(['wait 100', 'wait 100', 'wait 300', 'press right', 'status', 'screen', 'melt ice',
+                                'melt stone', f'drop {rng.randrange(1, 9)},{rng.randrange(1, 5)},ice'])
+                    for _ in range(150)]
+            _, out = self.script(f'hits{seed}', text, cmds)
+            self.assertTrue({'cold', 'calm'} <= {line.split(',')[-1] for line in out if line.count(',') == 2})
+
+    # ------------------------------------------------------------------ several steps, restarting
+    def test_several_steps_in_one_sentence(self):
+        self.assertEqual(self.events('Every second, the score increases by 1 and then the column decreases by 2, '
+                                     'and then remove the rocks whose y is over 9.'),
+                         [(('every', 1000), 'set score = score + 1'), (('every', 1000), 'set column = column - 2'),
+                          (('every', 1000), 'remove rock where y > 9')])
+        self.assertEqual(self.events('When space is pressed, add a rock whose x is 1 and whose y is 1 and then '
+                                     'the score increases by 1.'),
+                         [(('key', 'space'), 'new rock: x = 1, y = 1'), (('key', 'space'), 'set score = score + 1')])
+        level, where, d = problem('Every second, if the score is over 3, the score becomes 0 and then the lives '
+                                  'decrease by 1.', GAME)
+        self.assertEqual((level, where, d.msg), ('question', 'if the score is over 3, the score becomes 0',
+                                                 'does this condition go with every step, or only the first?'))
+        level, where, d = problem('Every second, the score increases by 1 and then.', GAME)
+        self.assertEqual((level, d.msg), ('error', 'and then what?'))
+
+    def test_restart(self):
+        text = (GAME + 'Start with a rock at x 1, y 1.\n'
+                'Every second, the lives decrease by 1. Every second, add a rock whose x is the lives and whose y is 2.\n'
+                'The game is over when the lives are 0. Stones: show all rocks. Lives: show the lives.\n')
+        self.assertEqual(self.run_ref(text, ['wait 1500', 'stones', 'wait 5000', 'wait 1', 'lives', 'restart', 'lives',
+                                             'stones', 'wait 1500', 'lives', 'help']),
+                         ['1,1', '2,2', 'the game is over', '0', '3', '1,1', '2',
+                          'stones', 'lives', 'wait <milliseconds>', 'restart'])
+        prog, _, _ = understand('Every second, the score increases by 1.', GAME)
+        self.assertEqual(Machine(prog).run('restart'), ['error: unknown command restart'])     # nothing ends, so nothing restarts
+
+    FALL = ('The board is 9 wide and 3 high. The lives start at 2. The column starts at 4.\n'
+            'Every 100 milliseconds, the lives decrease by 1.\n'
+            'The game is over when the lives are under 1.\n'
+            'Draw a red "@" at the column and 2. Show the lives above the board.\n')
+
+    @unittest.skipUnless(sys.platform != 'win32', 'needs a pseudo-terminal')
+    def test_playing_again_after_the_game_is_over(self):
+        hint = 'the game is over: enter plays again, q stops'
+        exe, _ = self.script('fall', self.FALL, ['wait 100', 'screen', 'restart', 'screen'])
+        for cmd in [exe], [sys.executable, os.path.join(ROOT, 'intent'), 'run', os.path.join(self.dir, 'fall.intent')]:
+            with self.subTest(cmd[0]):
+                # an arrow key and a stray letter are not answers; enter plays again; q stops
+                status, out, restored = self.in_a_terminal(cmd, [b'\x1b[D', b'x', b'\r', b'x', b'q'], settle=0.6)
+                self.assertEqual((status, restored in (True, None)), (0, True))
+                played, _, after = out.partition('\x1b[?1049l')
+                self.assertEqual(played.count(hint), 2)
+                self.assertEqual(played.count('lives 2'), 2)                # it really began again
+                self.assertEqual(after.strip('\n').split('\n')[-1], 'the game is over')
+        status, out, _ = self.in_a_terminal([exe], [], 7, 80)               # no room for the last line
+        self.assertEqual(out, 'this board needs a terminal at least 11 wide and 8 high; this one is 80 wide and 7 high\n')
+
+    # ------------------------------------------------------------------ snake
+    def snake(self):
+        with open(os.path.join(ROOT, 'examples', 'snake.intent')) as fh:
+            return fh.read()
+
+    def test_snake_natively(self):
+        for seed in range(4):
+            rng = random.Random(seed)
+            cmds = [f'seed {seed}']
+            for _ in range(300):
+                cmds.append(rng.choice(['wait 120'] * 6 + ['wait 360', 'press left', 'press right', 'press up',
+                                                             'press down', 'screen', 'restart']))
+            self.script(f'snake{seed}', self.snake(), cmds + ['screen'])
+
+    def test_snake_eats_grows_and_dies(self):
+        prog, diags, _ = understand('', self.snake())
+        self.assertEqual([d.msg for d in diags], [])
+        m = Machine(prog)
+        state = m.data['(values)'][0]
+        m.run('wait 1200')                              # ten steps to the right, onto the food
+        self.assertEqual((state['column'], state['score'], state['length']), (20, 1, 5))
+        self.assertNotEqual((state['food_x'], state['food_y']), (20, 7))
+        m.run('wait 600')
+        self.assertEqual(sorted(r['x'] for r in m.data['segment']), [21, 22, 23, 24])    # the body follows the head
+        m.run('press left')                             # straight back is not a turn a snake can make
+        self.assertEqual(state['sideways_speed'], 1)
+        for key in ('down', 'left', 'up'):              # round in a tight circle, into its own body
+            m.run(f'press {key}')
+            m.run('wait 120')
+        self.assertEqual(m.run('wait 120'), ['the game is over'])
+        m.run('restart')
+        self.assertEqual((state is m.data['(values)'][0], m.data['(values)'][0]['score'], m.data['segment']),
+                         (False, 0, []))
+        self.assertEqual(m.run('wait 2640'), [])        # 22 steps: off the right-hand edge
+        self.assertEqual(m.run('wait 120'), ['the game is over'])
+
+    @unittest.skipUnless(sys.platform != 'win32', 'needs a pseudo-terminal')
+    def test_snake_in_a_terminal(self):
+        exe, _ = self.script('snake', self.snake(), ['screen'])
+        status, out, restored = self.in_a_terminal([exe], [b'\x1b[B', b'\x1b[D', b'q'], settle=0.5)
+        self.assertEqual((status, restored in (True, None)), (0, True))
+        played, _, after = out.partition('\x1b[?1049l')
+        self.assertIn('\x1b[32mo', played)
+        self.assertIn('\x1b[33m@', played)
+        self.assertIn('\x1b[31m*', played)
+        self.assertEqual(sum(line.count('o') for line in after.split('\n') if line.startswith('|')), 3)
+
+    # ------------------------------------------------------------------ one record, found through the index
+    CLUB = ('Players is a collection. Each player has a name (text), points (number) and a rank (text).\n'
+            'Names are unique. Reject duplicates. Keep players in the order they were added.\n'
+            'The bar starts at 100.\n'
+            'Join: add a player. Leave: remove a player by name.\n'
+            'Award: increase the points of the player with a given name by a given amount.\n'
+            'Who: show the player with a given name.\n'
+            'Rich: show the points of the players whose name is a given name and whose points are over the bar.\n'
+            'Tally: count the players whose name is a given name.\n'
+            'Best: show the top 2 players by points whose name is a given name.\n'
+            'Gold: show the players whose rank is "gold".\n'
+            'Raise-all: increase the points of every player by a given amount.\n'
+            'Purge: remove the players whose points are under a given amount.\n')
+    RANKS = ('Whenever a player\'s points are at least 100, their rank becomes "gold".\n'
+             'Whenever a player\'s points are under 100, their rank becomes "plain".\n')
+
+    def test_one_record_is_found_through_the_index(self):
+        prog, diags, _ = understand('', self.CLUB + self.RANKS)
+        self.assertEqual([d.msg for d in diags], [])
+        plan = make_plan(prog)
+        self.assertEqual({n: plan.tasks[n][0] for n in ('award', 'who', 'rich', 'tally', 'best', 'gold', 'raise-all')},
+                         {'award': 'O(1) expected', 'who': 'O(1) expected', 'rich': 'O(1) expected',
+                          'tally': 'O(1) expected', 'best': 'O(1) expected', 'gold': 'O(n)', 'raise-all': 'O(n)'})
+        self.assertIn('one index probe on name, changed in place; then the rules look again at just that player',
+                      plan.tasks['award'][1])
+        self.assertIn('no rule has to look again', plan.tasks['leave'][1])
+        self.assertIn('the 2 rules are applied until nothing changes', plan.tasks['raise-all'][1])
+        why = [w for title, _, reasons in plan.colls['player'].decisions if title == 'index on name'
+               for _, w in reasons]
+        self.assertIn('"award" is about the one player with a certain name', why)
+        slow = make_plan(prog, no_index=True)
+        self.assertEqual((slow.tasks['award'][0], slow.picks), ('O(n)', {}))
+
+    def test_rules_that_read_more_than_one_record_look_everywhere(self):
+        for rule in ['Whenever a player\'s points are over the bar, their rank becomes "gold".\n',
+                     'Whenever a player\'s points are under 0, remove them.\n']:
+            prog, diags, _ = understand('', self.CLUB + rule)
+            self.assertEqual([d.msg for d in diags], [], rule)
+            plan = make_plan(prog)
+            self.assertFalse(plan.local_rules)
+            self.assertIn('the 1 rule is applied until nothing changes', plan.tasks['award'][1])
+
+    def test_one_record_natively(self):
+        names = ['ann', 'bob', 'cy', 'dee', 'eve', 'flo']
+        programs = {
+            'ranks': self.CLUB + self.RANKS,
+            # rules that never come to rest: every command must still say so, exactly as the meaning does
+            'restless': self.CLUB + ('Whenever a player\'s points are at least 100, their points become 50.\n'
+                                     'Whenever a player\'s points are under 100 and their points are over 40, '
+                                     'their points become 150.\n'),
+            'bar': self.CLUB + 'Whenever a player\'s points are over the bar, their rank becomes "gold".\n'
+                               'Raise: set the bar to a given bar.\n',
+            'replace': (self.CLUB + self.RANKS).replace('Reject', 'Replace'),
+            'norules': self.CLUB}
+        for name, text in programs.items():
+            with self.subTest(name):
+                rng = random.Random(name)
+                cmds = []
+                for _ in range(400):
+                    who = rng.choice(names)
+                    cmds.append(rng.choice([
+                        f'join {who},{rng.randrange(0, 160)},new', f'award {rng.randrange(-60, 90)},{who}',
+                        f'award {rng.randrange(-60, 90)},{who}', f'who {who}', f'rich {who}', f'tally {who}',
+                        f'best {who}', 'gold', f'leave {who}', f'raise-all {rng.randrange(-20, 20)}',
+                        f'purge {rng.randrange(0, 30)}'] + ([f'raise {rng.randrange(50, 150)}'] if name == 'bar' else [])))
+                _, out = self.script('club-' + name, text, cmds)
+                if name == 'restless':
+                    self.assertIn('error: the rules keep changing each other', out)
+                if name == 'ranks':
+                    self.assertTrue(any(line.endswith(',gold') for line in out))
+
+    def test_one_record_among_many_is_quick(self):
+        import time
+        exe, _ = self.script('club-many', self.CLUB + self.RANKS, ['gold'])
+        n = 20000
+        cmds = [f'join p{i},0,new' for i in range(n)] + [f'award 7,p{(i * 7919) % n}' for i in range(40000)] + \
+            ['who p5', 'tally p6']
+        start = time.time()
+        got = subprocess.run([exe], input='\n'.join(cmds) + '\n', capture_output=True, text=True, timeout=120)
+        self.assertEqual(got.stdout, 'p5,14,plain\n1\n')
+        self.assertLess(time.time() - start, 20)        # a pass over every player for every award took over a minute
+
+    def test_plurals_that_end_in_us(self):
+        from intentc.lexicon import singular
+        self.assertEqual([singular(w) for w in ['menus', 'skus', 'gurus', 'status', 'bonus', 'virus', 'campus',
+                                                'us', 'bus', 'famous', 'customers', 'addresses']],
+                         ['menu', 'sku', 'guru', 'status', 'bonus', 'virus', 'campus', 'us', 'bus', 'famous',
+                          'customer', 'address'])
+        base = ('Skus is a collection. Each sku has a code (text), a stock (number) and a status (text).\n'
+                'Menus is a collection. Each menu has a title (text) and a bonus (number).\n')
+        self.assertEqual(meaning('Show the skus whose stock is under 5 and whose status is "live".', base),
+                         'list all of sku where stock < 5 and status == "live"')
+        self.assertEqual(meaning('Show the menus whose bonus is over 2.', base), 'list all of menu where bonus > 2')
+
 
 if __name__ == '__main__':
     unittest.main()
