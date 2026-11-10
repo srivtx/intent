@@ -180,6 +180,10 @@ TYPE_WORDS = {
     'text': 'text', 'string': 'text', 'strings': 'text', 'textual': 'text', 'word': 'text', 'words': 'text',
     'number': 'int', 'numbers': 'int', 'integer': 'int', 'integers': 'int', 'numeric': 'int', 'int': 'int',
 }
+# Plural words that name one number, not several values ("each player has points").
+COUNT_NOUNS = set('''points units cents credits coins likes votes views stars wins losses lives hits steps
+ days hours minutes seconds years months weeks goals runs sales visits clicks orders_count'''.split())
+
 UNSUPPORTED_TYPES = {'decimal', 'float', 'real', 'fraction', 'date', 'boolean', 'bool', 'money', 'currency'}
 
 
@@ -191,6 +195,9 @@ def singular(w):
     if len(w) > 2 and w.endswith('s') and not w.endswith(('ss', 'us', 'is')):
         return w[:-1]
     return w
+
+
+CONVENTION.update({singular(w): 'int' for w in COUNT_NOUNS})
 
 
 def all_known_words():
