@@ -1,0 +1,17 @@
+# The experiment the conversation ended on.
+Customers is a collection.
+Each customer has a name, an age and an email.
+Emails are unique.
+Reject duplicates.
+
+Add a customer.
+Find a customer by email.
+Remove a customer by email.
+Retrieve all customers.
+
+For every customer, double their age.
+adults: the names of customers whose age is at least 18.
+How many customers are there?
+What is the average age?
+Show the customers sorted by age, largest first.
+Keep only the customers whose age is under a given limit.
