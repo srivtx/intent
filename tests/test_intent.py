@@ -1205,7 +1205,7 @@ class TestLive(TestNativeAgainstReference):
                           ('The game is over.', 'when is the game over?'),
                           ('The board is 30 wide.', 'how high is the board?'),
                           ('The board is 30 wide and 500 high.',
-                           'a board can be at most 200 wide and 60 high in this version'),
+                           'a board can be at most 400 wide and 200 high in this version'),
                           ('Draw each rock as "#".', 'where should it be drawn?'),
                           ('Draw each rock at its x and y.', 'what should it look like?'),
                           ('Draw each rock at its x and y as "##".', 'one thing is drawn as one plain character'),
@@ -2532,6 +2532,77 @@ class TestArt(unittest.TestCase):
         self.assertIn('<title>two &amp; more</title>', dots)
         self.assertEqual(picture(m, 'glyphs').count('<text '), 3)
         self.assertIn('fill-opacity', picture(m, 'blocks'))                      # a "." carries little ink
+
+
+FIGURES = (
+    'The board is 24 wide and 12 high.\n'
+    'The background is light yellow.\n\n'
+    'A flower looks like this, where r is crimson, y is gold and g is forest green:\n'
+    '    .rrr.\n    rryrr\n    .rrr.\n    ..g..\n    g.g.g\n    .ggg.\n\n'
+    'A sign looks like:\n    +---+\n    |HI!|\n    +---+\n\n'
+    'Blooms have an x (number) and a y (number).\n'
+    'At the start there is a bloom for every x from 0 to 3 and every y from 1 to 1.\n'
+    'Every second, increase the y of each bloom by 1.\n'
+    'When the left key is pressed, decrease the x of each bloom by 1.\n'
+    'Draw each bloom as a flower at its x times 7 minus 2 and its y.\n'
+    'Draw a sign at 21 and 9.\n'
+    'The title is text that starts as "Spring garden".\n'
+    'When the space key is pressed, the title becomes "Light Blue rain".\n'
+    'Write the title at 2 and 11 in dark olive green.\n'
+    'Write "  a b!" at 15 and 12 in "#FF1493".\n'
+    'Write "overflowing text" at 18 and 1.\n'
+    'Dots have an x (number) and a hue (text).\n'
+    'At the start there is a dot whose x is 1 and whose hue is "Dark Orange".\n'
+    'At the start there is a dot whose x is 2 and whose hue is "white smoke".\n'
+    'At the start there is a dot whose x is 3 and whose hue is "RED".\n'
+    'At the start there is a dot whose x is 4 and whose hue is "#ABCDEF".\n'
+    'At the start there is a dot whose x is 5 and whose hue is "#ABCDEG".\n'
+    'At the start there is a dot whose x is 6 and whose hue is "".\n'
+    'At the start there is a dot whose x is 7 and whose hue is "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".\n'
+    'When the up key is pressed, set the hue of each dot to "light   goldenrod yellow".\n'
+    'Draw each dot as "o" in its hue at its x and 12.\n'
+)
+
+
+class TestPictures(unittest.TestCase):
+    """Any colour, pictures drawn by hand, written text and a background: what images are made of."""
+    setUpClass = classmethod(TestNativeAgainstReference.setUpClass.__func__)
+    tearDownClass = classmethod(TestNativeAgainstReference.tearDownClass.__func__)
+    script = TestLive.script
+
+    def test_colour_names(self):
+        from intentc.ir import RGB, colour_value
+        self.assertEqual([colour_value(t) for t in ('red', 'Light Blue', 'white smoke', '#FF8800', '#ff88', 'zz', '')],
+                         [31, RGB | 0xadd8e6, RGB | 0xf5f5f5, RGB | 0xff8800, 0, 0, 0])
+
+    def test_native_matches_reference(self):
+        _, out = self.script('figures', FIGURES, ['picture', 'wait 2000', 'press left', 'picture', 'press space',
+                                                  'press up', 'picture', 'screen'])
+        cut = out.index('~')
+        self.assertEqual(out[1], '|#    ###    ###  overflo|')            # figures cut by the edge, text running off it
+        self.assertEqual(out[cut + 12], '#ff8c00#f5f5f5r#abcdef............#ff1493.#ff1493#ff1493....')
+
+    def test_reading(self):
+        prog, diags, _ = understand('', FIGURES)
+        self.assertEqual(diags, [])
+        self.assertEqual(prog.figures['flower'].legend, {'r': 'crimson', 'y': 'gold', 'g': 'forestgreen'})
+        self.assertEqual(prog.background, 'lightyellow')
+        base = 'The board is 9 wide and 9 high.\n'
+        for text, msg in [('A blob looks like this, where r is reddish:\n    rr\n', "I don't know this colour"),
+                          ('A blob looks like this, where r is red:\n    rr\nDraw a blob in blue at 1 and 1.\n',
+                           'a picture has its own colours'),
+                          ('Draw "ab" at 1 and 1.\n', 'one thing is drawn as one plain character'),
+                          ('The background is bluish.\n', "I don't know this colour")]:
+            with self.subTest(text):
+                self.assertEqual(problem(text, base)[2].msg, msg)
+
+    def test_svg_background_and_words(self):
+        from intentc.svg import picture
+        prog, _, _ = understand('', FIGURES)
+        svg = picture(Machine(prog), 'blocks')
+        self.assertIn('fill="#ffffe0"', svg)                                  # light yellow paper
+        self.assertIn('>S</text>', svg)                                        # written words stay letters
+        self.assertIn('shape-rendering="crispEdges"', svg)
 
 
 class TestCrowdedNames(unittest.TestCase):

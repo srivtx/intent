@@ -7,11 +7,12 @@ a filled square, in the colour the program gave it.
 
 from xml.sax.saxutils import escape
 
-from .ir import COLOURS
+from .ir import COLOURS, RGB, colour_value
 
 # The terminal colours, as they are painted in a picture (0: drawn without a colour).
 PAINT = {0: '#ece8dc', 31: '#ff5a4e', 32: '#5ee07a', 33: '#ffd23f', 34: '#4c7dff', 35: '#ff6ad5',
          36: '#3fe0e8', 37: '#ffffff', 90: '#7d8290'}
+PAINT_RGB = {k: int(v[1:], 16) for k, v in PAINT.items()}
 PAPER = {'dark': ('#0d0f14', '#1b1f29'), 'light': ('#f6f3ea', '#e4dfd2')}
 STYLES = ('glyphs', 'dots', 'blocks')
 # How much ink a character carries, lightest first: a shading ramp drawn in dots becomes a halftone.
@@ -31,12 +32,21 @@ def picture(m, style='glyphs', paper='dark', cell=18, title=''):
     w, h = m.prog.board
     grid, ink = m.paint()
     bg, faint = PAPER[paper]
+    if m.prog.background:                   # the program's own: the empty dots are a shade of it
+        rgb = colour_value(m.prog.background)
+        rgb = PAINT_RGB[rgb] if rgb < RGB else rgb & 0xffffff
+        r, g, b = rgb >> 16, (rgb >> 8) & 255, rgb & 255
+        light = r * 299 + g * 587 + b * 114 > 128000
+        bg = f'#{rgb:06x}'
+        faint = '#%02x%02x%02x' % tuple(int(v * 0.9) if light else min(255, int(v + (255 - v) * 0.12)) for v in (r, g, b))
+        paper = 'light' if light else 'dark'
     plain = PAINT[0] if paper == 'dark' else '#22252d'
     cw, ch = (cell * 3 // 5, cell) if style == 'glyphs' else (cell, cell)
     pad = cell
     W, H = w * cw + 2 * pad, h * ch + 2 * pad
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
-           f'role="img" aria-label="{escape(title or "a picture drawn by an Intent program")}">',
+           f'role="img" aria-label="{escape(title or "a picture drawn by an Intent program")}"' +
+           (' shape-rendering="crispEdges">' if style == 'blocks' else '>'),
            f'<rect width="{W}" height="{H}" fill="{bg}"/>']
     if title:
         out.append(f'<title>{escape(title)}</title>')
@@ -52,10 +62,14 @@ def picture(m, style='glyphs', paper='dark', cell=18, title=''):
             c = grid[y][x]
             if c == ' ':
                 continue
-            colour = PAINT.get(ink[y][x], plain) if ink[y][x] else plain
+            k = ink[y][x]
+            colour = f'#{k & 0xffffff:06x}' if k >= RGB else PAINT.get(k, plain) if k else plain
             cx, cy = pad + x * cw + cw / 2, pad + y * ch + ch / 2
-            if style == 'glyphs':
-                out.append(f'<text x="{cx:g}" y="{cy:g}" fill="{colour}">{escape(c)}</text>')
+            if style == 'glyphs' or (x, y) in m.written:       # written words stay words in any style
+                out.append(f'<text x="{cx:g}" y="{cy:g}" fill="{colour}"' +
+                           ('' if style == 'glyphs' else f' font-family="ui-monospace,Menlo,Consolas,monospace" '
+                            f'font-size="{cell * 0.9:g}" font-weight="600" text-anchor="middle" '
+                            f'dominant-baseline="central"') + f'>{escape(c)}</text>')
             elif style == 'dots':
                 r = cell * 0.44 * max(0.3, weight(c)) ** 0.5     # the area of the dot follows the ink
                 out.append(f'<circle cx="{cx:g}" cy="{cy:g}" r="{r:.2f}" fill="{colour}"/>')

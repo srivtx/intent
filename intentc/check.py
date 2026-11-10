@@ -269,7 +269,7 @@ class Checker:
             if c.on_dup == 'replace' and len(c.unique_fields()) > 1:
                 self.d('error', c.on_dup_line, 'replacing duplicates with more than one unique property is not supported yet')
         self.unused_values()
-        if not P.tasks and not P.events and P.collections:
+        if not P.tasks and not P.events and not P.draws and P.collections:
             line = max(c.line for c in P.collections.values())
             self.d('note', line, 'this program describes information but nothing to do with it yet')
         for c in P.collections.values():

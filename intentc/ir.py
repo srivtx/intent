@@ -82,9 +82,31 @@ class Task:
     dec: bool = False                               # calc: the result is a decimal number
     pdec: set = _f(default_factory=set)          # the parameters that are decimal numbers
     ranges: list = _f(default_factory=list)      # seed: [(property, lowest, highest)], a record for each combination
+    spell: bool = False                             # draw: the whole text, one character a cell, rightward ("Write")
 
 
 STATE = '(values)'              # the hidden one-record collection that holds the program's single values
+
+
+@dataclass
+class Figure:
+    """A picture drawn by hand: rows of characters, and the colour some of them stand for."""
+    name: str
+    rows: list                  # strings, top row first
+    legend: dict                # character -> colour name or "#rrggbb"; None: that character draws nothing
+    line: int = 0
+
+    def cells(self):
+        """[(across, down, character drawn, colour or None)], counted from 0 at the top left."""
+        out = []
+        for j, row in enumerate(self.rows):
+            for i, ch in enumerate(row):
+                if ch in self.legend:
+                    if self.legend[ch] is not None:
+                        out.append((i, j, '#', self.legend[ch]))
+                elif ch not in ' .':
+                    out.append((i, j, ch, None))
+        return out
 
 
 @dataclass
@@ -98,6 +120,8 @@ class Program:
     seeds: list = _f(default_factory=list)       # records that are there from the start
     board: tuple = None                             # (width, height) in characters
     board_line: int = 0
+    figures: dict = _f(default_factory=dict)     # name -> Figure
+    background: str = None                          # the colour where nothing is drawn, in a picture
     above: list = _f(default_factory=list)       # single values shown over the board
     below: list = _f(default_factory=list)
 
@@ -296,8 +320,14 @@ FNNAME = {'sqrt': 'the square root of', 'dsqrt': 'the square root of', 'sin': 't
           'trunc': 'the whole part of', 'dtrunc': 'the whole part of'}
 
 
+def inked(prog):
+    """Is anything on the board drawn in a colour?"""
+    return any(d.colour or (isinstance(d.glyph, tuple) and d.glyph[0] == 'figure' and
+                            any(prog.figures[d.glyph[1]].legend.values())) for d in prog.draws)
+
+
 def fmt_glyph(g):
-    return f'"{g}"' if isinstance(g, str) else ('its ' if g[0] == 'field' else 'the ') + g[1]
+    return f'"{g}"' if isinstance(g, str) else {'field': 'its ', 'value': 'the ', 'figure': 'a '}[g[0]] + g[1]
 
 
 def draw_char(text):
@@ -325,7 +355,7 @@ def walk_expr(e):
 def task_exprs(t):
     """Every value a task computes or compares, at any depth."""
     tops = [e for _, e in t.assigns] + ([t.expr] if t.expr else []) + list(t.at or ()) + \
-        [x for x in (t.glyph, t.colour) if isinstance(x, tuple)]
+        [x for x in (t.glyph, t.colour) if isinstance(x, tuple) and x[0] != 'figure']
     return [e for top in tops for e in walk_expr(top)] + list(walk_cond_exprs(t.where))
 
 
@@ -496,6 +526,64 @@ MUTATING = ('add', 'remove_key', 'remove_where', 'update')
 # Colours a drawing can have, and the number a terminal knows each by.
 COLOURS = {'red': 31, 'green': 32, 'yellow': 33, 'blue': 34, 'magenta': 35, 'purple': 35, 'pink': 35,
            'cyan': 36, 'white': 37, 'grey': 90, 'gray': 90}
+
+# Every other colour is kept as its red, green and blue, marked by RGB so it can never be mistaken
+# for one of the terminal's own colours above: the 148 names of the web's colours, or "#rrggbb".
+RGB = 1 << 24
+NAMED = {
+    'aliceblue': 0xf0f8ff, 'antiquewhite': 0xfaebd7, 'aqua': 0x00ffff, 'aquamarine': 0x7fffd4, 'azure': 0xf0ffff,
+    'beige': 0xf5f5dc, 'bisque': 0xffe4c4, 'black': 0x000000, 'blanchedalmond': 0xffebcd, 'blue': 0x0000ff,
+    'blueviolet': 0x8a2be2, 'brown': 0xa52a2a, 'burlywood': 0xdeb887, 'cadetblue': 0x5f9ea0, 'chartreuse': 0x7fff00,
+    'chocolate': 0xd2691e, 'coral': 0xff7f50, 'cornflowerblue': 0x6495ed, 'cornsilk': 0xfff8dc, 'crimson': 0xdc143c,
+    'cyan': 0x00ffff, 'darkblue': 0x00008b, 'darkcyan': 0x008b8b, 'darkgoldenrod': 0xb8860b, 'darkgray': 0xa9a9a9,
+    'darkgreen': 0x006400, 'darkgrey': 0xa9a9a9, 'darkkhaki': 0xbdb76b, 'darkmagenta': 0x8b008b, 'darkolivegreen': 0x556b2f,
+    'darkorange': 0xff8c00, 'darkorchid': 0x9932cc, 'darkred': 0x8b0000, 'darksalmon': 0xe9967a, 'darkseagreen': 0x8fbc8f,
+    'darkslateblue': 0x483d8b, 'darkslategray': 0x2f4f4f, 'darkslategrey': 0x2f4f4f, 'darkturquoise': 0x00ced1, 'darkviolet': 0x9400d3,
+    'deeppink': 0xff1493, 'deepskyblue': 0x00bfff, 'dimgray': 0x696969, 'dimgrey': 0x696969, 'dodgerblue': 0x1e90ff,
+    'firebrick': 0xb22222, 'floralwhite': 0xfffaf0, 'forestgreen': 0x228b22, 'fuchsia': 0xff00ff, 'gainsboro': 0xdcdcdc,
+    'ghostwhite': 0xf8f8ff, 'gold': 0xffd700, 'goldenrod': 0xdaa520, 'gray': 0x808080, 'green': 0x008000,
+    'greenyellow': 0xadff2f, 'grey': 0x808080, 'honeydew': 0xf0fff0, 'hotpink': 0xff69b4, 'indianred': 0xcd5c5c,
+    'indigo': 0x4b0082, 'ivory': 0xfffff0, 'khaki': 0xf0e68c, 'lavender': 0xe6e6fa, 'lavenderblush': 0xfff0f5,
+    'lawngreen': 0x7cfc00, 'lemonchiffon': 0xfffacd, 'lightblue': 0xadd8e6, 'lightcoral': 0xf08080, 'lightcyan': 0xe0ffff,
+    'lightgoldenrodyellow': 0xfafad2, 'lightgray': 0xd3d3d3, 'lightgreen': 0x90ee90, 'lightgrey': 0xd3d3d3, 'lightpink': 0xffb6c1,
+    'lightsalmon': 0xffa07a, 'lightseagreen': 0x20b2aa, 'lightskyblue': 0x87cefa, 'lightslategray': 0x778899, 'lightslategrey': 0x778899,
+    'lightsteelblue': 0xb0c4de, 'lightyellow': 0xffffe0, 'lime': 0x00ff00, 'limegreen': 0x32cd32, 'linen': 0xfaf0e6,
+    'magenta': 0xff00ff, 'maroon': 0x800000, 'mediumaquamarine': 0x66cdaa, 'mediumblue': 0x0000cd, 'mediumorchid': 0xba55d3,
+    'mediumpurple': 0x9370db, 'mediumseagreen': 0x3cb371, 'mediumslateblue': 0x7b68ee, 'mediumspringgreen': 0x00fa9a, 'mediumturquoise': 0x48d1cc,
+    'mediumvioletred': 0xc71585, 'midnightblue': 0x191970, 'mintcream': 0xf5fffa, 'mistyrose': 0xffe4e1, 'moccasin': 0xffe4b5,
+    'navajowhite': 0xffdead, 'navy': 0x000080, 'oldlace': 0xfdf5e6, 'olive': 0x808000, 'olivedrab': 0x6b8e23,
+    'orange': 0xffa500, 'orangered': 0xff4500, 'orchid': 0xda70d6, 'palegoldenrod': 0xeee8aa, 'palegreen': 0x98fb98,
+    'paleturquoise': 0xafeeee, 'palevioletred': 0xdb7093, 'papayawhip': 0xffefd5, 'peachpuff': 0xffdab9, 'peru': 0xcd853f,
+    'pink': 0xffc0cb, 'plum': 0xdda0dd, 'powderblue': 0xb0e0e6, 'purple': 0x800080, 'rebeccapurple': 0x663399,
+    'red': 0xff0000, 'rosybrown': 0xbc8f8f, 'royalblue': 0x4169e1, 'saddlebrown': 0x8b4513, 'salmon': 0xfa8072,
+    'sandybrown': 0xf4a460, 'seagreen': 0x2e8b57, 'seashell': 0xfff5ee, 'sienna': 0xa0522d, 'silver': 0xc0c0c0,
+    'skyblue': 0x87ceeb, 'slateblue': 0x6a5acd, 'slategray': 0x708090, 'slategrey': 0x708090, 'snow': 0xfffafa,
+    'springgreen': 0x00ff7f, 'steelblue': 0x4682b4, 'tan': 0xd2b48c, 'teal': 0x008080, 'thistle': 0xd8bfd8,
+    'tomato': 0xff6347, 'turquoise': 0x40e0d0, 'violet': 0xee82ee, 'wheat': 0xf5deb3, 'white': 0xffffff,
+    'whitesmoke': 0xf5f5f5, 'yellow': 0xffff00, 'yellowgreen': 0x9acd32,
+}
+COLOUR_NAMES = sorted(set(NAMED) | set(COLOURS))      # what a text may name, in byte order (searched natively)
+
+
+def colour_value(text):
+    """The ink a text names: a terminal colour, RGB | the colour, or 0 for none. A name is one of the web's,
+    read without spaces or capitals ("Light Blue" is "lightblue"); a colour can also be "#" and six
+    hexadecimal digits."""
+    if len(text) == 7 and text[0] == '#':
+        return RGB | int(text[1:], 16) if all(c in '0123456789abcdefABCDEF' for c in text[1:]) else 0
+    key = bytes(b + 32 if 65 <= b <= 90 else b for b in text.encode() if b != 32)
+    if len(key) > 40:
+        return 0
+    key = key.decode('latin-1')
+    if key in COLOURS:
+        return COLOURS[key]
+    return RGB | NAMED[key] if key in NAMED else 0
+
+
+def ink_text(code):
+    """How one cell's colour is written in a picture: a letter for a terminal colour, else #rrggbb."""
+    return f'#{code & 0xffffff:06x}' if code >= RGB else INK_LETTER[code]
+
 
 # "picture": the board for a page to paint. After the plain screen comes a line "~", then one
 # letter per cell saying its colour, then one more line while the game is over.

@@ -1,0 +1,20 @@
+# A poster: big squares in a diamond, each with a small square inside, and words.
+#   ./intent svg examples/art/poster.intent --after "wait 100" --style blocks
+# The board is cut into blocks six cells across; how many blocks a block is from the middle one
+# (across plus down) decides its colour, and the middle of every block gets a colour of its own.
+
+The board is 42 wide and 54 high.
+The background is sea green.
+Cells have an x (number), a y (number), a block (number), a look (text) and a hue (text).
+At the start there is a cell for every x from 0 to 41 and every y from 0 to 53, whose block is 0, whose look is " " and whose hue is "white".
+
+Every 100 milliseconds, set the block of each cell to the absolute value of (its x divided by 6 minus 3) plus the absolute value of (its y divided by 6 minus 4).
+Every 100 milliseconds, set the look of each cell to "#" if its block is under 3 and its y is at least 12, otherwise " ".
+Every 100 milliseconds, set the hue of each cell to "white smoke" if its x modulo 6 is between 2 and 3 and its y modulo 6 is between 2 and 3 and its block is not 1, otherwise "dark orange" if its x modulo 6 is between 2 and 3 and its y modulo 6 is between 2 and 3, otherwise "dark orange" if its block is 0, otherwise "antique white" if its block is 1, otherwise "deep sky blue".
+
+Draw each cell as its look in its hue at its x plus 1 and its y plus 1.
+Write "Pictures" at 3 and 3 in white.
+Write "in plain English" at 3 and 5 in white.
+Write "sines, squares," at 3 and 49 in white.
+Write "and sentences" at 3 and 51 in white.
+Write "intent" at 34 and 51 in white.

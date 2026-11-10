@@ -8,9 +8,9 @@ aggregates) is emitted here.
 from .interp import ROUNDS, UNSETTLED
 import sys
 
-from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, ENTER_PLAY, INK_LETTER, KEY_CODES, LEAVE_PLAY, LONGEST_STEP,
-                 LONGEST_WAIT, MUTATING, OVER, OVER_HINT, SINE, STATE, TEXT_OPS, TOO_SMALL, builtins, canon, decides_first,
-                 fmt_cond, fmt_event, fmt_expr, room, usage, uses_chance, walk_cond_exprs)
+from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOUR_NAMES, ENTER_PLAY, INK_LETTER, KEY_CODES, LEAVE_PLAY, LONGEST_STEP,
+                 LONGEST_WAIT, MUTATING, OVER, OVER_HINT, RGB, SINE, STATE, TEXT_OPS, TOO_SMALL, builtins, canon, decides_first,
+                 colour_value, fmt_cond, fmt_event, inked as has_ink, fmt_expr, room, usage, uses_chance, walk_cond_exprs)
 from .plan import narrow_settle
 from .web import HTML, MOST, PLAIN, ROOM, page, title_of
 
@@ -133,6 +133,7 @@ class Gen:
         self.prog, self.plan = prog, plan
         self.strs, self.globals, self.fns = {}, [], []
         self.others = {}                # conditions about another collection -> the function that answers each
+        self.figures_made = set()       # the pictures drawn by hand that already have a painting function
         self.outers = []                # while such a function is written: the collection it is asked from
 
     # ------------------------------------------------------------------ helpers
@@ -476,6 +477,158 @@ class Gen:
             return v, ty
         buf = f.var('[32 x i8]')
         return f.r(f'call ptr @decstr(i64 {v}, ptr {buf})'), 'text'
+
+    def writer(self, inked):
+        """@write(text, x, y, ink): every plain character of a text on the board, rightward from (x, y)."""
+        if '@write' in self.figures_made:
+            return '@write'
+        self.figures_made.add('@write')
+        w, h = self.prog.board
+        f = self.fn('@write', 'void', 'ptr %s, i64 %x, i64 %y, i32 %ink', 'write a text on the board, one character a cell')
+        i = f.var('i64', '0')
+        head, body, nxt, done = f.lab('head'), f.lab('char'), f.lab('next'), f.lab('done')
+        f.br(head)
+        f.at(head)
+        iv = f.load('i64', i)
+        ch = f.load('i8', f.r(f'getelementptr i8, ptr %s, i64 {iv}'))
+        f.cbr(f.r(f'icmp eq i8 {ch}, 0'), done, body)
+        f.at(body)
+        x = f.r(f'add i64 %x, {iv}')
+        plain = f.r(f'icmp ult i8 {f.r(f"sub i8 {ch}, 33")}, 94')
+        inx = f.r(f'and i1 {f.r(f"icmp sge i64 {x}, 1")}, {f.r(f"icmp sle i64 {x}, {w}")}')
+        iny = f.r(f'and i1 {f.r("icmp sge i64 %y, 1")}, {f.r(f"icmp sle i64 %y, {h}")}')
+        put = f.lab('put')
+        f.cbr(f.r(f'and i1 {plain}, {f.r(f"and i1 {inx}, {iny}")}'), put, nxt)
+        f.at(put)
+        pos = f.r(f'add i64 {f.r(f"mul i64 {f.r("sub i64 %y, 1")}, {w}")}, {f.r(f"sub i64 {x}, 1")}')
+        f.store('i8', ch, f.r(f'getelementptr i8, ptr @grid, i64 {pos}'))
+        if inked:
+            f.store('i32', '%ink', f.r(f'getelementptr i32, ptr @ink, i64 {pos}'))
+        f.br(nxt)
+        f.at(nxt)
+        f.store('i64', f.r(f'add i64 {iv}, 1'), i)
+        f.br(head)
+        f.at(done)
+        f.e('ret void')
+        return '@write'
+
+    def figure(self, name, inked):
+        """@figure.<name>(x, y): paint a picture drawn by hand with its top left corner at (x, y); only the
+        cells that land on the board are painted. Made once, from tables of its cells."""
+        fn = g('figure', name)
+        if fn in self.figures_made:
+            return fn
+        self.figures_made.add(fn)
+        cells = self.prog.figures[name].cells()
+        n, (w, h) = len(cells), self.prog.board
+        for tag, ty, vals in (('dx', 'i64', [c[0] for c in cells]), ('dy', 'i64', [c[1] for c in cells]),
+                              ('ch', 'i8', [ord(c[2]) for c in cells]),
+                              ('ink', 'i32', [colour_value(c[3]) if c[3] else 0 for c in cells])):
+            self.globals.append(f'{g("figure", name, tag)} = internal constant [{n} x {ty}] [' +
+                                ', '.join(f'{ty} {v}' for v in vals) + ']')
+        f = self.fn(fn, 'void', 'i64 %x, i64 %y', f'paint the picture "{name}" at (x, y)')
+
+        def cell(k, cont):
+            def at(tag, ty):
+                return f.load(ty, f.r(f'getelementptr [{n} x {ty}], ptr {g("figure", name, tag)}, i64 0, i64 {k}'))
+            x = f.r(f'add i64 %x, {at("dx", "i64")}')
+            y = f.r(f'add i64 %y, {at("dy", "i64")}')
+            inx = f.r(f'and i1 {f.r(f"icmp sge i64 {x}, 1")}, {f.r(f"icmp sle i64 {x}, {w}")}')
+            iny = f.r(f'and i1 {f.r(f"icmp sge i64 {y}, 1")}, {f.r(f"icmp sle i64 {y}, {h}")}')
+            self.guard(f, f.r(f'and i1 {inx}, {iny}'), cont)
+            pos = f.r(f'add i64 {f.r(f"mul i64 {f.r(f"sub i64 {y}, 1")}, {w}")}, {f.r(f"sub i64 {x}, 1")}')
+            f.store('i8', at('ch', 'i8'), f.r(f'getelementptr i8, ptr @grid, i64 {pos}'))
+            if inked:
+                f.store('i32', at('ink', 'i32'), f.r(f'getelementptr i32, ptr @ink, i64 {pos}'))
+        self.rows(f, None, cell, count=str(n))
+        f.e('ret void')
+        return fn
+
+    def colour_of(self):
+        """@colourof: the ink a text names (see ir.colour_value): a name, found by halving the sorted list of
+        names, or "#" and six hexadecimal digits; 0 if it names no colour."""
+        n = len(COLOUR_NAMES)
+        self.globals.append(f'@cnames = internal constant [{n} x ptr] [' +
+                            ', '.join(f'ptr {self.cstr(x)}' for x in COLOUR_NAMES) + ']')
+        self.globals.append(f'@cvals = internal constant [{n} x i32] [' +
+                            ', '.join(f'i32 {colour_value(x)}' for x in COLOUR_NAMES) + ']')
+        f = self.fn('@colourof', 'i32', 'ptr %s', 'the colour a text names, 0 if it names none')
+        hexa, named = f.lab('hex'), f.lab('named')
+        f.cbr(f.r(f'icmp eq i8 {f.load("i8", "%s")}, 35'), hexa, named)
+        f.at(hexa)
+        v = f.var('i32', str(RGB))
+        none = f.lab('none')
+        for k in range(1, 7):
+            c = f.load('i8', f.r(f'getelementptr i8, ptr %s, i64 {k}'))
+            dig = f.r(f'sub i8 {c}, 48')
+            low = f.r(f'sub i8 {f.r(f"or i8 {c}, 32")}, 87')      # a-f and A-F alike
+            isdig = f.r(f'icmp ult i8 {dig}, 10')
+            islet = f.r(f'and i1 {f.r(f"icmp uge i8 {low}, 10")}, {f.r(f"icmp ult i8 {low}, 16")}')
+            ok, bad = f.lab('digit'), f.lab('bad')
+            f.cbr(f.r(f'or i1 {isdig}, {islet}'), ok, bad)
+            f.at(bad)
+            f.br(none)
+            f.at(ok)
+            d = f.r(f'zext i8 {f.r(f"select i1 {isdig}, i8 {dig}, i8 {low}")} to i32')
+            f.store('i32', f.r(f'or i32 {f.r(f"shl i32 {f.load("i32", v)}, 4")}, {d}'), v)
+        end, good = f.lab('end'), f.lab('good')
+        f.br(end)
+        f.at(end)
+        f.cbr(f.r(f'icmp eq i8 {f.load("i8", f.r("getelementptr i8, ptr %s, i64 7"))}, 0'), good, none)
+        f.at(good)
+        f.e(f'ret i32 {f.r(f"or i32 {f.r(f"and i32 {f.load("i32", v)}, 16777215")}, {RGB}")}')
+        f.at(none)
+        f.e('ret i32 0')
+        f.at(named)                     # without spaces, in lower case, at most 40 characters
+        buf = '%cbuf'
+        f.allocas.append(f'  {buf} = alloca [41 x i8]')
+        src, dst = f.var('i64', '0'), f.var('i64', '0')
+        scan, look, keep, skip, full, ended = (f.lab(x) for x in ('scan', 'look', 'keep', 'skip', 'full', 'ended'))
+        f.br(scan)
+        f.at(scan)
+        sv = f.load('i64', src)
+        ch = f.load('i8', f.r(f'getelementptr i8, ptr %s, i64 {sv}'))
+        f.cbr(f.r(f'icmp eq i8 {ch}, 0'), ended, look)
+        f.at(look)
+        f.store('i64', f.r(f'add i64 {sv}, 1'), src)
+        f.cbr(f.r(f'icmp eq i8 {ch}, 32'), scan, keep)
+        f.at(keep)
+        dv = f.load('i64', dst)
+        f.cbr(f.r(f'icmp sge i64 {dv}, 40'), full, skip)
+        f.at(full)
+        f.e('ret i32 0')
+        f.at(skip)
+        upper = f.r(f'icmp ult i8 {f.r(f"sub i8 {ch}, 65")}, 26')
+        low = f.r(f'select i1 {upper}, i8 {f.r(f"add i8 {ch}, 32")}, i8 {ch}')
+        f.store('i8', low, f.r(f'getelementptr i8, ptr {buf}, i64 {dv}'))
+        f.store('i64', f.r(f'add i64 {dv}, 1'), dst)
+        f.br(scan)
+        f.at(ended)
+        f.store('i8', '0', f.r(f'getelementptr i8, ptr {buf}, i64 {f.load("i64", dst)}'))
+        lo, hi = f.var('i64', '0'), f.var('i64', str(n))
+        head, body, found, left, right, missing = (f.lab(x) for x in ('search', 'halve', 'found', 'left', 'right', 'missing'))
+        f.br(head)
+        f.at(head)
+        a, b = f.load('i64', lo), f.load('i64', hi)
+        f.cbr(f.r(f'icmp slt i64 {a}, {b}'), body, missing)
+        f.at(body)
+        mid = f.r(f'lshr i64 {f.r(f"add i64 {a}, {b}")}, 1')
+        name = f.load('ptr', f.r(f'getelementptr [{n} x ptr], ptr @cnames, i64 0, i64 {mid}'))
+        c = f.r(f'call i32 @strcmp(ptr {buf}, ptr {name})')
+        less = f.lab('less')
+        f.cbr(f.r(f'icmp eq i32 {c}, 0'), found, less)
+        f.at(less)
+        f.cbr(f.r(f'icmp slt i32 {c}, 0'), left, right)
+        f.at(left)
+        f.store('i64', mid, hi)
+        f.br(head)
+        f.at(right)
+        f.store('i64', f.r(f'add i64 {mid}, 1'), lo)
+        f.br(head)
+        f.at(found)
+        f.e(f'ret i32 {f.load("i32", f.r(f"getelementptr [{n} x i32], ptr @cvals, i64 0, i64 {mid}"))}')
+        f.at(missing)
+        f.e('ret i32 0')
 
     def maths(self):
         """Square roots and sines, in whole numbers only, so they come out the same everywhere (see ir.sine)."""
@@ -1232,18 +1385,11 @@ class Gen:
     def screen(self):
         w, h = self.prog.board
         self.globals.append(f'@grid = internal global [{w * h} x i8] zeroinitializer')
-        inked = any(d.colour for d in self.prog.draws)
+        inked = has_ink(self.prog)
         if inked:
-            self.globals.append(f'@ink = internal global [{w * h} x i8] zeroinitializer   ; the colour of each cell')
+            self.globals.append(f'@ink = internal global [{w * h} x i32] zeroinitializer   ; the colour of each cell')
         if any(isinstance(d.colour, tuple) for d in self.prog.draws):
-            f = self.fn('@colourof', 'i8', 'ptr %s', 'the colour a text names, 0 if it names none')
-            for name, code in COLOURS.items():
-                yes, no = f.lab('is'), f.lab('not')
-                f.cbr(f.r(f'icmp eq i32 {f.r(f"call i32 @strcmp(ptr %s, ptr {self.cstr(name)})")}, 0'), yes, no)
-                f.at(yes)
-                f.e(f'ret i8 {code}')
-                f.at(no)
-            f.e('ret i8 0')
+            self.colour_of()
         f = self.fn('@screen', params='i1 %live',
                     comment='draw the board as text: later sentences draw over earlier ones')
         home, clear, body = f.lab('home'), f.lab('clear'), f.lab('body')
@@ -1254,7 +1400,7 @@ class Gen:
         f.at(body)
         f.e(f'call ptr @memset(ptr @grid, i32 32, i64 {w * h})')
         if inked:
-            f.e(f'call ptr @memset(ptr @ink, i32 0, i64 {w * h})')
+            f.e(f'call ptr @memset(ptr @ink, i32 0, i64 {w * h * 4})')
         for d in self.prog.draws:
             c = self.prog.collections.get(d.coll)
 
@@ -1262,6 +1408,17 @@ class Gen:
                 self.guard(f, self.cond(f, d.where, c, rec, {}), cont)
                 x, _ = self.expr(f, d.at[0], c, rec, {})
                 y, _ = self.expr(f, d.at[1], c, rec, {})
+                if isinstance(d.glyph, tuple) and d.glyph[0] == 'figure':
+                    f.e(f'call void {self.figure(d.glyph[1], inked)}(i64 {x}, i64 {y})')
+                    return
+                if d.spell:
+                    text = self.cstr(d.glyph) if isinstance(d.glyph, str) else self.expr(f, d.glyph, c, rec, {})[0]
+                    if isinstance(d.colour, tuple):
+                        code = f.r(f'call i32 @colourof(ptr {self.expr(f, d.colour, c, rec, {})[0]})')
+                    else:
+                        code = str(colour_value(d.colour) if d.colour else 0)
+                    f.e(f'call void {self.writer(inked)}(ptr {text}, i64 {x}, i64 {y}, i32 {code})')
+                    return
                 inx = f.r(f'and i1 {f.r(f"icmp sge i64 {x}, 1")}, {f.r(f"icmp sle i64 {x}, {w}")}')
                 iny = f.r(f'and i1 {f.r(f"icmp sge i64 {y}, 1")}, {f.r(f"icmp sle i64 {y}, {h}")}')
                 self.guard(f, f.r(f'and i1 {inx}, {iny}'), cont)
@@ -1276,10 +1433,10 @@ class Gen:
                 f.store('i8', ch, f.r(f'getelementptr i8, ptr @grid, i64 {cell}'))
                 if inked and isinstance(d.colour, tuple):       # a colour named by a text: 0 if it names none
                     name, _ = self.expr(f, d.colour, c, rec, {})
-                    f.store('i8', f.r(f'call i8 @colourof(ptr {name})'), f.r(f'getelementptr i8, ptr @ink, i64 {cell}'))
+                    f.store('i32', f.r(f'call i32 @colourof(ptr {name})'), f.r(f'getelementptr i32, ptr @ink, i64 {cell}'))
                 elif inked:
-                    f.store('i8', str(COLOURS[d.colour] if d.colour else 0),
-                            f.r(f'getelementptr i8, ptr @ink, i64 {cell}'))
+                    f.store('i32', str(colour_value(d.colour) if d.colour else 0),
+                            f.r(f'getelementptr i32, ptr @ink, i64 {cell}'))
             if c and d.order:               # drawn in this order, so the last one drawn is the one on top
                 self.comparator(d, c)
                 n = f.load('i64', g(c.name, 'len'))
@@ -1329,11 +1486,20 @@ class Gen:
 
                 def cell(j, cont2):
                     at = f.r(f'add i64 {base}, {j}')
-                    code = f.r(f'zext i8 {f.load("i8", f.r(f"getelementptr i8, ptr @ink, i64 {at}"))} to i32')
-                    same, change = f.lab('same'), f.lab('change')
+                    code = f.load('i32', f.r(f'getelementptr i32, ptr @ink, i64 {at}'))
+                    same, change, rgb, basic, changed = (f.lab(x) for x in ('same', 'change', 'rgb', 'basic', 'changed'))
                     f.cbr(f.r(f'icmp eq i32 {code}, {f.load("i32", cur)}'), same, change)
                     f.at(change)
+                    f.cbr(f.r(f'icmp sge i32 {code}, {RGB}'), rgb, basic)
+                    f.at(rgb)
+                    red = f.r(f'and i32 {f.r(f"lshr i32 {code}, 16")}, 255')
+                    green = f.r(f'and i32 {f.r(f"lshr i32 {code}, 8")}, 255')
+                    self.printf(f, '\x1b[38;2;%d;%d;%dm', f'i32 {red}, i32 {green}, i32 {f.r(f"and i32 {code}, 255")}')
+                    f.br(changed)
+                    f.at(basic)
                     self.printf(f, '\x1b[%dm', f'i32 {code}')
+                    f.br(changed)
+                    f.at(changed)
                     f.store('i32', code, cur)
                     f.br(same)
                     f.at(same)
@@ -1600,14 +1766,20 @@ class Gen:
             w, h = P.board
             f.e('call void @screen(i1 false)')
             self.puts(f, '~')
-            inked = any(d.colour for d in P.draws)
+            inked = has_ink(P)
 
             def ink_line(i, cont):
                 def ink_cell(j, cont2):
                     code = '0'
                     if inked:
                         at = f.r(f'add i64 {f.r(f"mul i64 {i}, {w}")}, {j}')
-                        code = f.r(f'zext i8 {f.load("i8", f.r(f"getelementptr i8, ptr @ink, i64 {at}"))} to i32')
+                        code = f.load('i32', f.r(f'getelementptr i32, ptr @ink, i64 {at}'))
+                        rgb, basic = f.lab('rgb'), f.lab('basic')
+                        f.cbr(f.r(f'icmp sge i32 {code}, {RGB}'), rgb, basic)
+                        f.at(rgb)               # any other colour is written out: #rrggbb
+                        self.printf(f, '#%06x', f'i32 {f.r(f"and i32 {code}, 16777215")}')
+                        f.br(cont2)
+                        f.at(basic)
                     ch = '46'
                     for k, letter in INK_LETTER.items():
                         if k:

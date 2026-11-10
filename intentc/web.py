@@ -18,7 +18,8 @@ import socket
 import time
 from urllib.parse import unquote
 
-from .ir import LONGEST_STEP, OVER, builtins, usage, uses_chance
+from .ir import LONGEST_STEP, OVER, RGB, builtins, colour_value, usage, uses_chance
+from .svg import PAINT
 
 PLAIN = 'HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n'
 HTML = 'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n'
@@ -78,17 +79,20 @@ if (P.board) {
     const lines = text.split('\n'), cut = lines.indexOf('~');
     const top = lines.findIndex(l => l.startsWith('+'));
     const rows = lines.slice(top + 1, top + 1 + H).map(l => l.slice(1, 1 + W));
-    const inks = lines.slice(cut + 1, cut + 1 + H);
+    // a letter per cell for the terminal's colours, or #rrggbb for any other
+    const inks = lines.slice(cut + 1, cut + 1 + H).map(l => l.match(/#[0-9a-f]{6}|./g) || []);
     document.getElementById('above').textContent = lines.slice(0, top).join('   ');
     document.getElementById('below').textContent = lines.slice(top + H + 2, cut).join('   ');
     over = lines[cut + 1 + H] === P.over;
     g.clearRect(0, 0, W * cell, H * cell);
+    if (P.background) { g.fillStyle = P.background; g.fillRect(0, 0, W * cell, H * cell); }
     g.textAlign = 'center'; g.textBaseline = 'middle';
     g.font = '600 ' + Math.round(cell * 0.72) + 'px ui-monospace, Menlo, Consolas, monospace';
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const ch = (rows[y] || '')[x] || ' ';
       if (ch === ' ') continue;
-      const colour = INK[(inks[y] || '')[x]] || INK['.'], px = x * cell, py = y * cell;
+      const ink = (inks[y] || [])[x] || '.';
+      const colour = ink[0] === '#' ? ink : INK[ink] || INK['.'], px = x * cell, py = y * cell;
       g.fillStyle = colour;
       if (ch === '#') {                 // a filled cell: walls, bricks, blocks
         g.globalAlpha = 0.92; g.beginPath(); g.roundRect(px + 1, py + 1, cell - 2, cell - 2, cell * 0.18); g.fill();
@@ -133,7 +137,9 @@ if (P.board) {
 
 def page(prog, title):
     """The one page a served program shows. Everything in it comes from the program."""
-    info = {'board': list(prog.board) if prog.board else None, 'keys': prog.keys(), 'over': OVER,
+    bg = colour_value(prog.background) if prog.background else 0
+    info = {'background': f'#{bg & 0xffffff:06x}' if bg >= RGB else PAINT.get(bg) if bg else None,
+            'board': list(prog.board) if prog.board else None, 'keys': prog.keys(), 'over': OVER,
             'overHint': 'the game is over: Enter plays again', 'restart': bool(prog.ends)}
     esc = title.replace('&', '&amp;').replace('<', '&lt;')
     use = ' &nbsp;·&nbsp; '.join(u.replace('&', '&amp;').replace('<', '&lt;') for u in usage(prog))

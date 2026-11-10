@@ -237,7 +237,21 @@ One sentence makes a grid of records; each record says what it looks like and in
 `the sine of`, `the square root of` and `the absolute value of` are worked out in whole numbers,
 so the native program and the reference agree on every dot. It animates in a terminal or a
 window, and `./intent svg` saves a frame as a picture (as characters, halftone dots or blocks).
-[`examples/art/`](examples/art) has a cross-stitch egg, a halftone sun, orbits and rings, and the
+Pictures can also be drawn by hand, as rows of characters with a legend, in any of the web's
+colours, with words and a background:
+
+```
+A tulip looks like this, where r is crimson, p is hot pink and g is forest green:
+    r.r.r
+    rrprr
+    .rrr.
+    g.g.g
+Draw each spot as a tulip at its x times 10 and its y.
+Write "spring, in sentences" at 3 and 35 in dark olive green.
+```
+
+[`examples/art/`](examples/art) has a cross-stitch egg, a halftone sun, a meadow of sprites,
+textile motifs, a poster, orbits and rings, and the
 [gallery](https://intent.srivtx.xyz/gallery/) shows what each one draws.
 
 ## Values, decisions and rules
