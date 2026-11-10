@@ -1261,51 +1261,206 @@ class TestLive(TestNativeAgainstReference):
         whole = subprocess.run([exe], input='\n'.join(first + ['screen']) + '\n', capture_output=True, text=True)
         self.assertEqual(run(['screen']), whole.stdout)
 
-    @unittest.skipUnless(sys.platform != 'win32', 'needs a pseudo-terminal')
-    def test_playing_in_a_terminal(self):
+    def test_no_stray_word_is_ignored(self):
+        """Every one of these compiled before the sentences were tightened."""
+        for text in ['The board is draw 30 wide and 12 high.', 'The board board is 30 wide and 12 high.',
+                     'The board is 30 wide wide and 12 high.', 'The board is 30 by by 12.', 'The board is x 30 by 12.',
+                     'When the left key key is pressed, the score becomes 0.',
+                     'When the left key is is pressed, the score becomes 0.',
+                     'The board is 9 by 9. Draw x each rock at its x and y as "#".',
+                     'The board is 9 by 9. Draw score "@" at the column and 2.',
+                     'The is game is over when the lives are 0.',
+                     'Start with a rock at x is is 4, y 1.', 'Start with a rock at x when 4, y 1.',
+                     'The board is 9 by 9. Show the score the lives above the board.',
+                     'Every second, remove the rocks whose y is over under 3.',
+                     'The game is over when any rock has an x over equal to the column.',
+                     'The total when starts at 15.', 'The total starts at when 15.']:
+            with self.subTest(text):
+                _, diags, _ = understand(text, GAME + 'Drop: add a rock.\n')
+                self.assertTrue(diags, 'compiled, so a word was ignored')
+        level, where, d = problem('Show the rocks whose y is over under 3.', GAME)
+        self.assertEqual((level, where, d.msg), ('question', 'over under', '"over" or "under"?'))
+        prog, diags, _ = understand('Coins is a collection where score each coin has a worth (number). Add a coin.', GAME)
+        self.assertEqual(diags[0].msg, 'I don\'t see how "score" fits in')
+
+    def test_mangled_games_never_crash_the_compiler(self):
+        """Delete, insert, swap and cut words at random: the answer is a diagnosis or a program, never a traceback."""
+        from intentc.source import strip_comment
+        extra = ['every', 'second', 'when', 'pressed', 'key', 'the', 'at', 'as', 'board', 'draw', 'game', 'over',
+                 'is', '"#"', '3', 'and', 'its', 'left', 'start', 'with', 'each', 'if', 'by', 'wide', '@', ':', ',']
+        lines = [strip_comment(line) for line in self.dodge().split('\n')]
+        full = [i for i, line in enumerate(lines) if line.strip()]
+        rng = random.Random(7)
+        compiled = 0
+        for _ in range(150):
+            mangled = list(lines)
+            for _ in range(rng.choice([1, 2, 4])):
+                i = rng.choice(full)
+                w = mangled[i].split() or ['x']
+                j, k = rng.randrange(len(w)), rng.randrange(len(w))
+                op = rng.randrange(6)
+                if op == 0:
+                    del w[j]
+                elif op == 1:
+                    w.insert(j, rng.choice(extra))
+                elif op == 2:
+                    w[j] = rng.choice(extra)
+                elif op == 3:
+                    w[j], w[k] = w[k], w[j]
+                else:
+                    w = w[:j] if op == 4 else w[j:]
+                mangled[i] = ' '.join(w)
+            prog, diags, _ = understand('\n'.join(mangled), '')
+            if not diags:
+                compiled += 1
+                make_plan(prog)
+                m = Machine(prog)
+                for c in ['help', 'wait 1000', 'screen', 'press left', 'wait 77', 'screen']:
+                    m.run(c)
+        self.assertGreater(compiled, 3)
+
+    def test_odd_programs_natively(self):
+        cmds = ['help', 'wait 0', 'wait 1', 'wait 7', 'wait 13', 'wait 999', 'wait 3600000', 'wait 3600001', 'wait -5',
+                'wait', 'wait  5', 'wait 5 ', 'wait +5', 'wait 1e3', 'wait 99999999999999999999', 'press up', 'press 7',
+                'press enter', 'press q', 'press r', 'press', 'press  up', 'press UP', 'press left', 'screen',
+                'screen 4', 'n', 'bump 3', 'bump -9', 'add 2,1', 'add 5,2', 'add 9', 'add zed,4', 'add ann,1',
+                'remove-by-name ann', 'list', 'find-by-name bob', 'wait 4,5', 'again', 'clear', 'mood-turn', '']
+        programs = {
+            'timers': 'The n starts at 0. Show the n. Every 7 ms, the n increases by 1. Every 7 ms, the n doubles. '
+                      'When the n is over 1000, the n becomes 0.',
+            'keys': 'The n starts at 1. Show the n. When up is pressed, the n triples. When 7 is pressed, the n '
+                    'becomes 7. When the enter key is pressed, the n decreases by 1.',
+            'tiny': 'The board is 1 by 1. The n starts at 1. Draw "x" at the n and 1. Bump: increase the n by a '
+                    'given amount.',
+            'novalues': 'The board is 5 by 2. Dots have an x and a y. Add a dot. Draw each dot at its x and its y '
+                        'as "." . Draw "%" at 5 and 2. Draw "\\" at 1 and 1.',
+            'taken': 'The n starts at 0. Wait: increase the n by a given amount. Screen: show the n. Press: set the '
+                     'n to 5. Every second, the n increases by 1. When q is pressed, the n becomes 9. '
+                     'The board is 3 by 1. Draw "n" at the n and 1.',
+            'status': 'The board is 6 by 1. The mood starts as "calm". The high_score starts at 3. The turn is a '
+                      'number. Show the mood and the turn above the board. Show the high_score below the board. '
+                      'Every second, the turn increases by 1. When the turn is over 2, the mood becomes "wild". '
+                      'Draw "*" at the turn and 1.',
+            'stuck': 'The n starts at 0. Show the n. Every second, the n increases by 1. When the n is 2, the n '
+                     'becomes 3. When the n is 3, the n becomes 2.',
+            'ends': 'The n starts at 0. Show the n. Rocks have a y. Add a rock. Every 10 ms, the n increases by 1. '
+                    'Every 10 ms, the y of each rock increases by the n. The game ends when the n is over 20. '
+                    'The game is over when any rock has a y over 50. When r is pressed, the n becomes 0. '
+                    'Again: set the n to 0. Clear: remove the rocks whose y is over 0.',
+            'seeds': 'Players have a unique name and points. Reject duplicates. Keep the players in the order they '
+                     'were added. Start with a player whose name is "ann" and whose points are 3. Start with a '
+                     'player with name "bob", points 9. Add a player. Find a player by name. Remove a player by '
+                     'name. Show the players. Every second, the points of each player increase by 1. '
+                     'Every 3 seconds, remove the players whose points are over 12.',
+            'wrap': 'The n starts at 9000000000000000000. Show the n. Every ms, the n increases by the n. The '
+                    'board is 4 by 2. Draw "o" at the n and the n divided by 2. Draw "p" at 2 minus the n and 1.',
+        }
+        for name, text in programs.items():
+            with self.subTest(name):
+                rng = random.Random(name)
+                self.script(name, text, [rng.choice(cmds) for _ in range(250)])
+
+    def in_a_terminal(self, cmd, keys, rows=30, cols=80, settle=0.7):
+        """Run cmd on a pseudo-terminal of the given size, type keys (bytes, or a signal number), and report."""
+        import fcntl
         import pty
-        import re
         import select
+        import struct
+        import termios
         import time
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+        before = termios.tcgetattr(master)
+        pid = os.fork()
+        if pid == 0:
+            os.setsid()
+            for fd in (0, 1, 2):
+                os.dup2(slave, fd)
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            os.execv(cmd[0], cmd)
+        os.close(slave)
+        out = b''
+
+        def pump(seconds):
+            nonlocal out
+            end = time.time() + seconds
+            while time.time() < end:
+                if select.select([master], [], [], 0.05)[0]:
+                    try:
+                        out += os.read(master, 65536)
+                    except OSError:
+                        return
+        pump(settle)
+        for key in keys:
+            try:
+                if isinstance(key, int):
+                    os.kill(pid, key)
+                else:
+                    for part in key if isinstance(key, tuple) else (key,):
+                        os.write(master, part)
+                        time.sleep(0.008)
+            except OSError:
+                break                   # it has already stopped
+            pump(0.15)
+        pump(0.5)
+        after = termios.tcgetattr(master)
+        _, status = os.waitpid(pid, 0)
+        os.close(master)
+        return status, out.decode().replace('\r', ''), after == before
+
+    def walk(self):
         exe, _ = self.script('walk', (
             'The board is 30 wide and 3 high. The column starts at 15. The score is a number.\n'
             'Every 200 milliseconds, the score goes up by 1.\n'
             'When the left key is pressed, the column decreases by 1.\n'
             'When the right key is pressed, the column increases by 1.\n'
             'Draw "@" at the column and 2. Show the score above the board.\n'), ['screen'])
-        for cmd in ([exe], [sys.executable, os.path.join(ROOT, 'intent'), 'run', os.path.join(self.dir, 'walk.intent')]):
-            with self.subTest(cmd[0]):
-                pid, fd = pty.fork()
-                if pid == 0:
-                    os.execv(cmd[0], cmd)
-                out = b''
+        return [exe], [sys.executable, os.path.join(ROOT, 'intent'), 'run', os.path.join(self.dir, 'walk.intent')]
 
-                def pump(seconds):
-                    nonlocal out
-                    end = time.time() + seconds
-                    while time.time() < end:
-                        if select.select([fd], [], [], 0.05)[0]:
-                            try:
-                                out += os.read(fd, 65536)
-                            except OSError:
-                                return
-                pump(1.6)
-                for key in (b'\x1b[D', b'\x1b[D', b'\x1b[C', b'\x1b[D'):
-                    os.write(fd, key)
-                    pump(0.15)
-                os.write(fd, b'q')
-                pump(0.5)
-                _, status = os.waitpid(pid, 0)
-                os.close(fd)
-                self.assertEqual(status, 0)
-                frames = [re.sub(r'\x1b\[[0-9?]*[A-Za-z]', '', f).replace('\r', '')
-                          for f in out.decode().split('\x1b[H')[1:]]
+    @unittest.skipUnless(sys.platform != 'win32', 'needs a pseudo-terminal')
+    def test_playing_in_a_terminal(self):
+        import re
+        for cmd in self.walk():
+            with self.subTest(cmd[0]):
+                status, out, restored = self.in_a_terminal(
+                    cmd, [b'\x1b[D', b'\x1b[D', b'\x1b[C', b'\x1b[D', b'q'], settle=1.6)
+                self.assertEqual((status, restored), (0, True))
+                played, _, after = out.partition('\x1b[?1049l')         # its own screen, then back to the terminal
+                self.assertTrue(played.startswith('\x1b[?1049h'))
+                frames = [re.sub(r'\x1b\[[0-9?]*[A-Za-z]', '', f) for f in played.split('\x1b[H')[1:]]
                 self.assertGreater(len(frames), 8)                  # time passed without any key
                 self.assertTrue(frames[0].startswith('score 0\n+' + '-' * 30 + '+\n'))
                 self.assertGreater(int(frames[-1].split('\n')[0].split()[1]), 5)    # the clock really ran
                 player = [line.index('@') for line in frames[-1].split('\n') if '@' in line]
                 self.assertEqual(player, [13])                      # from 15: two left, one right, one left
+                self.assertEqual(after.strip('\n'), frames[-1].strip('\n'))         # the last board stays visible
 
+    @unittest.skipUnless(sys.platform != 'win32', 'needs a pseudo-terminal')
+    def test_the_terminal_always_comes_back(self):
+        import signal
+        for cmd in self.walk():
+            for how, keys in [('Ctrl-C', [b'\x03']), ('Esc', [b'\x1b']), ('asked to stop', [signal.SIGTERM]),
+                              ('hang-up', [signal.SIGHUP]), ('an arrow key in two parts, then q', [(b'\x1b', b'[D'), b'q'])]:
+                with self.subTest(cmd[0] + ' ' + how):
+                    status, out, restored = self.in_a_terminal(cmd, keys)
+                    self.assertTrue(restored, 'the terminal was left changed')
+                    self.assertEqual(status, 0)
+                    self.assertIn('\x1b[?1049l', out)
+                    if how.startswith('an arrow'):
+                        self.assertEqual([line.index('@') for line in out.split('\x1b[?1049l')[1].split('\n')
+                                          if '@' in line], [14])
+
+    @unittest.skipUnless(sys.platform != 'win32', 'needs a pseudo-terminal')
+    def test_a_terminal_too_small_is_refused(self):
+        for cmd in self.walk():
+            for rows, cols in [(5, 80), (30, 31)]:
+                with self.subTest(f'{cmd[0]} {cols}x{rows}'):
+                    status, out, restored = self.in_a_terminal(cmd, [], rows, cols, settle=0.8)
+                    self.assertEqual(out, f'this board needs a terminal at least 32 wide and 7 high; this one is '
+                                          f'{cols} wide and {rows} high\n')
+                    self.assertEqual((os.waitstatus_to_exitcode(status), restored), (1, True))
+            status, out, _ = self.in_a_terminal(cmd, [b'q'], 7, 32)
+            self.assertIn('\x1b[?1049h', out)                       # exactly big enough: it plays
 
 if __name__ == '__main__':
     unittest.main()
