@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you refer to Intent in research or writing, please cite it like this."
+title: "Intent: a deterministic compiler from plain English to native code"
+abstract: >-
+  Intent is an experimental programming language in which a program states what information
+  exists and what should be possible with it, in ordinary English sentences. A deterministic
+  compiler, with no machine learning in it, chooses data structures and algorithms and emits
+  LLVM IR. Unknown words and ambiguous sentences stop compilation with a question instead of
+  a guess. A reference interpreter defines the meaning, and the native code is tested against
+  it on random commands.
+type: software
+authors:
+  - alias: srivtx
+repository-code: "https://github.com/srivtx/intent"
+url: "https://intent.srivtx.xyz"
+keywords:
+  - programming language
+  - natural language programming
+  - controlled natural language
+  - compiler
+  - LLVM
+  - program synthesis
+  - data structure selection
+version: 0.8.0
+date-released: "2026-11-11"
