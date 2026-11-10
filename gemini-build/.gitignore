@@ -1,0 +1,12 @@
+.DS_Store
+build-01-nexus-exchange/nexus
+build-02-collatz-and-physics-alu/physics_alu
+build-03-relational-join-and-transactions/ledger_service
+build-04-compiler-bug-hunt/bug1_not_between
+build-04-compiler-bug-hunt/bug3_and_4_runtime
+build-05-performance-cliff-stress-test/fast_unordered
+build-05-performance-cliff-stress-test/slow_ordered
+build-05-performance-cliff-stress-test/deep_pipeline
+build-06-observability-timeseries-db/tsdb
+build-07-graphics-mandelbrot-and-raytracer/graphics_engine
+build-08-server-pipe-deadlock-and-rpc/session_server
