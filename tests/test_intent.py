@@ -11,6 +11,7 @@ and for the flexibility added after the first version:
   8. The example apps, and remembering between runs                (TestApps)
   9. Bugs found by the gemini-build stress experiments stay fixed  (TestStressFindings)
  10. Relationships between collections                             (TestRelationships)
+ 11. Calculations, single values and standing rules                (TestThinking)
 """
 import os
 import random
@@ -226,7 +227,7 @@ class TestQuestions(unittest.TestCase):
         self.assertEqual(problem('Show customers whose name is over 5.', base)[0], 'error')
 
     def test_division_by_possible_zero(self):
-        self.assertEqual(problem('Divide the salary by the age.')[0], 'error')
+        self.assertEqual(problem('Divide the salary by the age.')[0], 'question')
 
     def test_unknown_property(self):
         level, at, _ = problem('Double the height.')
@@ -883,6 +884,167 @@ class TestDescribing(TestNativeAgainstReference):
 
     def test_native(self):
         self.differential('many', MANY, seeds=5, n=500)
+
+
+
+class TestThinking(TestNativeAgainstReference):
+    """Calculations that decide, single values, and rules that apply by themselves."""
+
+    def run_ref(self, text, cmds):
+        prog, diags, _ = understand('', text)
+        self.assertEqual([d.msg for d in diags], [])
+        m = Machine(prog)
+        return [o for c in cmds for o in m.run(c)]
+
+    def test_one_letter_inputs(self):
+        for text in ['Sum: take a number a and a number b and return a plus b.',
+                     'Sum: take two numbers a and b and return a plus b.',
+                     'Sum: take a and b and return a plus b.',
+                     'Sum: take a and b, then return a + b.']:
+            with self.subTest(text):
+                self.assertEqual(meaning(text, ''), 'calc(a, b) = <a> + <b>')
+
+    def test_either_or_value(self):
+        want = 'calc(a, b) = <a> if <a> > <b> else <b>'
+        for text in ['Bigger: take a and b and return a if a is over b, otherwise b.',
+                     'Bigger: take a and b and return a when a is more than b, else b.',
+                     'Bigger: take a and b, if a is greater than b then return a, otherwise return b.',
+                     'Bigger: take a and b and give back a if a > b or else b.']:
+            with self.subTest(text):
+                self.assertEqual(meaning(text, ''), want)
+        self.assertEqual(meaning('Sign: take n and return 1 if n is over 0, otherwise -1 if n is under 0, otherwise 0.', ''),
+                         'calc(n) = 1 if <n> > 0 else (-1 if <n> < 0 else 0)')
+
+    def test_half_a_decision_is_a_question(self):
+        level, at, d = problem('Bigger: take a and b and return a if a is over b.', '')
+        self.assertEqual((level, d.msg), ('question', 'and what if not?'))
+
+    def test_division_asks_about_zero(self):
+        level, _, d = problem('Share: take a and b and return a divided by b.', '')
+        self.assertEqual((level, d.msg), ('question', 'what should happen when the given b is zero?'))
+        for ok in ['Share: take a and b and return a divided by b if b is not 0, otherwise 0.',
+                   'Share: take a and b and return 0 if b is 0, otherwise a divided by b.',
+                   'Share: take a and b and return a divided by b if b is over 0, otherwise 1.']:
+            with self.subTest(ok):
+                self.assertEqual(understand(ok, '')[1], [])
+        self.assertEqual(understand('Halve the salary if the age is not 0.')[1], [])
+        self.assertEqual(understand('Divide the salary by the age if the age is not 0.')[1], [])
+
+    def test_either_or_in_a_change(self):
+        self.assertEqual(meaning('Set the salary to 100 if the age is over 30, otherwise 50.'),
+                         'update customer: salary = 100 if age > 30 else 50')
+        self.assertEqual(meaning('Set the salary to 100 if the age is over 30, otherwise set the salary to 50.'),
+                         'update customer: salary = 100 if age > 30 else 50')
+        self.assertEqual(problem('Show the customers, otherwise 5.')[0], 'error')
+
+    def test_declaring_values(self):
+        for text, typ, init in [('The score is a number.', 'int', 0), ('The score starts at 7.', 'int', 7),
+                                ('The score is 7.', 'int', 7), ('The title is text.', 'text', ''),
+                                ('The high score is a number that starts at 3.', 'int', 3),
+                                ('The mood starts as "calm".', 'text', 'calm')]:
+            with self.subTest(text):
+                prog, diags, _ = understand(text, '')
+                self.assertEqual(diags, [])
+                f = next(iter(prog.collections['(values)'].fields.values()))
+                self.assertEqual((f.type, f.init), (typ, init))
+        prog, diags, _ = understand('The score is a number. The scroe starts at 5.', '')    # a slip, not a new value
+        self.assertEqual((diags, [(f.name, f.init) for f in prog.collections['(values)'].fields.values()]),
+                         ([], [('score', 5)]))
+        self.assertEqual(problem('The age is 5.')[0], 'error')
+
+    def test_using_values(self):
+        base = 'The score starts at 2.\nThe limit is 30.\n'
+        self.assertEqual(meaning('Bump: increase the score by a given amount.', base), 'set score = score + <amount>')
+        self.assertEqual(meaning('Double the score.', base), 'set score = score * 2')
+        self.assertEqual(meaning('Show the score and the limit.', base), 'show score, limit')
+        self.assertEqual(meaning('Show customers whose age is over the limit.', BASE + base),
+                         'list all of customer where age > limit')
+        self.assertEqual(problem('Remove the score.', base)[0], 'error')
+        prog, _, _ = understand('Bump: increase the score by a given amount. Show the score.', base)
+        self.assertEqual([t.name for t in prog.tasks], ['bump', 'score'])
+
+    def test_rules_are_not_commands(self):
+        base = BASE + 'The best starts at 0.\n'
+        for text, want in [('When a customer\'s age is over 64, their salary becomes 0.',
+                            'update customer: salary = 0 where age > 64'),
+                           ('Whenever the age of a customer is over 64, set the salary to 0.',
+                            'update customer: salary = 0 where age > 64'),
+                           ('As soon as a customer\'s salary is under 0, remove them.',
+                            'remove customer where salary < 0'),
+                           ('The best is always 10 if a given x is under 10, otherwise 20.', None),
+                           ('When the best is under 5, the best becomes 5.', 'set best = 5 where best < 5')]:
+            with self.subTest(text):
+                prog, diags, _ = understand(text, base)
+                if want is None:
+                    self.assertEqual([d.level for d in diags], ['error'])
+                    continue
+                self.assertEqual(diags, [])
+                self.assertEqual((prog.tasks, [canon(r) for r in prog.rules]), ([], [want]))
+        # a name makes it a capability again
+        prog, _, _ = understand('Retire: when a customer\'s age is over 64, their salary becomes 0.', base)
+        self.assertEqual((len(prog.tasks), len(prog.rules)), (1, 0))
+
+    def test_a_rule_must_come_to_rest(self):
+        level, _, d = problem('When a customer\'s age is under 18, increase the age by 1.')
+        self.assertEqual(level, 'error')
+        self.assertIn('again every time', d.msg)
+        self.assertEqual(problem('When the age is over 5, show the customers.')[0], 'error')
+
+    def test_rules_apply_until_nothing_changes(self):
+        text = ('The score starts at 0. The level starts at 1. The mood starts as "calm".\n'
+                'Hit: increase the score by a given amount. Status: show the score, the level and the mood.\n'
+                'When the level is 2, the mood becomes "excited".\n'       # written first, still follows
+                'When the score is at least 10, the level becomes 2.\n')
+        self.assertEqual(self.run_ref(text, ['status', 'hit 4', 'status', 'hit 6', 'status']),
+                         ['0,1,calm', '4,1,calm', '10,2,excited'])
+
+    def test_rules_that_fight_are_reported(self):
+        text = ('The x starts at 0. Poke: set the x to 1.\n'
+                'When the x is 1, the x becomes 2. When the x is 2, the x becomes 1.')
+        self.assertEqual(self.run_ref(text, ['poke']), ['error: the rules keep changing each other'])
+        self.differential('fight', text, seeds=1, n=5)
+
+    def test_rules_hold_from_the_start(self):
+        text = 'The floor starts at 3. The x starts at 0. Show the x. When the x is under the floor, the x becomes the floor.'
+        self.assertEqual(self.run_ref(text, ['x']), ['3'])
+        self.differential('start', text, seeds=1, n=5)
+
+    def test_calculator_natively(self):
+        with open(os.path.join(ROOT, 'examples', 'calculator.intent')) as fh:
+            self.differential('calculator', fh.read(), seeds=4, n=400)
+
+    def test_arcade_natively(self):
+        with open(os.path.join(ROOT, 'examples', 'arcade.intent')) as fh:
+            self.differential('arcade', fh.read(), seeds=6, n=400)
+
+    def test_rules_over_related_records_natively(self):
+        self.differential('rules', (
+            'Customers have a unique name and a balance. Reject duplicates.\n'
+            'Orders have a number (number), a total and a state (text). Each order belongs to a customer.\n'
+            'When a customer is removed, remove its orders.\n'
+            'The limit starts at 50.\n'
+            'Add a customer. Add an order. Remove a customer by name.\n'
+            'Charge: increase the balance of the customer with a given name by a given amount.\n'
+            'Raise: set the limit to a given amount.\n'
+            'Show the customers. Show the orders. Show the limit.\n'
+            'Mark: set the state to "big" if the total is over the limit, otherwise "small".\n'
+            'Whenever a customer\'s balance is under 0, remove them.\n'
+            'When an order\'s total is over 100, its state becomes "huge".\n'
+            'When the limit is under 10, the limit becomes 10.'), seeds=6, n=400)
+
+    def test_values_are_remembered(self):
+        src, exe = os.path.join(self.dir, 'v.intent'), os.path.join(self.dir, 'v')
+        log = os.path.join(self.dir, 'v.log')
+        with open(src, 'w') as fh:
+            fh.write('The score starts at 5. The best starts at 0. Hit: increase the score by a given amount. '
+                     'Show the score and the best. When the score is over the best, the best becomes the score.')
+        build(src, exe, quiet=True)
+
+        def run(text):
+            return subprocess.run([exe, log], input=text, capture_output=True, text=True).stdout
+
+        self.assertEqual(run('score-best\nhit 4\n'), '5,5\n')
+        self.assertEqual(run('hit -7\nscore-best\n'), '2,9\n')
 
 
 if __name__ == '__main__':
