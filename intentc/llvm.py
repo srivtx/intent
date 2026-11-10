@@ -6,7 +6,8 @@ for I/O, memory and sorting; everything else (records, hash indexes, loops, filt
 aggregates) is emitted here.
 """
 from .interp import ROUNDS, UNSETTLED
-from .ir import MUTATING, STATE, TEXT_OPS, canon, usage
+from .ir import (BAD_WAIT, KEY_CODES, LONGEST_STEP, LONGEST_WAIT, MUTATING, OVER, STATE, TEXT_OPS, builtins, canon,
+                 fmt_event, usage)
 
 LL = {'int': 'i64', 'text': 'ptr'}
 FNV_OFFSET = -3750763034362895579      # 14695981039346656037 as a signed 64-bit value
@@ -41,6 +42,16 @@ declare i32 @dup(i32)
 declare i32 @dup2(i32, i32)
 declare i32 @close(i32)
 declare i32 @open(ptr, i32, ...)
+'''
+LIVE_DECLS = '''declare ptr @memset(ptr, i32, i64)
+declare i32 @isatty(i32)
+declare i32 @system(ptr)
+declare i32 @poll(ptr, i64, i32)
+declare i64 @read(i32, ptr, i64)
+declare i32 @gettimeofday(ptr, ptr)
+declare ptr @signal(i32, ptr)
+declare void @exit(i32)
+declare i32 @fprintf(ptr, ptr, ...)
 '''
 
 
@@ -592,7 +603,8 @@ class Gen:
         cp = self.plan.colls.get(t.coll)
         cost, how = self.plan.tasks[t.name]
         f = self.fn(g('rule' if rule else 'task', t.name), params='ptr %arg',
-                    comment=f'line {t.line}: {t.text}\nmeaning: {canon(t)}\nplan: {how}; {cost}')
+                    comment=f'line {t.line}: {t.text}\nmeaning: {fmt_event(t) if t.on else canon(t)}\n'
+                            f'plan: {how}; {cost}')
         vals = self.params(f, t)
         C = t.coll
         k = t.kind
@@ -806,6 +818,324 @@ class Gen:
         r = f.r(f'select i1 {gt}, i32 {hi}, i32 {tie}')
         f.e(f'ret i32 {f.r(f"select i1 {lt}, i32 {lo}, i32 {r}")}')
 
+    # ------------------------------------------------------------------ time, keys and the board
+    def settled(self, f):
+        if self.prog.rules:
+            f.e('call void @settle()')
+
+    def over(self):
+        f = self.fn('@over', 'i1', comment='is the game over? true while any ending holds for any record')
+        for e in self.prog.ends:
+            c = self.prog.collections[e.coll]
+
+            def body(i, cont, e=e, c=c):
+                hit = f.lab('hit')
+                f.cbr(self.cond(f, e.where, c, self.rec(f, c, i), {}), hit, cont)
+                f.at(hit)
+                f.e('ret i1 true')
+                f.at(f.lab('dead'))
+            self.rows(f, c, body)
+        f.e('ret i1 false')
+
+    def advance(self):
+        """Time is a number of milliseconds handed in from outside, so the same run can be replayed exactly."""
+        timers = self.prog.timers()
+        for i, t in enumerate(timers):
+            self.globals.append(f'{g("left", str(i))} = internal global i64 {t.on[1]}   ; ms until "{t.name}" happens')
+        f = self.fn('@advance', params='i64 %ms',
+                    comment='let time pass: whatever is due happens in the order written, then the rules settle')
+        ms = f.var('i64', '%ms')
+        loop, go, later, due, done = f.lab('loop'), f.lab('go'), f.lab('later'), f.lab('due'), f.lab('done')
+        f.br(loop)
+        f.at(loop)
+        f.cbr(f.r('call i1 @over()'), done, go)
+        f.at(go)
+        left = [f.load('i64', g('left', str(i))) for i in range(len(timers))]
+        d = left[0]
+        for x in left[1:]:
+            d = f.r(f'select i1 {f.r(f"icmp slt i64 {x}, {d}")}, i64 {x}, i64 {d}')
+        m = f.load('i64', ms)
+        f.cbr(f.r(f'icmp sgt i64 {d}, {m}'), later, due)
+        f.at(later)
+        for i, x in enumerate(left):
+            f.store('i64', f.r(f'sub i64 {x}, {m}'), g('left', str(i)))
+        f.br(done)
+        f.at(due)
+        f.store('i64', f.r(f'sub i64 {m}, {d}'), ms)
+        for i, x in enumerate(left):
+            f.store('i64', f.r(f'sub i64 {x}, {d}'), g('left', str(i)))
+        for i, t in enumerate(timers):
+            fire, nxt = f.lab('fire'), f.lab('next')
+            f.cbr(f.r(f'icmp eq i64 {f.load("i64", g("left", str(i)))}, 0'), fire, nxt)
+            f.at(fire)
+            f.e(f'call void {g("task", t.name)}(ptr null)')
+            f.store('i64', str(t.on[1]), g('left', str(i)))
+            f.br(nxt)
+            f.at(nxt)
+        self.settled(f)
+        f.br(loop)
+        f.at(done)
+        f.e('ret void')
+
+    def press(self, key):
+        f = self.fn(g('press', key), comment=f'the {key} key was pressed')
+        for t in self.prog.events:
+            if t.on == ('key', key):
+                f.e(f'call void {g("task", t.name)}(ptr null)')
+        self.settled(f)
+        f.e('ret void')
+
+    def screen(self):
+        w, h = self.prog.board
+        self.globals.append(f'@grid = internal global [{w * h} x i8] zeroinitializer')
+        f = self.fn('@screen', params='i1 %live',
+                    comment='draw the board as text: later sentences draw over earlier ones')
+        home, clear, body = f.lab('home'), f.lab('clear'), f.lab('body')
+        f.cbr('%live', home, body)
+        f.at(home)
+        self.printf(f, '\x1b[H')
+        f.br(body)
+        f.at(body)
+        f.e(f'call ptr @memset(ptr @grid, i32 32, i64 {w * h})')
+        for d in self.prog.draws:
+            c = self.prog.collections.get(d.coll)
+
+            def put(rec, cont, d=d, c=c):
+                self.guard(f, self.cond(f, d.where, c, rec, {}), cont)
+                x, _ = self.expr(f, d.at[0], c, rec, {})
+                y, _ = self.expr(f, d.at[1], c, rec, {})
+                inx = f.r(f'and i1 {f.r(f"icmp sge i64 {x}, 1")}, {f.r(f"icmp sle i64 {x}, {w}")}')
+                iny = f.r(f'and i1 {f.r(f"icmp sge i64 {y}, 1")}, {f.r(f"icmp sle i64 {y}, {h}")}')
+                self.guard(f, f.r(f'and i1 {inx}, {iny}'), cont)
+                cell = f.r(f'add i64 {f.r(f"mul i64 {f.r(f"sub i64 {y}, 1")}, {w}")}, {f.r(f"sub i64 {x}, 1")}')
+                f.store('i8', str(ord(d.glyph)), f.r(f'getelementptr i8, ptr @grid, i64 {cell}'))
+            if c:
+                self.rows(f, c, lambda i, cont, put=put, c=c: put(self.rec(f, c, i), cont))
+            else:
+                skip = f.lab('skip')
+                put(None, skip)
+                f.br(skip)
+                f.at(skip)
+
+        def status(names):
+            if not names:
+                return
+            S = self.prog.collections[STATE]
+            rec = self.rec(f, S, '0')
+            got = [(n, self.fload(f, S, rec, n), S.fields[n].type) for n in names]
+            fmt = '   '.join(f'{n.replace("_", " ").replace("%", "%%")} ' + ('%lld' if ty == 'int' else '%s')
+                             for n, _, ty in got)
+            which = f.r(f'select i1 %live, ptr {self.cstr(fmt + chr(27) + "[K" + chr(10))}, '
+                        f'ptr {self.cstr(fmt + chr(10))}')
+            f.e(f'call i32 (ptr, ...) @printf(ptr {which}, ' + ', '.join(f'{LL[ty]} {v}' for _, v, ty in got) + ')')
+        edge = '+' + '-' * w + '+'
+        status(self.prog.above)
+        self.puts(f, edge)
+        self.rows(f, None, lambda i, cont: self.printf(
+            f, '|%.*s|\n', f'i32 {w}, ptr {f.r(f"getelementptr i8, ptr @grid, i64 {f.r(f"mul i64 {i}, {w}")}")}'),
+            count=str(h))
+        self.puts(f, edge)
+        status(self.prog.below)
+        done = f.lab('done')
+        f.cbr('%live', clear, done)
+        f.at(clear)
+        self.printf(f, '\x1b[J')
+        f.br(done)
+        f.at(done)
+        f.e('ret void')
+
+    def play(self):
+        """Playing: the real clock and the real keyboard are turned into the same events a script would send."""
+        P = self.prog
+        f = self.fn('@now', 'i64', comment='the real time, in milliseconds')
+        tv = f.var('[16 x i8]')
+        f.e(f'call i32 @gettimeofday(ptr {tv}, ptr null)')
+        sec = f.load('i64', tv)
+        us = f.r(f'sext i32 {f.load("i32", f.r(f"getelementptr i8, ptr {tv}, i64 8"))} to i64')
+        f.e(f'ret i64 {f.r(f"add i64 {f.r(f"mul i64 {sec}, 1000")}, {f.r(f"sdiv i64 {us}, 1000")}")}')
+
+        f = self.fn('@leave', comment='give the terminal back the way it was')
+        self.printf(f, '\x1b[?25h')
+        f.e('call i32 @fflush(ptr null)')
+        f.e(f'call i32 @system(ptr {self.cstr("stty sane")})')
+        f.e('ret void')
+
+        f = self.fn('@quit', params='i32 %sig', comment='Ctrl-C while playing')
+        f.e('call void @leave()')
+        f.e('call void @exit(i32 0)')
+        f.e('ret void')
+
+        f = self.fn('@keys', 'i32', 'ptr %buf, i64 %n, ptr %jf',
+                    'turn what was typed into key presses; returns 1 when the player wants to stop')
+        iv, code = f.var('i64', '0'), f.var('i32', '0')
+        head, body, esc, esc2, arrow, plain, keep, act, quit, done = (
+            f.lab(x) for x in ('head', 'body', 'esc', 'bracket', 'arrow', 'plain', 'keep', 'act', 'quit', 'done'))
+
+        def byte(i):
+            return f.r(f'zext i8 {f.load("i8", f.r(f"getelementptr i8, ptr %buf, i64 {i}"))} to i32')
+        f.br(head)
+        f.at(head)
+        i = f.load('i64', iv)
+        f.cbr(f.r(f'icmp slt i64 {i}, %n'), body, done)
+        f.at(body)
+        b = byte(i)
+        f.cbr(f.r(f'icmp eq i32 {b}, 27'), esc, plain)
+        f.at(esc)                       # an arrow key arrives as ESC [ A..D; ESC alone means stop
+        f.cbr(f.r(f'icmp slt i64 {f.r(f"add i64 {i}, 2")}, %n'), esc2, quit)
+        f.at(esc2)
+        f.cbr(f.r(f'icmp eq i32 {byte(f.r(f"add i64 {i}, 1"))}, 91'), arrow, quit)
+        f.at(arrow)
+        f.store('i32', f.r(f'add i32 {byte(f.r(f"add i64 {i}, 2"))}, 256'), code)
+        f.store('i64', f.r(f'add i64 {i}, 3'), iv)
+        f.br(act)
+        f.at(plain)
+        f.store('i64', f.r(f'add i64 {i}, 1'), iv)
+        stop = f.r(f'or i1 {f.r(f"icmp eq i32 {b}, 3")}, {f.r(f"icmp eq i32 {b}, 4")}')
+        f.cbr(stop, quit, keep)
+        f.at(keep)
+        upper = f.r(f'and i1 {f.r(f"icmp sge i32 {b}, 65")}, {f.r(f"icmp sle i32 {b}, 90")}')
+        low = f.r(f'select i1 {upper}, i32 {f.r(f"add i32 {b}, 32")}, i32 {b}')
+        f.store('i32', f.r(f'select i1 {f.r(f"icmp eq i32 {low}, 13")}, i32 10, i32 {low}'), code)
+        f.br(act)
+        f.at(act)
+        cv = f.load('i32', code)
+        for key in P.keys():
+            yes, live, log, no = f.lab('key'), f.lab('live'), f.lab('log'), f.lab('else')
+            f.cbr(f.r(f'icmp eq i32 {cv}, {KEY_CODES[key]}'), yes, no)
+            f.at(yes)
+            f.cbr(f.r('call i1 @over()'), head, live)
+            f.at(live)
+            f.e(f'call void {g("press", key)}()')
+            f.cbr(f.r('icmp eq ptr %jf, null'), head, log)
+            f.at(log)
+            f.e(f'call i32 @fputs(ptr {self.cstr(f"press {key}" + chr(10))}, ptr %jf)')
+            f.br(head)
+            f.at(no)
+        if 'q' not in P.keys():
+            f.cbr(f.r(f'icmp eq i32 {cv}, {ord("q")}'), quit, head)
+        else:
+            f.br(head)
+        f.at(quit)
+        f.e('ret i32 1')
+        f.at(done)
+        f.e('ret i32 0')
+
+        timers = P.timers()
+        f = self.fn('@play', params='ptr %jf',
+                    comment='play: draw, wait for a key or for the next thing due, let that much time pass, repeat')
+        f.e('call ptr @signal(i32 2, ptr @quit)')
+        f.e(f'call i32 @system(ptr {self.cstr("stty -icanon -echo min 0 time 0")})')
+        self.printf(f, '\x1b[2J\x1b[?25l')
+        last = f.var('i64', f.r('call i64 @now()'))
+        buf, pfd = f.var('[16 x i8]'), f.var('{ i32, i16, i16 }')
+        loop, wait, typed, decode, tick, adv, log, end, lost, bye = (
+            f.lab(x) for x in ('loop', 'wait', 'typed', 'decode', 'tick', 'advance', 'log', 'end', 'lost', 'bye'))
+        f.br(loop)
+        f.at(loop)
+        f.e('call void @screen(i1 true)')
+        f.e('call i32 @fflush(ptr null)')
+        f.cbr(f.r('call i1 @over()'), end, wait)
+        f.at(wait)
+        d = '1000'
+        for i in range(len(timers)):
+            x = f.load('i64', g('left', str(i)))
+            d = f.r(f'select i1 {f.r(f"icmp slt i64 {x}, {d}")}, i64 {x}, i64 {d}')
+        if timers:
+            d = f.r(f'select i1 {f.r(f"icmp slt i64 {d}, 1")}, i64 1, i64 {d}')
+        f.store('i32', '0', pfd)
+        f.store('i16', '1', f.r(f'getelementptr {{ i32, i16, i16 }}, ptr {pfd}, i32 0, i32 1'))
+        f.store('i16', '0', f.r(f'getelementptr {{ i32, i16, i16 }}, ptr {pfd}, i32 0, i32 2'))
+        ready = f.r(f'call i32 @poll(ptr {pfd}, i64 1, i32 {f.r(f"trunc i64 {d} to i32")})')
+        f.cbr(f.r(f'icmp sgt i32 {ready}, 0'), typed, tick)
+        f.at(typed)
+        n = f.r(f'call i64 @read(i32 0, ptr {buf}, i64 16)')
+        f.cbr(f.r(f'icmp sgt i64 {n}, 0'), decode, end)
+        f.at(decode)
+        f.cbr(f.r(f'icmp ne i32 {f.r(f"call i32 @keys(ptr {buf}, i64 {n}, ptr %jf)")}, 0'), end, tick)
+        f.at(tick)
+        now = f.r('call i64 @now()')
+        el = f.r(f'sub i64 {now}, {f.load("i64", last)}')
+        el = f.r(f'select i1 {f.r(f"icmp sgt i64 {el}, {LONGEST_STEP}")}, i64 {LONGEST_STEP}, i64 {el}')
+        f.cbr(f.r(f'icmp sgt i64 {el}, 0'), adv, loop)
+        f.at(adv)
+        f.store('i64', now, last)
+        if timers:
+            f.e(f'call void @advance(i64 {el})')
+            f.cbr(f.r('icmp eq ptr %jf, null'), loop, log)
+            f.at(log)
+            f.e(f'call i32 (ptr, ptr, ...) @fprintf(ptr %jf, ptr {self.cstr("wait %lld" + chr(10))}, i64 {el})')
+        f.br(loop)
+        f.at(end)
+        f.e('call void @leave()')
+        f.cbr(f.r('call i1 @over()'), lost, bye)
+        f.at(lost)
+        self.puts(f, OVER)
+        f.br(bye)
+        f.at(bye)
+        f.e('call i32 @fflush(ptr null)')
+        f.e('ret void')
+
+    def live(self):
+        P = self.prog
+        if not (P.events or P.board):
+            return
+        for t in P.events:
+            self.task(t)
+        self.over()
+        if P.timers():
+            self.advance()
+        for k in P.keys():
+            self.press(k)
+        if P.board:
+            self.screen()
+            self.play()
+
+    def builtin(self, f, name, line, arg):
+        """wait, press and screen: commands the program answers without anyone having named them."""
+        P = self.prog
+        yes, no = f.lab(name), f.lab('else')
+        f.cbr(self.eq(f, 'text', line, self.cstr(name)), yes, no)
+        f.at(yes)
+        if name == 'screen':
+            f.e('call void @screen(i1 false)')
+            f.e('ret i32 0')
+        elif name == 'wait':
+            endp = f.var('ptr')
+            v = f.r(f'call i64 @strtoll(ptr {arg}, ptr {endp}, i32 10)')
+            end = f.load('ptr', endp)
+            bad = f.r(f'or i1 {f.r(f"icmp eq ptr {end}, {arg}")}, {f.r(f"icmp ne i8 {f.load("i8", end)}, 0")}')
+            bad = f.r(f'or i1 {bad}, {f.r(f"icmp slt i64 {v}, 0")}')
+            bad = f.r(f'or i1 {bad}, {f.r(f"icmp sgt i64 {v}, {LONGEST_WAIT}")}')
+            wrong, ok, over, go = f.lab('wrong'), f.lab('ok'), f.lab('over'), f.lab('go')
+            f.cbr(bad, wrong, ok)
+            f.at(wrong)
+            self.puts(f, BAD_WAIT)
+            f.e('ret i32 0')
+            f.at(ok)
+            f.cbr(f.r('call i1 @over()'), over, go)
+            f.at(over)
+            self.puts(f, OVER)
+            f.e('ret i32 0')
+            f.at(go)
+            f.e(f'call void @advance(i64 {v})')
+            f.e('ret i32 1')
+        else:
+            for key in P.keys():
+                hit, over, go, nxt = f.lab('hit'), f.lab('over'), f.lab('go'), f.lab('next')
+                f.cbr(self.eq(f, 'text', arg, self.cstr(key)), hit, nxt)
+                f.at(hit)
+                f.cbr(f.r('call i1 @over()'), over, go)
+                f.at(over)
+                self.puts(f, OVER)
+                f.e('ret i32 0')
+                f.at(go)
+                f.e(f'call void {g("press", key)}()')
+                f.e('ret i32 1')
+                f.at(nxt)
+            self.printf(f, 'error: no key called %s is used here\n', f'ptr {arg}')
+            f.e('ret i32 0')
+        f.at(no)
+
     # ------------------------------------------------------------------ main
     def dispatch(self):
         self.globals.append('@dirty = internal global i32 0     ; set when a command really changed data')
@@ -851,6 +1181,8 @@ class Gen:
                 f.e('call void @settle()')
             f.e(f'ret i32 {f.load("i32", "@dirty")}')
             f.at(no)
+        for name, _ in builtins(self.prog):
+            self.builtin(f, name, line, arg)
         if all(t.name != 'help' for t in self.prog.tasks):
             yes, no = f.lab('help'), f.lab('else')
             f.cbr(self.eq(f, 'text', line, self.cstr('help')), yes, no)
@@ -872,6 +1204,15 @@ class Gen:
                 v = str(fl.init) if fl.type == 'int' else f.r(f'call ptr @strdup(ptr {self.cstr(fl.init)})')
                 f.store(LL[fl.type], v, self.fptr(f, S, rec, fl.name))
             f.store('i64', '1', g(STATE, 'len'))
+        for s in self.prog.seeds:       # what is there from the start
+            c, cp = self.prog.collections[s.coll], self.plan.colls[s.coll]
+            f.e(f'call void {g(c.name, "grow")}()')
+            n = f.load('i64', g(c.name, 'len'))
+            vals = {name: self.expr(f, e, c, None, {}) for name, e in s.assigns}
+            self.store_record(f, c, self.rec(f, c, n), vals)
+            f.store('i64', f.r(f'add i64 {n}, 1'), g(c.name, 'len'))
+            for ix in cp.indexes:
+                f.e(f'call void {g(c.name, ix, "put")}(i64 {n})')
         if self.prog.rules:
             f.e('call void @settle()')
         f.e('ret void')
@@ -948,8 +1289,16 @@ class Gen:
         self.printf(f, 'error: cannot write to %s\n', f'ptr {path}')
         f.e('ret i32 1')
         f.at(serve)
-        fp = f.r(f'call ptr @fdopen(i32 0, ptr {self.cstr("r")})')
         jf = f.load('ptr', journal)
+        if self.prog.board:             # at a terminal the program is played; over a pipe it takes commands
+            both = f.r(f'and i32 {f.r("call i32 @isatty(i32 0)")}, {f.r("call i32 @isatty(i32 1)")}')
+            play, commands = f.lab('play'), f.lab('commands')
+            f.cbr(f.r(f'icmp ne i32 {both}, 0'), play, commands)
+            f.at(play)
+            f.e(f'call void @play(ptr {jf})')
+            f.e('ret i32 0')
+            f.at(commands)
+        fp = f.r(f'call ptr @fdopen(i32 0, ptr {self.cstr("r")})')
         loop, got, done = f.lab('loop'), f.lab('got'), f.lab('done')
         f.br(loop)
         f.at(loop)
@@ -999,11 +1348,12 @@ class Gen:
             self.task(r, rule=True)
         if self.prog.rules:
             self.settle()
+        self.live()
         self.start()
         self.main()
         return (f'; Generated by the Intent compiler from {source_name}.\n'
                 f'; There is no intermediate program in any other language: Intent IR is lowered straight to this.\n\n'
-                + DECLS + '\n' + '\n'.join(self.globals) + '\n\n' + '\n'.join(f.text() for f in self.fns))
+                + DECLS + (LIVE_DECLS if self.prog.events or self.prog.board else '') + '\n' + '\n'.join(self.globals) + '\n\n' + '\n'.join(f.text() for f in self.fns))
 
 
 def emit(prog, plan, source_name='<intent>'):
