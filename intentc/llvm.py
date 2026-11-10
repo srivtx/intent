@@ -1507,6 +1507,8 @@ class Gen:
             else:
                 self.stale(f, c, moved)
                 self.visit(f, t, c, self.update_body(f, t, c, vals, rule), vals)
+        elif k == 'list' and t.name in self.plan.walks:
+            self.walked_list(f, t, c, vals)
         elif k == 'list':
             names = t.fields or list(c.fields)
             if not t.order:
@@ -1547,7 +1549,7 @@ class Gen:
             acc, cnt = f.var('i64', '0'), f.var('i64', '0')
             dec = t.fn != 'count' and c.fields[t.field].dec
 
-            def body(i, cont):
+            def body(i, cont, end=None):
                 rec = self.rec(f, c, i)
                 self.guard(f, self.cond(f, t.where, c, rec, vals), cont)
                 cv = f.load('i64', cnt)
@@ -1562,7 +1564,11 @@ class Gen:
                         nv = f.r(f'select i1 {take}, i64 {v}, i64 {a}')
                     f.store('i64', nv, acc)
                 f.store('i64', f.r(f'add i64 {cv}, 1'), cnt)
-            self.visit(f, t, c, body, vals)
+            w = self.plan.walks.get(t.name)
+            if w:
+                self.walk(f, c, w, vals, False, body)
+            else:
+                self.visit(f, t, c, body, vals)
             n, a = f.load('i64', cnt), f.load('i64', acc)
             if t.fn == 'count':
                 self.printf(f, '%lld\n', f'i64 {n}')
@@ -1585,6 +1591,119 @@ class Gen:
                     v, ty = self.shown(f, a, 'int', dec)
                     self.printf(f, '%s\n' if dec else '%lld\n', f'{LL[ty]} {v}')
         f.e('ret void')
+
+    def walked_list(self, f, t, c, vals):
+        """A list read through an ordered index: in the order asked for, or (when the records keep
+        the order they were added in and no other order is asked for) put back in that order."""
+        w = self.plan.walks[t.name]
+        names = t.fields or list(c.fields)
+        mine = t.order is not None and t.order[0] == w.prop
+        back = mine and t.order[1]
+        if (mine and not (back and c.ordered)) or (not mine and not c.ordered):     # the walk order will do
+            shown = f.var('i64', '0')
+
+            def body(i, cont, end):
+                rec = self.rec(f, c, i)
+                self.guard(f, self.cond(f, t.where, c, rec, vals), cont)
+                self.print_fields(f, c, rec, names)
+                if t.limit is not None:
+                    sv = f.r(f'add i64 {f.load("i64", shown)}, 1')
+                    f.store('i64', sv, shown)
+                    f.cbr(f.r(f'icmp sge i64 {sv}, {t.limit}'), end, cont)
+                    f.at(f.lab('dead'))
+            self.walk(f, c, w, vals, back, body)
+            return
+        # Gather the rows first: either to put them back in position order, or (largest first, in
+        # records that keep their order) to turn each run of equal values round so ties stay first-added first.
+        n = f.load('i64', g(c.name, 'len'))
+        idx = f.r(f'call ptr @malloc(i64 {f.r(f"add i64 {f.r(f"shl i64 {n}, 3")}, 8")})')
+        cnt = f.var('i64', '0')
+        K = w.prop
+        KT = LL[c.fields[K].type]
+
+        def collect(i, cont, end):
+            self.guard(f, self.cond(f, t.where, c, self.rec(f, c, i), vals), cont)
+            cv = f.load('i64', cnt)
+            if mine and t.limit is not None:        # enough once the limit is reached and the run of ties is over
+                full, room = f.lab('full'), f.lab('room')
+                f.cbr(f.r(f'icmp sge i64 {cv}, {t.limit}'), full, room)
+                f.at(full)
+                prev = f.load('i64', f.r(f'getelementptr i64, ptr {idx}, i64 {f.r(f"sub i64 {cv}, 1")}'))
+                pk = self.fload(f, c, self.rec(f, c, prev), K)
+                same = f.r(f'icmp eq i32 {f.r(f"call i32 {g(c.name, K, "cmp")}(i64 {i}, {KT} {pk})")}, 0')
+                f.cbr(same, room, end)
+                f.at(room)
+            f.store('i64', i, f.r(f'getelementptr i64, ptr {idx}, i64 {cv}'))
+            f.store('i64', f.r(f'add i64 {cv}, 1'), cnt)
+        self.walk(f, c, w, vals, back, collect)
+        m = f.load('i64', cnt)
+        if not mine:
+            if '@byrow' not in self.made:
+                self.made.add('@byrow')
+                b = self.fn('@byrow', 'i32', 'ptr %a, ptr %b', 'row numbers in ascending order, for qsort')
+                ia, ib = b.load('i64', '%a'), b.load('i64', '%b')
+                gt = b.r(f'zext i1 {b.r(f"icmp sgt i64 {ia}, {ib}")} to i32')
+                b.e(f'ret i32 {b.r(f"sub i32 {gt}, {b.r(f"zext i1 {b.r(f"icmp slt i64 {ia}, {ib}")} to i32")}")}')
+            f.e(f'call void @qsort(ptr {idx}, i64 {m}, i64 8, ptr @byrow)')
+        else:
+            self.untie(f, c, K, idx, m)
+        if t.limit is not None:
+            m = f.r(f'select i1 {f.r(f"icmp slt i64 {m}, {t.limit}")}, i64 {m}, i64 {t.limit}')
+
+        def emit(j, cont):
+            row = f.load('i64', f.r(f'getelementptr i64, ptr {idx}, i64 {j}'))
+            self.print_fields(f, c, self.rec(f, c, row), names)
+        self.rows(f, c, emit, count=m)
+        f.e(f'call void @free(ptr {idx})')
+
+    def untie(self, f, c, K, idx, m):
+        """Walking backwards meets equal values last-added first: turn each such run round."""
+        KT = LL[c.fields[K].type]
+        start = f.var('i64', '0')
+        head, scan, flip, done = f.lab('run'), f.lab('scan'), f.lab('flip'), f.lab('untied')
+        end = f.var('i64')
+        f.br(head)
+        f.at(head)
+        a = f.load('i64', start)
+        f.cbr(f.r(f'icmp slt i64 {a}, {m}'), scan, done)
+        f.at(scan)                      # the run is [a, e): every row with the same value as row idx[a]
+        first = f.load('i64', f.r(f'getelementptr i64, ptr {idx}, i64 {a}'))
+        key = self.fload(f, c, self.rec(f, c, first), K)
+        f.store('i64', f.r(f'add i64 {a}, 1'), end)
+        grow, more, stop = f.lab('grow'), f.lab('more'), f.lab('stop')
+        f.br(grow)
+        f.at(grow)
+        e = f.load('i64', end)
+        inside = f.r(f'icmp slt i64 {e}, {m}')
+        f.cbr(inside, more, stop)
+        f.at(more)
+        row = f.load('i64', f.r(f'getelementptr i64, ptr {idx}, i64 {e}'))
+        same = f.r(f'icmp eq i32 {f.r(f"call i32 {g(c.name, K, "cmp")}(i64 {row}, {KT} {key})")}, 0')
+        ext = f.lab('ext')
+        f.cbr(same, ext, stop)
+        f.at(ext)
+        f.store('i64', f.r(f'add i64 {e}, 1'), end)
+        f.br(grow)
+        f.at(stop)
+        lo, hi = f.var('i64', a), f.var('i64', f.r(f'sub i64 {f.load("i64", end)}, 1'))
+        swap, swapped = f.lab('swap'), f.lab('swapped')
+        f.br(flip)
+        f.at(flip)
+        lv, hv = f.load('i64', lo), f.load('i64', hi)
+        f.cbr(f.r(f'icmp slt i64 {lv}, {hv}'), swap, swapped)
+        f.at(swap)
+        pl = f.r(f'getelementptr i64, ptr {idx}, i64 {lv}')
+        ph = f.r(f'getelementptr i64, ptr {idx}, i64 {hv}')
+        x, y = f.load('i64', pl), f.load('i64', ph)
+        f.store('i64', y, pl)
+        f.store('i64', x, ph)
+        f.store('i64', f.r(f'add i64 {lv}, 1'), lo)
+        f.store('i64', f.r(f'sub i64 {hv}, 1'), hi)
+        f.br(flip)
+        f.at(swapped)
+        f.store('i64', f.load('i64', end), start)
+        f.br(head)
+        f.at(done)
 
     def none_if_zero(self, f, n):
         none, done = f.lab('none'), f.lab('done')
