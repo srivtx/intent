@@ -1,0 +1,12 @@
+# Bug 2: Taught phrase inside a hyphenated capability label gets expanded in parser.py:314
+# Because '-' has t.kind == 'sym', expand_sentence() expands "vip" before ':'!
+
+Players is a collection.
+Each player has a name (text) and a score (number).
+
+"vip" means score at least 100.
+
+add-player: add a player.
+# Intended command name: "show-vip"
+# Actual compiled command name: "show-score-at-least-100"!
+show-vip: show the name of players vip.

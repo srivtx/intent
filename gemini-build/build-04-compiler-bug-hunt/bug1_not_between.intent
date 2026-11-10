@@ -1,0 +1,12 @@
+# Bug 1: "not between A and B" violates De Morgan's Law in parser.py:1108
+# Expands "not between 18 and 30" -> "not >= 18 and <= 30" -> "age < 18 and age <= 30"
+# Drops everyone with age > 30!
+
+Members is a collection.
+Each member has a name (text) and an age (number).
+
+add-member: add a member.
+# Buggy phrasing (compiles, but misses age > 30!):
+buggy-outside: show the name of members whose age is not between 18 and 30.
+# Correct workaround phrasing:
+correct-outside: show the name of members whose age is under 18 or over 30.
