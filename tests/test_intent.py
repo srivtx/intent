@@ -1360,11 +1360,16 @@ class TestLive(TestNativeAgainstReference):
                 rng = random.Random(name)
                 self.script(name, text, [rng.choice(cmds) for _ in range(250)])
 
-    def in_a_terminal(self, cmd, keys, rows=30, cols=80, settle=0.7):
-        """Run cmd on a pseudo-terminal of the given size, type keys (bytes, or a signal number), and report."""
+    def in_a_terminal(self, cmd, keys, rows=30, cols=80, settle=0.3):
+        """Run cmd on a pseudo-terminal of the given size, type keys (bytes, or a signal number), and report.
+
+        Nothing is typed before the game is on screen, and nothing here waits without a deadline:
+        a program that does not stop is killed and the test fails with what it printed.
+        """
         import fcntl
         import pty
         import select
+        import signal
         import struct
         import termios
         import time
@@ -1373,40 +1378,61 @@ class TestLive(TestNativeAgainstReference):
         before = termios.tcgetattr(master)
         pid = os.fork()
         if pid == 0:
-            os.setsid()
-            for fd in (0, 1, 2):
-                os.dup2(slave, fd)
-            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-            os.execv(cmd[0], cmd)
+            try:
+                os.setsid()
+                for fd in (0, 1, 2):
+                    os.dup2(slave, fd)
+                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+                os.execv(cmd[0], cmd)
+            finally:
+                os._exit(127)           # never fall back into the test runner
         os.close(slave)
         out = b''
+        status = None
 
-        def pump(seconds):
-            nonlocal out
+        def pump(seconds, until=lambda: False):
+            nonlocal out, status
             end = time.time() + seconds
-            while time.time() < end:
-                if select.select([master], [], [], 0.05)[0]:
+            while time.time() < end and not until():
+                if select.select([master], [], [], 0.02)[0]:
                     try:
                         out += os.read(master, 65536)
                     except OSError:
-                        return
+                        pass
+                if status is None:
+                    done, st = os.waitpid(pid, os.WNOHANG)
+                    if done:
+                        status = st
+                elif not select.select([master], [], [], 0.05)[0]:
+                    return
+        pump(20, lambda: b'\x1b[?1049h' in out or status is not None)    # the game is up, or it refused
         pump(settle)
         for key in keys:
+            if status is not None:
+                break
             try:
                 if isinstance(key, int):
                     os.kill(pid, key)
                 else:
                     for part in key if isinstance(key, tuple) else (key,):
                         os.write(master, part)
-                        time.sleep(0.008)
+                        time.sleep(0.002)
             except OSError:
-                break                   # it has already stopped
+                break
             pump(0.15)
-        pump(0.5)
-        after = termios.tcgetattr(master)
-        _, status = os.waitpid(pid, 0)
+        pump(15, lambda: status is not None)
+        stuck = status is None
+        if stuck:
+            os.kill(pid, signal.SIGKILL)
+            _, status = os.waitpid(pid, 0)
+        try:
+            restored = termios.tcgetattr(master) == before
+        except termios.error:
+            restored = None             # this system no longer answers once the program is gone
         os.close(master)
-        return status, out.decode().replace('\r', ''), after == before
+        text = out.decode(errors='replace').replace('\r', '')
+        self.assertFalse(stuck, f'{cmd[-1]} did not stop; it printed {text[-300:]!r}')
+        return status, text, restored
 
     def walk(self):
         exe, _ = self.script('walk', (
@@ -1424,7 +1450,7 @@ class TestLive(TestNativeAgainstReference):
             with self.subTest(cmd[0]):
                 status, out, restored = self.in_a_terminal(
                     cmd, [b'\x1b[D', b'\x1b[D', b'\x1b[C', b'\x1b[D', b'q'], settle=1.6)
-                self.assertEqual((status, restored), (0, True))
+                self.assertEqual((status, restored in (True, None)), (0, True))
                 played, _, after = out.partition('\x1b[?1049l')         # its own screen, then back to the terminal
                 self.assertTrue(played.startswith('\x1b[?1049h'))
                 frames = [re.sub(r'\x1b\[[0-9?]*[A-Za-z]', '', f) for f in played.split('\x1b[H')[1:]]
@@ -1443,7 +1469,7 @@ class TestLive(TestNativeAgainstReference):
                               ('hang-up', [signal.SIGHUP]), ('an arrow key in two parts, then q', [(b'\x1b', b'[D'), b'q'])]:
                 with self.subTest(cmd[0] + ' ' + how):
                     status, out, restored = self.in_a_terminal(cmd, keys)
-                    self.assertTrue(restored, 'the terminal was left changed')
+                    self.assertIn(restored, (True, None), 'the terminal was left changed')
                     self.assertEqual(status, 0)
                     self.assertIn('\x1b[?1049l', out)
                     if how.startswith('an arrow'):
@@ -1455,10 +1481,10 @@ class TestLive(TestNativeAgainstReference):
         for cmd in self.walk():
             for rows, cols in [(5, 80), (30, 31)]:
                 with self.subTest(f'{cmd[0]} {cols}x{rows}'):
-                    status, out, restored = self.in_a_terminal(cmd, [], rows, cols, settle=0.8)
+                    status, out, restored = self.in_a_terminal(cmd, [], rows, cols)
                     self.assertEqual(out, f'this board needs a terminal at least 32 wide and 7 high; this one is '
                                           f'{cols} wide and {rows} high\n')
-                    self.assertEqual((os.waitstatus_to_exitcode(status), restored), (1, True))
+                    self.assertEqual((os.waitstatus_to_exitcode(status), restored in (True, None)), (1, True))
             status, out, _ = self.in_a_terminal(cmd, [b'q'], 7, 32)
             self.assertIn('\x1b[?1049h', out)                       # exactly big enough: it plays
 

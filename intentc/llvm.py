@@ -1084,7 +1084,7 @@ class Gen:
         f.cbr(only, lone, decode)
         f.at(lone)
         f.store('i16', '0', f.r(f'getelementptr {{ i32, i16, i16 }}, ptr {pfd}, i32 0, i32 2'))
-        f.cbr(f.r(f'icmp sgt i32 {f.r(f"call i32 @poll(ptr {pfd}, i64 1, i32 25)")}, 0'), more, decode)
+        f.cbr(f.r(f'icmp sgt i32 {f.r(f"call i32 @poll(ptr {pfd}, i64 1, i32 50)")}, 0'), more, decode)
         f.at(more)
         extra = f.r(f'call i64 @read(i32 0, ptr {f.r(f"getelementptr i8, ptr {buf}, i64 1")}, i64 15)')
         f.cbr(f.r(f'icmp sgt i64 {extra}, 0'), rest, decode)

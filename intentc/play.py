@@ -67,7 +67,7 @@ def play(m, out=sys.stdout):
                 data = os.read(fd, 16)
                 if not data:
                     break
-                if data == b'\x1b' and select.select([fd], [], [], 0.025)[0]:
+                if data == b'\x1b' and select.select([fd], [], [], 0.05)[0]:
                     data += os.read(fd, 15)         # an arrow key whose bytes arrived apart
                 for code in decode(data):
                     if code is None or (code == ord('q') and code not in names):
