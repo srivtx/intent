@@ -1,0 +1,32 @@
+note: this program describes information but nothing to do with it yet
+ --> gemini-build/build-06-observability-timeseries-db/attempt_failed.intent:5
+  |
+5 | Samples is a collection.
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: compared with what?
+  --> gemini-build/build-06-observability-timeseries-db/attempt_failed.intent:13
+   |
+13 | timeout-logs: show the samples whose message contains "timeout".
+   |                                      ^^^^^^^ a value is missing
+
+error: I don't see how "times" fits in
+  --> gemini-build/build-06-observability-timeseries-db/attempt_failed.intent:17
+   |
+17 | total-compute-load: what is the total of cpu_pct times mem_mb of samples?
+   |                                                  ^^^^^ I understood the rest of the sentence, but not this part
+
+question: avg of which one?
+  --> gemini-build/build-06-observability-timeseries-db/attempt_failed.intent:21
+   |
+21 | avg-by-host: what is the average latency_ms for each host_name of samples?
+   |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ one property per summary
+
+not compiled: 1 question to answer, 2 things I could not read
+How I read this program:
+
+   5  Samples is a collection                                       ->  collection sample
+   6  Each sample has a sample_id (number), a host_name (text), a message (text), a cpu_pct (number), a mem_mb (number) and a latency_ms (number)  ->  sample has sample_id: int, host_name: text, message: text, cpu_pct: int, mem_mb: int, latency_m: int
+   7  No two samples share the same sample_id                       ->  sample: sample_id unique
+   8  Reject duplicates                                             ->  sample: on duplicate, reject
+

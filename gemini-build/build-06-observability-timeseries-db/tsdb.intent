@@ -1,0 +1,69 @@
+# =============================================================================
+# BUILD 06 (WORKING): IntentTSDB — Real-Time Telemetry, Sliding Window & Anomaly DB
+# =============================================================================
+# Workarounds used to build an observability engine in Intent v0.1:
+#   1. Since SUM(cpu_pct * mem_mb) is unsupported in aggregates, we declare a
+#      materialized field `compute_load` on Samples and populate it in-place
+#      via `score-samples`, then aggregate `total compute_load`!
+#   2. Since GROUP BY is unsupported, we support parameterized per-host queries
+#      (`host-avg-latency: what is the average latency_ms of samples whose host_name is a given host_name?`).
+#   3. Sliding time-window retention via `keep samples whose ts_epoch is at least a given cutoff`.
+# =============================================================================
+
+Samples is a collection.
+Each sample has a sample_id (number), a host_name (text), a service_tag (text), a ts_epoch (number), a cpu_pct (number), a mem_mb (number), a latency_ms (number), a error_count (number), a compute_load (number) and an anomaly_score (number).
+No two samples share the same sample_id.
+If a sample already exists, replace it.
+
+Hosts is a collection.
+Each host has a hostname (text), a region (text), a capacity_score (number) and a quarantined (number).
+No two hosts share the same hostname.
+If a host already exists, replace it.
+
+Incidents is a collection.
+Each incident has an inc_id (number), a culprit_host (text), a peak_latency (number), a severity (number) and a resolved (number).
+No two incidents share the same inc_id.
+If an incident already exists, replace it.
+Keep incidents in the order they were added.
+
+# ---- Taught Telemetry Vocabulary --------------------------------------------
+
+A hot sample is a sample whose cpu_pct is at least 85.
+A slow sample is a sample whose latency_ms is at least 500.
+A severe sample is a sample whose anomaly_score is at least 1000.
+An open incident is an incident whose resolved is 0.
+
+# ---- Telemetry Ingestion & Materialized Scoring -----------------------------
+
+ingest-sample: add a sample.
+find-sample: find a sample by sample_id.
+
+# Materializes `compute_load` and `anomaly_score` in one sequential pass so we can aggregate/rank them!
+score-samples: for every sample, set compute_load to cpu_pct * mem_mb, then set anomaly_score to cpu_pct * 5 + latency_ms * 2 + error_count * 100.
+
+# Sliding time-window compaction: drops all samples older than <cutoff> and rebuilds hash index
+evict-old-samples: keep samples whose ts_epoch is at least a given cutoff.
+
+# Parameterized per-host & per-service rollups (replacing GROUP BY)
+host-avg-latency: what is the average latency_ms of samples whose host_name is a given host_name?
+host-max-latency: what is the highest latency_ms of samples whose host_name is a given host_name?
+host-total-errors: what is the total error_count of samples whose host_name is a given host_name?
+service-avg-cpu: what is the average cpu_pct of samples whose service_tag is a given service_tag?
+
+# Fleet-wide summaries & top-K anomaly detection
+total-compute-load: what is the total compute_load of samples?
+fleet-avg-latency: what is the average latency_ms of samples?
+top-anomalies: show the top 5 samples by anomaly_score.
+slowest-samples: show the sample_id, host_name, service_tag and latency_ms of slow samples sorted by latency_ms descending.
+severe-sample-count: how many severe samples are there?
+sample-count: how many samples are there?
+
+# ---- Host Fleet & Incident Management ---------------------------------------
+
+register-host: add a host.
+quarantine-host: for every host whose hostname is a given hostname, set quarantined to 1.
+quarantined-hosts: show the hostname and region of hosts whose quarantined is 1.
+
+open-incident: add an incident.
+resolve-incident: for every open incident whose inc_id is a given inc_id, set resolved to 1.
+active-incidents: show the inc_id, culprit_host, peak_latency and severity of open incidents.

@@ -1,0 +1,21 @@
+# =============================================================================
+# BUILD 06 (FAILED ATTEMPT): Time-Series Analytics (GROUP BY, Substrings, Expr Aggs)
+# =============================================================================
+
+Samples is a collection.
+Each sample has a sample_id (number), a host_name (text), a message (text), a cpu_pct (number), a mem_mb (number) and a latency_ms (number).
+No two samples share the same sample_id.
+Reject duplicates.
+
+# FAILURE 1: "contains" is in lexicon.py:130 as HAS ("Each x contains y"), which
+# parser.py:881 rewrites to WHERE ("whose") and parse_cond() rewrites to AND!
+# Produces a baffling "error: compared with what?" on "message"!
+timeout-logs: show the samples whose message contains "timeout".
+
+# FAILURE 2: Aggregate of a calculation (SUM(cpu_pct * mem_mb))
+# Rejected by parser.py:1027-1029: aggregates only accept a single property name
+total-compute-load: what is the total of cpu_pct times mem_mb of samples?
+
+# FAILURE 3: GROUP BY ("average latency_ms for each host_name")
+# "for each" is tokenized as QUANT (stripped), leaving "host_name" as a 2nd field in agg!
+avg-by-host: what is the average latency_ms for each host_name of samples?

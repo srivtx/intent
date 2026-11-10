@@ -1,0 +1,64 @@
+Samples  —  sample_id: number (unique), host_name: text, service_tag: text, ts_epoch: number, cpu_pct: number, mem_mb: number, latency_m: number, error_count: number, compute_load: number, anomaly_score: number
+  order: not part of the meaning
+
+  storage: one growable array of sample records, 80 bytes each
+  index on sample_id: open-addressing hash table from the property to the row number
+      because line 15: sample_id is unique, so every add must look for an existing sample_id
+      because line 39: "find-sample" picks one sample by sample_id on every call
+
+Hosts  —  hostname: text (unique), region: text, capacity_score: number, quarantined: number
+  order: not part of the meaning
+
+  storage: one growable array of host records, 32 bytes each
+  index on hostname: open-addressing hash table from the property to the row number
+      because line 20: hostname is unique, so every add must look for an existing hostname
+
+Incidents  —  inc_id: number (unique), culprit_host: text, peak_latency: number, severity: number, resolved: number
+  order: insertion order is kept
+
+  storage: one growable array of incident records, 40 bytes each
+  index on inc_id: open-addressing hash table from the property to the row number
+      because line 25: inc_id is unique, so every add must look for an existing inc_id
+
+Commands the compiled program accepts (one per line on stdin):
+
+  ingest-sample <sample_id>,<host_name>,<service_tag>,<ts_epoch>,<cpu_pct>,<mem_mb>,<latency_m>,<error_count>,<compute_load>,<anomaly_score>   O(1) expected  probe the index for a clash, then append
+                                                                                                                                               line 38: ingest-sample: add a sample
+  find-sample <sample_id>                                                                                                                      O(1) expected  one index probe
+                                                                                                                                               line 39: find-sample: find a sample by sample_id
+  score-samples                                                                                                                                O(n)           one pass, changed in place
+                                                                                                                                               line 42: score-samples: for every sample, set compute_load to cpu_pct * mem_mb, then set anomaly_score to cpu_pct * 5 + latency_ms * 2 + error_count * 100
+  evict-old-samples <cutoff>                                                                                                                   O(n)           one pass keeping the rows that stay, then rebuild the index
+                                                                                                                                               line 45: evict-old-samples: keep samples whose ts_epoch is at least a given cutoff
+  host-avg-latency <host_name>                                                                                                                 O(n)           one pass, constant extra memory
+                                                                                                                                               line 48: host-avg-latency: what is the average latency_ms of samples whose host_name is a given host_name
+  host-max-latency <host_name>                                                                                                                 O(n)           one pass, constant extra memory
+                                                                                                                                               line 49: host-max-latency: what is the highest latency_ms of samples whose host_name is a given host_name
+  host-total-errors <host_name>                                                                                                                O(n)           one pass, constant extra memory
+                                                                                                                                               line 50: host-total-errors: what is the total error_count of samples whose host_name is a given host_name
+  service-avg-cpu <service_tag>                                                                                                                O(n)           one pass, constant extra memory
+                                                                                                                                               line 51: service-avg-cpu: what is the average cpu_pct of samples whose service_tag is a given service_tag
+  total-compute-load                                                                                                                           O(n)           one pass, constant extra memory
+                                                                                                                                               line 54: total-compute-load: what is the total compute_load of samples
+  fleet-avg-latency                                                                                                                            O(n)           one pass, constant extra memory
+                                                                                                                                               line 55: fleet-avg-latency: what is the average latency_ms of samples
+  top-anomalies                                                                                                                                O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                                                               line 56: top-anomalies: show the top 5 samples by anomaly_score
+  slowest-samples                                                                                                                              O(n log n)     collect matching row numbers, sort them, print
+                                                                                                                                               line 57: slowest-samples: show the sample_id, host_name, service_tag and latency_ms of slow samples sorted by latency_ms descending
+  severe-sample-count                                                                                                                          O(n)           one pass, constant extra memory
+                                                                                                                                               line 58: severe-sample-count: how many severe samples are there
+  sample-count                                                                                                                                 O(n)           one pass, constant extra memory
+                                                                                                                                               line 59: sample-count: how many samples are there
+  register-host <hostname>,<region>,<capacity_score>,<quarantined>                                                                             O(1) expected  probe the index for a clash, then append
+                                                                                                                                               line 63: register-host: add a host
+  quarantine-host <hostname>                                                                                                                   O(n)           one pass, changed in place
+                                                                                                                                               line 64: quarantine-host: for every host whose hostname is a given hostname, set quarantined to 1
+  quarantined-hosts                                                                                                                            O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                                               line 65: quarantined-hosts: show the hostname and region of hosts whose quarantined is 1
+  open-incident <inc_id>,<culprit_host>,<peak_latency>,<severity>,<resolved>                                                                   O(1) expected  probe the index for a clash, then append
+                                                                                                                                               line 67: open-incident: add an incident
+  resolve-incident <inc_id>                                                                                                                    O(n)           one pass, changed in place
+                                                                                                                                               line 68: resolve-incident: for every open incident whose inc_id is a given inc_id, set resolved to 1
+  active-incidents                                                                                                                             O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                                               line 69: active-incidents: show the inc_id, culprit_host, peak_latency and severity of open incidents
