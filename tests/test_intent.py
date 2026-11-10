@@ -12,6 +12,7 @@ and for the flexibility added after the first version:
   9. Bugs found by the gemini-build stress experiments stay fixed  (TestStressFindings)
  10. Relationships between collections                             (TestRelationships)
  11. Calculations, single values and standing rules                (TestThinking)
+ 12. Time, keys, a board, and playing in a terminal                (TestLive)
 """
 import os
 import random
@@ -1045,6 +1046,265 @@ class TestThinking(TestNativeAgainstReference):
 
         self.assertEqual(run('score-best\nhit 4\n'), '5,5\n')
         self.assertEqual(run('hit -7\nscore-best\n'), '2,9\n')
+
+
+GAME = ('The score is a number. The lives start at 3. The column starts at 3.\n'
+        'Rocks is a collection where each rock has an x (number) and a y (number).\n')
+
+
+class TestLive(TestNativeAgainstReference):
+    def run_ref(self, text, cmds):
+        prog, diags, _ = understand('', text)
+        self.assertEqual([d.msg for d in diags], [])
+        m = Machine(prog)
+        return [o for c in cmds for o in m.run(c)]
+
+    def events(self, text, base=GAME):
+        prog, diags, _ = understand(text, base)
+        self.assertEqual([d.msg for d in diags], [], text)
+        return [(t.on, canon(t)) for t in prog.events]
+
+    def test_time_phrasings(self):
+        for text, ms in [('Every second, the score increases by 1.', 1000),
+                         ('Each second the score increases by 1.', 1000),
+                         ('The score increases by 1 every second.', 1000),
+                         ('Every 2 seconds, increase the score by 1.', 2000),
+                         ('Every two seconds, add 1 to the score.', 2000),
+                         ('Every 250 milliseconds, the score goes up by 1.', 250),
+                         ('Every 250 ms, the score increases by 1.', 250),
+                         ('4 times a second, the score increases by 1.', 250),
+                         ('Twice a second, the score rises by 1.', 500),
+                         ('Every minute, the score increases by 1.', 60000)]:
+            with self.subTest(text):
+                self.assertEqual(self.events(text), [(('every', ms), 'set score = score + 1')])
+        self.assertEqual(self.events('Every second, the y of each rock increases by 1.'),
+                         [(('every', 1000), 'update rock: y = y + 1')])
+        self.assertEqual(self.events('Every second, remove the rocks whose y is over 9.'),
+                         [(('every', 1000), 'remove rock where y > 9')])
+
+    def test_key_phrasings(self):
+        for text in ['When the left key is pressed, the column decreases by 1.',
+                     'When left is pressed, decrease the column by 1.',
+                     'Whenever the left arrow key is pressed, the column decreases by 1.',
+                     'When the player presses left, the column decreases by 1.',
+                     'If the player presses the left arrow, the column goes down by 1.',
+                     'The column decreases by 1 when the left key is pressed.',
+                     'The column decreases by 1 when the player hits left.']:
+            with self.subTest(text):
+                self.assertEqual(self.events(text), [(('key', 'left'), 'set column = column - 1')])
+        self.assertEqual(self.events('When the a key is pressed, the score doubles.'),
+                         [(('key', 'a'), 'set score = score * 2')])
+        self.assertEqual(self.events('When return is pressed, the score becomes 0 if the lives are over 0.'),
+                         [(('key', 'enter'), 'set score = 0 where lives > 0')])
+
+    def test_what_cannot_happen_by_itself(self):
+        for text, msg in [('Every second, show the score.', 'what should change?'),
+                          ('Every second, increase the score by a given amount.',
+                           'there is nobody to give the amount here'),
+                          ('Tick: every second, the score increases by 1.',
+                           'this happens by itself, so it needs no name'),
+                          ('When the banana key is pressed, the score becomes 0.',
+                           'I don\'t know a key called "banana"'),
+                          ('Every 0.5 seconds, the score increases by 1.', 'decimal numbers are not supported yet'),
+                          ('Every 90 minutes, the score increases by 1.',
+                           'this has to be between one millisecond and one hour'),
+                          ('The game is over.', 'when is the game over?'),
+                          ('The board is 30 wide.', 'how high is the board?'),
+                          ('The board is 30 wide and 500 high.',
+                           'a board can be at most 200 wide and 60 high in this version'),
+                          ('Draw each rock as "#".', 'where should it be drawn?'),
+                          ('Draw each rock at its x and y.', 'what should it look like?'),
+                          ('Draw each rock at its x and y as "##".', 'one thing is drawn as one plain character'),
+                          ('Draw each rock at its x and y as "#".', 'how big is the board this is drawn on?'),
+                          ('The board is 9 by 9. Show the rocks above the board.',
+                           'only single values can be shown beside the board in this version'),
+                          ('Start with a rock at x 3.', 'what is the y of this rock?')]:
+            with self.subTest(text):
+                self.assertEqual(problem(text, GAME + 'Drop: add a rock.\n')[2].msg, msg)
+
+    def test_slips_in_the_new_sentences(self):
+        prog, diags, _ = understand('Evry secnd, the score increases by 1. When space is presed, the score becomes 0.',
+                                    GAME)
+        self.assertEqual((diags, [t.on for t in prog.events]), ([], [('every', 1000), ('key', 'space')]))
+
+    def test_the_new_words_are_not_reserved(self):
+        prog, diags, _ = understand('The high score starts at 9. Each ticket has a key (text), a board (text) and '
+                                    'seconds. Add a ticket. Show the tickets whose seconds are over 3.', '')
+        self.assertEqual(diags, [])
+        self.assertEqual(list(prog.collections['ticket'].fields), ['key', 'board', 'second'])
+        self.assertEqual(canon(prog.tasks[-1]), 'list all of ticket where second > 3')
+
+    def test_board_and_drawing(self):
+        for text in ['The board is 30 wide and 12 high.', 'Show a board 30 wide and 12 high.',
+                     'The screen is 30 by 12.', 'The grid has 30 columns and 12 rows.']:
+            with self.subTest(text):
+                self.assertEqual(understand(text, GAME)[0].board, (30, 12))
+        prog, diags, _ = understand(
+            'The board is 30 by 12. Draw each rock whose y is over 2 at its x and its y plus 1 as "o". '
+            'Draw @ at the column and 12. Show the score and the lives above the board. '
+            'Show the column below the board.', GAME)
+        self.assertEqual(diags, [])
+        self.assertEqual([(d.coll, d.at, d.glyph, d.where) for d in prog.draws],
+                         [('rock', (('field', 'x'), ('bin', 'add', ('field', 'y'), ('num', 1))), 'o',
+                           ('cmp', 'gt', ('field', 'y'), ('num', 2))),
+                          (None, (('value', 'column'), ('num', 12)), '@', None)])
+        self.assertEqual((prog.above, prog.below), (['score', 'lives'], ['column']))
+        prog, diags, _ = understand('Rocks have an x and a y. The board is 9 by 9. Draw each rock at its x and y as "#".', '')
+        self.assertEqual((diags, {prog.collections['rock'].fields[f].type for f in 'xy'}), ([], {'int'}))
+
+    def test_endings_and_starting_records(self):
+        for text in ['The game is over when the lives are under 1.', 'The game ends when the lives are under 1.',
+                     'When the lives are under 1, the game is over.', 'Once the lives are under 1 the game ends.']:
+            with self.subTest(text):
+                e, = understand(text, GAME)[0].ends
+                self.assertEqual((e.coll, e.where), ('(values)', ('cmp', 'lt', ('field', 'lives'), ('num', 1))))
+        e, = understand('The game is over when any rock has an x equal to the column and a y equal to 4.',
+                        GAME)[0].ends
+        self.assertEqual((e.coll, e.where), ('rock', ('and', ('cmp', 'eq', ('field', 'x'), ('value', 'column')),
+                                                      ('cmp', 'eq', ('field', 'y'), ('num', 4)))))
+        for text in ['Start with a rock at x 4, y 1.', 'There is a rock whose x is 4 and whose y is 1.',
+                     'At the start there is a rock with x 4 and y 1.', 'To begin with a rock has x 4, y 1.']:
+            with self.subTest(text):
+                s, = understand(text, GAME)[0].seeds
+                self.assertEqual(s.assigns, [('x', ('num', 4)), ('y', ('num', 1))])
+        self.assertEqual(problem('Players have a unique name. Reject duplicates. Add a player. '
+                                 'Start with a player whose name is "ann". There is a player whose name is "ann".',
+                                 '')[2].msg, 'two players would start with the same name')
+
+    def test_time_is_exact(self):
+        text = ('The slow starts at 0. The fast starts at 0. The log starts at 0. Show the slow, the fast and the log.\n'
+                'Every 300 milliseconds, the slow increases by 1.\n'
+                'Every 200 milliseconds, the fast increases by 1.\n'
+                'Every 600 milliseconds, the log becomes the slow times 10 plus the fast.\n')
+        got = self.run_ref(text, ['wait 199', 'slow-fast-log', 'wait 1', 'slow-fast-log', 'wait 400', 'slow-fast-log',
+                                  'wait 0', 'wait 5000', 'slow-fast-log', 'wait -1', 'wait', 'wait 2x', 'press left'])
+        self.assertEqual(got, ['0,0,0', '0,1,0', '2,3,23', '18,28,207',
+                               'error: wait takes a number of milliseconds, from 0 to 3600000'] * 1 +
+                         ['error: wait takes a number of milliseconds, from 0 to 3600000'] * 2 +
+                         ['error: unknown command press'])
+
+    def test_game_over_stops_time_and_keys(self):
+        text = ('The lives start at 2. The score is a number. Show the lives and the score.\n'
+                'Every second, the lives decrease by 1. Every second, the score increases by 1.\n'
+                'When the space key is pressed, the score doubles.\n'
+                'The game is over when the lives are under 1. Again: set the lives to 2.\n')
+        self.assertEqual(self.run_ref(text, ['press space', 'wait 5000', 'lives-score', 'wait 1000', 'press space',
+                                             'press x', 'again', 'press space', 'wait 1000', 'lives-score']),
+                         ['0,2', 'the game is over', 'the game is over',
+                          'error: no key called x is used here', '1,5'])
+
+    def script(self, name, text, cmds):
+        """The native program and the reference must print the same thing for the same events."""
+        src, exe = os.path.join(self.dir, name + '.intent'), os.path.join(self.dir, name)
+        with open(src, 'w') as fh:
+            fh.write(text)
+        prog = build(src, exe, quiet=True)
+        self.assertIsNotNone(prog, 'did not compile')
+        m = Machine(prog)
+        expected = [line for c in cmds for line in m.run(c)]
+        got = subprocess.run([exe], input='\n'.join(cmds) + '\n', capture_output=True, text=True, timeout=60)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertEqual(got.stdout.split('\n')[:-1], expected)
+        return exe, expected
+
+    def dodge(self):
+        with open(os.path.join(ROOT, 'examples', 'dodge.intent')) as fh:
+            return fh.read()
+
+    def test_dodge_natively(self):
+        for seed in range(5):
+            rng = random.Random(seed)
+            cmds = ['help', 'screen']
+            for _ in range(300):
+                cmds.append(rng.choice([f'wait {rng.choice([0, 1, 37, 149, 150, 151, 400, 1000, 2500])}',
+                                        'press left', 'press right', 'press up', 'screen', 'wait', 'column-row-score'
+                                        if False else 'screen']))
+            self.script('dodge', self.dodge(), cmds)
+
+    def test_live_program_natively(self):
+        text = ('The board is 12 by 6. The px starts at 6. The py starts at 3. The score is a number. '
+                'The title starts as "go". Show the score and the title above the board. '
+                'Show the px below the board.\n'
+                'Coins have an x, a y and a worth. Reject duplicates. Drop: add a coin. Show the coins.\n'
+                'Start with a coin at x 2, y 2, worth 5.\n'
+                'Every 100 milliseconds, the x of each coin increases by 1.\n'
+                'Every 300 milliseconds, remove the coins whose x is over 12.\n'
+                'Every 700 ms, the score increases by the px.\n'
+                'When w is pressed, the py decreases by 1 if the py is over 1.\n'
+                'When s is pressed, the py increases by 1 if the py is under 6.\n'
+                'When the space key is pressed, the worth of each coin doubles.\n'
+                'When the score is over 20, the title becomes "far".\n'
+                'The game ends when the score is over 60.\n'
+                'The game is over when any coin has a worth over 1000.\n'
+                'Draw each coin whose worth is over 5 at its x and y as "O". '
+                'Draw each coin whose worth is at most 5 at its x and y as "o".\n'
+                'Draw "@" at the px and the py.\n')
+        for seed in range(5):
+            rng = random.Random(seed)
+            cmds = []
+            for _ in range(300):
+                cmds.append(rng.choice([f'wait {rng.choice([0, 50, 99, 100, 101, 250, 700])}', 'press w', 'press s',
+                                        'press space', 'screen', 'list',
+                                        f'drop {rng.randint(-2, 14)},{rng.randint(0, 7)},{rng.randint(1, 9)}']))
+            self.script('live', text, cmds)
+
+    def test_a_game_is_remembered_and_replayed(self):
+        exe, _ = self.script('dodge', self.dodge(), ['screen'])
+        log = os.path.join(self.dir, 'dodge.log')
+        first = ['wait 450', 'press left', 'press left', 'wait 1200']
+
+        def run(cmds):
+            return subprocess.run([exe, log], input='\n'.join(cmds) + '\n', capture_output=True, text=True).stdout
+        run(first)
+        with open(log) as fh:
+            self.assertEqual(fh.read().split('\n')[:-1], first)
+        whole = subprocess.run([exe], input='\n'.join(first + ['screen']) + '\n', capture_output=True, text=True)
+        self.assertEqual(run(['screen']), whole.stdout)
+
+    @unittest.skipUnless(sys.platform != 'win32', 'needs a pseudo-terminal')
+    def test_playing_in_a_terminal(self):
+        import pty
+        import re
+        import select
+        import time
+        exe, _ = self.script('walk', (
+            'The board is 30 wide and 3 high. The column starts at 15. The score is a number.\n'
+            'Every 200 milliseconds, the score goes up by 1.\n'
+            'When the left key is pressed, the column decreases by 1.\n'
+            'When the right key is pressed, the column increases by 1.\n'
+            'Draw "@" at the column and 2. Show the score above the board.\n'), ['screen'])
+        for cmd in ([exe], [sys.executable, os.path.join(ROOT, 'intent'), 'run', os.path.join(self.dir, 'walk.intent')]):
+            with self.subTest(cmd[0]):
+                pid, fd = pty.fork()
+                if pid == 0:
+                    os.execv(cmd[0], cmd)
+                out = b''
+
+                def pump(seconds):
+                    nonlocal out
+                    end = time.time() + seconds
+                    while time.time() < end:
+                        if select.select([fd], [], [], 0.05)[0]:
+                            try:
+                                out += os.read(fd, 65536)
+                            except OSError:
+                                return
+                pump(1.6)
+                for key in (b'\x1b[D', b'\x1b[D', b'\x1b[C', b'\x1b[D'):
+                    os.write(fd, key)
+                    pump(0.15)
+                os.write(fd, b'q')
+                pump(0.5)
+                _, status = os.waitpid(pid, 0)
+                os.close(fd)
+                self.assertEqual(status, 0)
+                frames = [re.sub(r'\x1b\[[0-9?]*[A-Za-z]', '', f).replace('\r', '')
+                          for f in out.decode().split('\x1b[H')[1:]]
+                self.assertGreater(len(frames), 8)                  # time passed without any key
+                self.assertTrue(frames[0].startswith('score 0\n+' + '-' * 30 + '+\n'))
+                self.assertGreater(int(frames[-1].split('\n')[0].split()[1]), 5)    # the clock really ran
+                player = [line.index('@') for line in frames[-1].split('\n') if '@' in line]
+                self.assertEqual(player, [13])                      # from 15: two left, one right, one left
 
 
 if __name__ == '__main__':
