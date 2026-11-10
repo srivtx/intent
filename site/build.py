@@ -253,7 +253,7 @@ Draw each segment at its x and y as a green "o".</code></pre>
 '''
     ld = [{'@context': 'https://schema.org', '@type': 'SoftwareSourceCode', 'name': NAME,
            'description': DESCRIPTION, 'codeRepository': REPO, 'programmingLanguage': ['Python', 'LLVM IR'],
-           'license': f'{REPO}', 'version': __version__, 'dateModified': TODAY, 'keywords': KEYWORDS,
+           'version': __version__, 'dateModified': TODAY, 'keywords': KEYWORDS,
            'author': {'@type': 'Person', 'name': 'srivtx', 'url': 'https://github.com/srivtx'}},
           {'@context': 'https://schema.org', '@type': 'SoftwareApplication', 'name': NAME,
            'applicationCategory': 'DeveloperApplication', 'operatingSystem': 'macOS, Linux',
