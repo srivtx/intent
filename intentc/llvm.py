@@ -171,6 +171,11 @@ class Gen:
             return self.fload(f, c, rec, e[1]), c.fields[e[1]].type
         if k == 'param':
             return vals[e[1]]
+        if k == 'pfield':               # follow the link: find the owner by its key, read its property
+            p = self.prog.collections[c.fields[e[1]].ref]
+            key = self.prog.key_of(p.name)
+            row = f.r(f'call i64 {g(p.name, key.name, "find")}({LL[key.type]} {self.fload(f, c, rec, e[1])})')
+            return self.fload(f, p, self.rec(f, p, row), e[2]), p.fields[e[2]].type
         a, _ = self.expr(f, e[2], c, rec, vals)
         b, _ = self.expr(f, e[3], c, rec, vals)
         if e[1] == 'div':
@@ -256,9 +261,63 @@ class Gen:
             self.remove_row(c, cp, size)
 
     def print_fields(self, f, c, rec, names):
-        fmt = ','.join('%lld' if c.fields[n].type == 'int' else '%s' for n in names) + '\n'
-        args = ', '.join(f'{LL[c.fields[n].type]} {self.fload(f, c, rec, n)}' for n in names)
-        self.printf(f, fmt, args)
+        got = [self.expr(f, ('pfield',) + tuple(n.split('.')) if '.' in n else ('field', n), c, rec, {})
+               for n in names]
+        fmt = ','.join('%lld' if ty == 'int' else '%s' for _, ty in got) + '\n'
+        self.printf(f, fmt, ', '.join(f'{LL[ty]} {v}' for v, ty in got))
+
+    # ------------------------------------------------------------------ relationships
+    def kids(self, c, policy):
+        return [(d, rf) for d, rf in self.prog.children_of(c.name) if rf.on_removed == policy]
+
+    def relation(self, d, rf):
+        p = self.prog.collections[rf.ref]
+        key = self.prog.key_of(p.name)
+        KT = LL[key.type]
+        f = self.fn(g(d.name, rf.name, 'refers'), 'i1', f'{KT} %key',
+                    f'does any {d.name} belong to the {p.name} with this {key.name}?')
+
+        def body(i, cont):
+            hit = f.lab('hit')
+            f.cbr(self.eq(f, key.type, self.fload(f, d, self.rec(f, d, i), rf.name), '%key'), hit, cont)
+            f.at(hit)
+            f.e('ret i1 true')
+            f.at(f.lab('dead'))
+        self.rows(f, d, body)
+        f.e('ret i1 false')
+
+        f = self.fn(g(d.name, rf.name, 'sweep'),
+                    comment=f'remove every {d.name} whose {p.name} no longer exists, then whatever belonged to those')
+        before = f.load('i64', g(d.name, 'len'))
+
+        def orphan(rec):
+            row = f.r(f'call i64 {g(p.name, key.name, "find")}({KT} {self.fload(f, d, rec, rf.name)})')
+            return f.r(f'icmp slt i64 {row}, 0')
+        kept = self.compact(f, d, orphan)
+        if self.kids(d, 'cascade'):
+            more, done = f.lab('more'), f.lab('done')
+            f.cbr(f.r(f'icmp ne i64 {before}, {kept}'), more, done)
+            f.at(more)
+            self.swept(f, d)
+            f.br(done)
+            f.at(done)
+        f.e('ret void')
+
+    def blocked(self, f, c, rec):
+        """Refuse (print and return) if this record, about to be removed, still owns records."""
+        key = self.prog.key_of(c.name)
+        for d, rf in self.kids(c, 'restrict'):
+            used = f.r(f'call i1 {g(d.name, rf.name, "refers")}({LL[key.type]} {self.fload(f, c, rec, key.name)})')
+            no, ok = f.lab('refuse'), f.lab('free')
+            f.cbr(used, no, ok)
+            f.at(no)
+            self.puts(f, f'{c.name} still has {d.label.lower()}')
+            f.e('ret void')
+            f.at(ok)
+
+    def swept(self, f, c):
+        for d, rf in self.kids(c, 'cascade'):
+            f.e(f'call void {g(d.name, rf.name, "sweep")}()')
 
     def scan_find(self, c, fl):
         C, K, KT = c.name, fl.name, LL[fl.type]
@@ -511,6 +570,16 @@ class Gen:
             v, _ = self.expr(f, t.expr, None, None, vals)
             self.printf(f, '%lld\n', f'i64 {v}')
         elif k == 'add':
+            for fl in c.fields.values():
+                if fl.ref:
+                    key = self.prog.key_of(fl.ref)
+                    row = f.r(f'call i64 {g(fl.ref, key.name, "find")}({LL[key.type]} {vals[fl.name][0]})')
+                    lost, ok = f.lab('lost'), f.lab('ok')
+                    f.cbr(f.r(f'icmp slt i64 {row}, 0'), lost, ok)
+                    f.at(lost)
+                    self.puts(f, f'no such {fl.ref}')
+                    f.e('ret void')
+                    f.at(ok)
             for fl in c.unique_fields():
                 row = f.r(f'call i64 {g(C, fl.name, "find")}({LL[fl.type]} {vals[fl.name][0]})')
                 clash, ok = f.lab('clash'), f.lab('ok')
@@ -544,8 +613,10 @@ class Gen:
             if k == 'find':
                 f.e(f'call void {g(C, "print")}(ptr {self.rec(f, c, row)})')
             else:
+                self.blocked(f, c, self.rec(f, c, row))
                 f.store('i32', '1', '@dirty')
                 f.e(f'call void {g(C, "remove_row")}(i64 {row})')
+                self.swept(f, c)
         elif k == 'find':
             hits = f.var('i64', '0')
             kv, kt = vals[t.key]
@@ -557,15 +628,30 @@ class Gen:
                 f.store('i64', f.r(f'add i64 {f.load("i64", hits)}, 1'), hits)
             self.rows(f, c, body)
             self.none_if_zero(f, f.load('i64', hits))
-        elif k == 'remove_key':
+        elif k in ('remove_key', 'remove_where'):
+            if k == 'remove_key':
+                kv, kt = vals[t.key]
+                goes = lambda rec: self.eq(f, kt, self.fload(f, c, rec, t.key), kv)       # noqa: E731
+            else:
+                goes = lambda rec: self.cond(f, t.where, c, rec, vals)                    # noqa: E731
+            if self.kids(c, 'restrict'):
+                def check(i, cont):
+                    rec = self.rec(f, c, i)
+                    self.guard(f, goes(rec), cont)
+                    self.blocked(f, c, rec)
+                self.rows(f, c, check)
             f.store('i32', '1', '@dirty')
-            kv, kt = vals[t.key]
             before = f.load('i64', g(C, 'len'))
-            kept = self.compact(f, c, lambda rec: self.eq(f, kt, self.fload(f, c, rec, t.key), kv))
-            self.none_if_zero(f, f.r(f'sub i64 {before}, {kept}'))
-        elif k == 'remove_where':
-            f.store('i32', '1', '@dirty')
-            self.compact(f, c, lambda rec: self.cond(f, t.where, c, rec, vals))
+            kept = self.compact(f, c, goes)
+            if self.kids(c, 'cascade'):
+                more, done = f.lab('more'), f.lab('done')
+                f.cbr(f.r(f'icmp ne i64 {before}, {kept}'), more, done)
+                f.at(more)
+                self.swept(f, c)
+                f.br(done)
+                f.at(done)
+            if k == 'remove_key':
+                self.none_if_zero(f, f.r(f'sub i64 {before}, {kept}'))
         elif k == 'update':
             f.store('i32', '1', '@dirty')
 
@@ -826,6 +912,10 @@ class Gen:
     def module(self, source_name):
         for c in self.prog.collections.values():
             self.collection(c, self.plan.colls[c.name])
+        for d in self.prog.collections.values():
+            for rf in d.fields.values():
+                if rf.ref:
+                    self.relation(d, rf)
         for t in self.prog.tasks:
             self.task(t)
         self.main()
