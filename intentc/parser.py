@@ -1779,6 +1779,8 @@ class Parser:
                 return ('outer', c.val[1])
             if c.kind == 'SCALE':
                 return binop('mul', prim(False), ('num', c.val))
+            if c.kind == 'FN':             # "the square root of the area", "the sine of the angle"
+                return ('fn', c.val, prim(False))
             if c.kind == 'LP':
                 e = add()
                 if pos >= len(toks) or toks[pos].kind != 'RP':
@@ -1901,7 +1903,7 @@ class Parser:
             return ('cmp', 'eq', ('field', p[0].val), ('param', p[0].val)), p[0].val
         i, lhs = 0, None
         stop = next((k for k, c in enumerate(p) if c.kind in ('IS', 'NOT', 'CMP', 'EQSYM')), len(p))
-        if p[0].kind in ('FIELD', 'PFIELD', 'VALUE', 'LOOK') or \
+        if p[0].kind in ('FIELD', 'PFIELD', 'VALUE', 'LOOK', 'FN') or \
                 (p[0].kind in ('NUM', 'DEC', 'LP', 'PARAM', 'SCALE') and any(c.kind == 'OP' for c in p[:stop])) or \
                 (p[0].kind == 'PARAM' and 0 < stop < len(p)):
             lhs, i = self.parse_expr(p[:stop])       # "whose price times quantity is over 100"
