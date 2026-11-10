@@ -441,6 +441,8 @@ All of these compile to the identical IR `update customer: age = age * 2` (teste
 | remove by key, order not mentioned | swap the last row into the hole, O(1) |
 | + `Keep customers in the order they were added.` | close the gap instead, O(n) |
 | filter + projection, or filter + summary | one fused pass, nothing copied |
+| `whose age is between ...`, `sorted by age`, `the top 3 ... by age` | + an ordered index on age: a balanced tree (treap) |
+| ... but something changes every age at once, as often as those are read | no tree: it would be rebuilt as often as it is read |
 
 Same program, same commands (n adds, n finds, n/2 removes), seconds on this machine
 (`python3 bench/bench.py`):
@@ -455,6 +457,46 @@ Same program, same commands (n adds, n finds, n/2 removes), seconds on this mach
 The third column is one extra sentence of intent changing the generated data structure
 code, without touching anything else in the program. It is slow on purpose-built churn
 because v0.1 rebuilds the index after an order-preserving removal; see next steps.
+
+### An ordered index, chosen from what the program asks
+
+The workload a reviewer proposed as the test of representation discovery:
+
+```
+Customers is a collection.
+Each customer has a name, an email and an age.
+Emails are unique. Reject duplicates.
+
+Add a customer.
+Find a customer by email.
+Remove a customer by email.
+in-range: show the customers whose age is between a given low and a given high.
+How many customers are aged at least a given age?
+oldest: show the top 5 customers by age.
+```
+
+Nothing in it mentions a data structure. `./intent explain` shows what the planner builds and why:
+an array for the records, a hash index on email (a find is one probe, O(1)), and a
+balanced tree over the rows sorted by age, so a range is found in O(log n) and read in order
+without sorting, and the 5 oldest are the last 5 in the tree. Adding or removing a customer puts
+it in or takes it out of the tree in O(log n). The tree is a treap whose nodes are the row numbers
+themselves, so it needs no memory of its own beyond two children and a priority per row.
+
+The planner only keeps the tree when it pays: a change that moves many records at once (`For every
+customer, double their age.`, `Remove the customers whose ...`) leaves it to be rebuilt at the next
+read, so if such changes are as common as the reads it would serve, there is no tree and `explain`
+says so. The tree only narrows which records are looked at; each one is still tested against the
+whole condition, so the answer is the one a pass over every record would give.
+
+Seconds for n adds, then n/10 rounds of a narrow range, a count, the 5 oldest, a find and a removal
+(`python3 bench/ordered.py`; all three builds print the same lines):
+
+| records | planner's choice | `--no-order` (hash index only) | `--no-index` |
+|---:|---:|---:|---:|
+| 10,000 | 0.029 | 1.270 | 1.595 |
+| 20,000 | 0.057 | 5.354 | 6.229 |
+| 40,000 | 0.098 | 22.280 | 25.473 |
+| 80,000 | 0.213 | 96.721 | 107.003 |
 
 ## Is the generated code right?
 
@@ -594,5 +636,6 @@ intentc/play.py         playing in a terminal with the reference interpreter
 intentc/web.py          serving over the network with the reference interpreter, and the page
 tests/                  phrasings, questions, planner, spelling, definitions, apps, native-vs-reference
 bench/bench.py          the table above
+bench/ordered.py        the ordered index against scanning and sorting
 examples/               customers, questions, leaderboard, todo, shop, store, calculator, arcade, dodge, snake, shooter
 ```

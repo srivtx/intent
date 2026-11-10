@@ -14,6 +14,7 @@ from .ir import STATE, conjuncts, lookups, looks_into, task_exprs, walk_cond_exp
 class CollPlan:
     name: str
     indexes: list = field(default_factory=list)       # property names with a hash index
+    orders: list = field(default_factory=list)        # property names with an ordered index (a balanced tree)
     removal: str = None                               # None | 'swap' | 'shift'
     decisions: list = field(default_factory=list)     # (title, detail, [(line, why)])
 
@@ -23,7 +24,160 @@ class Plan:
     colls: dict = field(default_factory=dict)
     tasks: dict = field(default_factory=dict)         # task name -> (cost, how)
     picks: dict = field(default_factory=dict)         # task name -> (unique property, the value it must equal)
+    walks: dict = field(default_factory=dict)         # task name -> Walk: read through an ordered index
     local_rules: bool = False                         # every rule reads and changes one record only
+
+
+@dataclass
+class Walk:
+    """How a task reads through the ordered index on one property.
+
+    The index only narrows which records are looked at: every record it yields is still tested
+    against the whole condition, so the answer is the one a pass over every record would give.
+    """
+    prop: str
+    lo: tuple = None                                  # (strict, value): over this (strict) or at least this
+    hi: tuple = None                                  # (strict, value): under this (strict) or at most this
+    whole: bool = False                               # the bounds are the entire condition
+
+
+# A bound is worked out once, before the walk, so it may only use what cannot change during it
+# and cannot fail: no property of the record, no chance, no division.
+STEADY = ('num', 'str', 'param', 'value', 'dec', 'cents', 'fn')
+FLIP = {'ge': 'le', 'gt': 'lt', 'le': 'ge', 'lt': 'gt', 'eq': 'eq'}
+
+
+def steady(e):
+    return all(x[0] in STEADY or (x[0] == 'bin' and x[1] in ('add', 'sub', 'mul', 'dmul')) for x in walk_expr(e))
+
+
+def bounds(c, where):
+    """Per property: what the condition says about its lowest and highest value.
+
+    "whose age is between a given low and a given high" -> {'age': Walk(lo=(False, low), hi=(False, high))}
+    """
+    if where is None or any(e[0] == 'rand' for e in walk_cond_exprs(where)):
+        return {}
+    parts = list(conjuncts(where))
+    out, used = {}, {}
+    for n, part in enumerate(parts):
+        if part[0] != 'cmp' or part[1] not in FLIP:
+            continue
+        for a, b, op in ((part[2], part[3], part[1]), (part[3], part[2], FLIP[part[1]])):
+            if a[0] != 'field' or a[1] not in c.fields or not steady(b):
+                continue
+            w = out.setdefault(a[1], Walk(a[1]))
+            took = False
+            if op in ('ge', 'gt', 'eq') and w.lo is None:
+                w.lo, took = (op == 'gt', b), True
+            if op in ('le', 'lt', 'eq') and w.hi is None:
+                w.hi, took = (op == 'lt', b), True
+            if took:
+                used.setdefault(a[1], set()).add(n)
+            break
+    for name, w in out.items():
+        w.whole = len(used.get(name, ())) == len(parts)
+    return out
+
+
+def order_wish(prog, plan, t):
+    """Which ordered index would make this task cheaper, and how it would read it (or None)."""
+    c = prog.collections.get(t.coll)
+    if c is None or c.name == STATE or t.kind not in ('list', 'agg') or t.on:
+        return None
+    pick = pick_of(prog, t)
+    if pick and pick[0] in plan.colls[c.name].indexes:
+        return None                 # one probe of the hash index finds the only record it can be
+    b = bounds(c, t.where)
+    if t.kind == 'list' and t.order:
+        return b.get(t.order[0]) or Walk(t.order[0], whole=t.where is None)
+    for name, w in b.items():
+        if w.lo or w.hi:
+            return w
+    return None
+
+
+def unsettles(prog, t, c, prop):
+    """Does this change leave the ordered index on prop (of collection c) to be built again?
+    (Adding a record or removing one by a unique key keeps it up to date in O(log n).)"""
+    if t.coll != c.name:            # removing what these belong to sweeps them away too
+        return t.kind in ('remove_key', 'remove_where') and any(
+            d.name == c.name and rf.on_removed == 'cascade' for d, rf in prog.children_of(t.coll))
+    if t.kind in ('add', 'make'):
+        return False            # a replaced record goes out and back in, O(log n)
+    if t.kind == 'update':
+        pick = pick_of(prog, t)
+        if pick and c.fields[pick[0]].unique and not t.on:
+            return False        # the one record found by its key goes out and back in, O(log n)
+        return any(name == prop for name, _ in t.assigns)
+    if t.kind == 'remove_where':
+        return True
+    if t.kind == 'remove_key':
+        return True             # several records may go at once (a key that is not unique)
+    return False
+
+
+def choose_orders(prog, plan, c, cp, no_index):
+    """An ordered index is a balanced tree of row numbers sorted by one property. Keep one when the
+    commands that read through it outnumber those that would force it to be rebuilt."""
+    readers = {}
+    for t in prog.tasks:
+        if t.coll == c.name:
+            w = order_wish(prog, plan, t)
+            if w:
+                readers.setdefault(w.prop, []).append((t, w))
+    for prop, rs in readers.items():
+        why = []
+        for t, w in rs:
+            if t.kind == 'list' and t.order and t.order[0] == prop:
+                why.append((t.line, f'"{t.name}" shows {c.label.lower()} in order of {prop}' +
+                            (f', only the first {t.limit}' if t.limit is not None else '')))
+            else:
+                why.append((t.line, f'"{t.name}" asks about a range of {prop}'))
+        forever = [t for t in prog.rules + prog.events if unsettles(prog, t, c, prop)]
+        churn = [t for t in prog.tasks if unsettles(prog, t, c, prop) and
+                 not (t.kind == 'remove_key' and t.coll == c.name and c.fields[t.key].unique)]
+        if no_index:
+            cp.decisions.append((f'no ordered index on {prop}', f'disabled with --no-{"index" if no_index is True else "order"}; '
+                                 'these sort or scan', why))
+        elif forever:
+            t = forever[0]
+            cp.decisions.append((f'no ordered index on {prop}', 'it would be out of date almost all the time',
+                                 why + [(t.line, f'this changes {prop} again and again, by itself')]))
+        elif len(churn) >= len(rs):
+            cp.decisions.append((f'no ordered index on {prop}', 'it would be rebuilt as often as it is read',
+                                 why + [(t.line, f'"{t.name}" moves or changes many {c.label.lower()} at once')
+                                        for t in churn]))
+        else:
+            cp.orders.append(prop)
+            cp.decisions.append((
+                f'ordered index on {prop}',
+                f'a balanced tree (treap) over the rows, sorted by {prop} then position: '
+                'O(log n) to add or remove one, O(log n + k) to read k in order',
+                why + [(t.line, f'"{t.name}" leaves it to be rebuilt at the next read, O(n log n)')
+                       for t in churn]))
+            for t, w in rs:
+                plan.walks[t.name] = w
+
+
+def walk_cost(c, t, w):
+    """What reading through the ordered index costs this task, and how it goes."""
+    prop = w.prop
+    ranged = w.lo is not None or w.hi is not None
+    where = 'from the first in range to the last' if ranged else 'from one end to the other'
+    if t.kind == 'agg':
+        return 'O(log n + k)', f'walk the {prop} index {where}; k is how many are in range'
+    if t.order and t.order[0] == prop:
+        back = t.order[1]
+        how = f'walk the {prop} index {where}' + (', backwards' if back else '') + \
+            (', ties kept first-added first' if back and c.ordered else ', nothing sorted')
+        if t.limit is not None:
+            return ('O(log n + k)' if ranged or t.where is not None else 'O(log n)',
+                    how + f', stopping after {t.limit}')
+        return ('O(log n + k)' if ranged else 'O(n)'), how
+    if c.ordered:
+        return 'O(log n + k log k)', f'walk the {prop} index {where}, then put those k back in position order'
+    return 'O(log n + k)', f'walk the {prop} index {where}; k is how many are in range'
 
 
 def pick_of(prog, t):
@@ -114,7 +268,7 @@ def make_plan(prog, no_index=False):
                             why.append((t.line, f'"{t.name}" looks up the {c.name} of each {d.name}'))
             if not why:
                 continue
-            if no_index:
+            if no_index is True:
                 cp.decisions.append((f'no index on {f.name}', 'disabled with --no-index; these now scan', why))
             else:
                 cp.indexes.append(f.name)
@@ -124,6 +278,8 @@ def make_plan(prog, no_index=False):
             if t.kind in ('find', 'remove_key') and not c.fields[t.key].unique:
                 cp.decisions.append((f'no index on {t.key}', 'it is not unique, so a lookup may match many rows',
                                      [(t.line, f'"{t.name}" scans')]))
+        if c.name != STATE:
+            choose_orders(prog, plan, c, cp, no_index)
         single = [t for t in tasks if t.kind == 'remove_key' and c.fields[t.key].unique]
         if single:
             if c.ordered:
@@ -143,6 +299,8 @@ def make_plan(prog, no_index=False):
                 plan.picks[t.name] = pick
                 plan.tasks[t.name] = ('O(1) expected', f'one index probe on {pick[0]}, ' + {
                     'update': 'changed in place', 'list': 'then print', 'agg': 'nothing else looked at'}[t.kind])
+            elif t.name in plan.walks:
+                plan.tasks[t.name] = walk_cost(c, t, plan.walks[t.name])
             elif t.kind in ('add', 'make'):
                 if cp.indexes:
                     plan.tasks[t.name] = ('O(1) expected', 'probe the index for a clash, then append')
@@ -198,6 +356,23 @@ def make_plan(prog, no_index=False):
                     how += f'; then one pass over {d.label.lower()} to drop those left without a {c.name}'
                 elif rf.on_removed == 'restrict':
                     how += f'; first a pass over {d.label.lower()} to see that none belong to it'
+        plan.tasks[t.name] = (cost, how)
+    for t in prog.work():
+        cp = plan.colls.get(t.coll)
+        if not cp or not cp.orders or t.name in plan.walks:
+            continue
+        cost, how = plan.tasks[t.name]
+        those = ' and '.join(cp.orders) + (' indexes' if len(cp.orders) > 1 else ' index')
+        unique_key = t.kind == 'remove_key' and prog.collections[t.coll].fields[t.key].unique
+        if t.kind in ('add', 'make') or unique_key or (t.kind == 'update' and t.name in plan.picks):
+            way = 'into' if t.kind in ('add', 'make') else 'out of' if unique_key else 'out of and back into'
+            how += f'; {way} the {those}, O(log n)' + (', then renumbered, O(n)' if
+                                                       unique_key and cp.removal == 'shift' else '')
+            if cost.startswith('O(1)'):
+                cost = 'O(log n) expected'
+        elif t.kind in ('remove_key', 'remove_where') or (
+                t.kind == 'update' and any(n in cp.orders for n, _ in t.assigns)):
+            how += f'; the {those} rebuilt at the next read'
         plan.tasks[t.name] = (cost, how)
     for t in prog.tasks:
         if t.kind == 'calc':

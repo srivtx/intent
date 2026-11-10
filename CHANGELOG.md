@@ -8,9 +8,17 @@ always shows the current reading.
 Pictures and maths: a grid of records from one sentence, sines and square roots, any colour,
 pictures drawn by hand, words, records that choose their own look, colour and drawing order, and
 `./intent svg`. Plus four fixes from
-building a 3D torus and a spinning cube in pure Intent.
+building a 3D torus and a spinning cube in pure Intent. And the planner's first new data structure
+since hash indexes: an ordered index, chosen from what the program asks.
 
 ### Added
+- **Ordered indexes.** When a program asks for a range (`whose age is between ...`, `under`,
+  `at least`), an ordering (`sorted by age`) or the top or bottom few (`the top 5 ... by age`),
+  the planner can keep a balanced tree (a treap over the row numbers) sorted by that property.
+  Ranges are found in O(log n) and read in order without sorting; adding or removing one record
+  costs O(log n). It is only kept when the reads it serves outnumber the changes that would force
+  a rebuild, and `./intent explain` gives the reasons either way. 450 times faster than scanning
+  and sorting at 80,000 records (`bench/ordered.py`); `--no-order` builds without it, to compare.
 - **Maths.** `the square root of`, `the sine of`, `the cosine of` (degrees),
   `the absolute value of`, `the nearest whole number to`, `the whole part of`. Worked out in
   whole numbers (a sine table written into the compiler), so native code and the reference agree
