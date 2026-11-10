@@ -19,7 +19,7 @@
 > between versions, there are things it cannot say yet ([limits](#what-this-version-cannot-do)),
 > and it is tested on macOS and Linux only. Use it to explore the idea, not to hold data you care about.
 
-**[Language guide](docs/language.md)** · **[Changelog](CHANGELOG.md)** · **[Examples](examples/)** · **[Stress experiments](gemini-build/README.md)**
+**[Website](https://intent.srivtx.xyz)** · **[Language guide](docs/language.md)** · **[Changelog](CHANGELOG.md)** · **[Examples](examples/)** · **[Stress experiments](gemini-build/README.md)**
 
 # Intent
 

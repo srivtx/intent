@@ -18,3 +18,20 @@ jobs:
       - run: python -m pip install pytest
       - run: clang --version
       - run: python -m pytest tests -q
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install markdown==3.9
+      - run: python site/build.py
+      - name: every page has a title, a description, a canonical address and a social card
+        run: |
+          for f in _site/index.html _site/guide/index.html _site/examples/index.html _site/changelog/index.html; do
+            for tag in '<title>' 'name="description"' 'rel="canonical"' 'property="og:image"' 'application/ld+json'; do
+              grep -q "$tag" "$f" || { echo "$f is missing $tag"; exit 1; }
+            done
+          done
+          test -s _site/sitemap.xml && test -s _site/robots.txt && test -s _site/llms.txt
