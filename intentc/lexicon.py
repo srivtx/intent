@@ -48,8 +48,8 @@ _add('OP', 'div', 'divided by')
 
 _add('VERB', 'multiply', 'multiply|multiplying|multiplies')
 _add('VERB', 'divide', 'divide|dividing|divides')
-_add('VERB', 'increase', 'increase|increasing|increases|increased|raise|raising|raised|increment|bump|grow')
-_add('VERB', 'decrease', 'decrease|decreasing|decreases|decreased|reduce|reducing|reduced|lower|lowering|lowered|decrement|shrink')
+_add('VERB', 'increase', 'increase|increasing|increases|increased|raise|raising|raised|increment|bump|bump up|boost|grow')
+_add('VERB', 'decrease', 'decrease|decreasing|decreases|decreased|reduce|reducing|reduced|lower|lowering|lowered|decrement|shrink|cut|cut down')
 _add('VERB', 'addv', 'add|adding|adds')
 _add('VERB', 'subv', 'subtract|subtracting|subtracts|take away')
 _add('VERB', 'set', 'set|setting|sets')
@@ -71,15 +71,16 @@ _add('PRON', None, '''it|its current value|its value|its current|itself|the curr
 # ---- aggregates -----------------------------------------------------------------------
 _add('AGG', 'avg', 'average|mean|avg|average of')
 _add('AGG', 'sum', 'sum|total|sum of|total of|add up|sum up')
-_add('AGG', 'count', 'count|how many|number of|the number of|count of|count up')
+_add('AGG', 'count', 'count|how many|number of|the number of|count of|count up|tally|tally up')
 _add('AGG', 'max', 'largest|biggest|highest|maximum|max|greatest')
 _add('AGG', 'min', 'smallest|lowest|minimum|min|least')
 
 # ---- actions --------------------------------------------------------------------------
 _add('ACT', 'show', '''show|show me|list|print|print out|display|retrieve|return|returns|give me|get|fetch
- |output|produce|what are|what is|what|tell me|report|see|view|it returns|give back''')
+ |output|produce|what are|what is|what|tell me|report|see|view|it returns|give back
+ |pick|select|choose|who are|who is''')
 _add('ACT', 'find', 'find|look up|lookup|search|search for|locate')
-_add('ACT', 'remove', 'remove|delete|drop|discard|erase|get rid of')
+_add('ACT', 'remove', 'remove|delete|drop|discard|erase|get rid of|wipe out|throw away|throw out|purge|clear out')
 _add('ACT', 'keep', 'keep|retain|keep only|only keep|retain only')
 _add('ACT', 'sort', 'sort|order|arrange|rank|sorted')
 _add('TAKE', None, '''take|takes|it takes|accept|accepts|it accepts|receive|receives|that takes|that accepts
@@ -88,9 +89,16 @@ _add('TAKE', None, '''take|takes|it takes|accept|accepts|it accepts|receive|rece
 # ---- ordering -------------------------------------------------------------------------
 _add('SORTBY', None, 'sorted by|ordered by|order by|sort by|in order of|arranged by|ranked by|by order of')
 _add('DIR', 'asc', '''ascending|in ascending order|ascending order|smallest first|lowest first
- |from lowest to highest|from smallest to largest|low to high''')
+ |from lowest to highest|from smallest to largest|low to high|alphabetically|in alphabetical order''')
 _add('DIR', 'desc', '''descending|in descending order|descending order|largest first|highest first|biggest first
  |from highest to lowest|from largest to smallest|high to low|in reverse|reversed''')
+
+# ---- limits ---------------------------------------------------------------------------
+_add('TOP', 'desc', 'top|the top')
+_add('TOP', 'asc', 'bottom|the bottom')
+_add('FIRST', None, 'first|the first')
+_add('PCT', None, 'percent|per cent')
+_add('BETWEEN', None, 'between|is between|are between|in the range')
 
 # ---- conditions -----------------------------------------------------------------------
 _add('WHERE', None, '''whose|where|who have|that have|which have|with|having|who are|that are|which are
@@ -145,7 +153,7 @@ SYMS = {
     '=': ('EQSYM', None), '==': ('CMP', 'eq'), '!=': ('CMP', 'ne'),
     '>': ('CMP', 'gt'), '<': ('CMP', 'lt'), '>=': ('CMP', 'ge'), '<=': ('CMP', 'le'),
     ':': ('COLON', None), ',': ('COMMA', None), '(': ('LP', None), ')': ('RP', None),
-    '&': ('AND', None),
+    '&': ('AND', None), '%': ('PCT', None),
 }
 
 # Property types the language assumes from a conventional name when nothing else decides it.
