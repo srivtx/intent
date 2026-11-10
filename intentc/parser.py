@@ -14,8 +14,8 @@ import re
 from fractions import Fraction
 from dataclasses import dataclass, fields, replace
 
-from .ir import (CHANCE_WIDEST, COLOURS, KEYS, LONGEST_WAIT, STATE, Collection, Diag, Field, Program, Task, binop,
-                 canon, fmt_glyph, fmt_cond, fmt_dec, fmt_event, fmt_expr, negate, task_exprs, walk_cond_exprs, walk_expr)
+from .ir import (CHANCE_WIDEST, COLOUR_NAMES, KEYS, LONGEST_WAIT, STATE, Collection, Diag, Field, Figure, Program, Task, binop,
+                 canon, colour_value, fmt_glyph, fmt_cond, fmt_dec, fmt_event, fmt_expr, negate, task_exprs, walk_cond_exprs, walk_expr)
 from .lexicon import (BOARD_WORDS, CONVENTION, COUNT_NOUNS, DRAW_WORDS, HIGH_WORDS, MAX_PHRASE, PHRASES, PRESS_VERBS,
                       PRESSED, SYMS, TYPE_WORDS, UNITS, UNSUPPORTED_TYPES, WIDE_WORDS, all_known_words, singular)
 from .source import Source, Tok, split_sentences, tokenize
@@ -225,6 +225,13 @@ class Parser:
         for item in self.src.items():
             if item[0] == 'sent':
                 self.sentence(item[1])
+                continue
+            if item[0] == 'figure':
+                self.cur = item[1]
+                try:
+                    self.readings.append((item[1][0].line, self.sent_text(item[1]), self.decl_figure(*item[1:])))
+                except Problem as e:
+                    self.diags.append(e.diag)
                 continue
             _, header, items = item
             try:
@@ -647,6 +654,10 @@ class Parser:
                     raise self.unknown_word(CT('UNK', w, [toks[i]]))
         if words[0] in DRAW_WORDS and self.free(words[0]):
             return self.decl_draw(toks)
+        if words[0] == 'write' and self.free('write'):        # "Write "Hello" at 3 and 2.": a text, one cell each
+            return self.decl_draw(toks, spell=True)
+        if words[:2] == ['the', 'background'] and self.free('background') and len(words) > 3 and words[2] == 'is':
+            return self.decl_background(toks)
         seeded = self.decl_seed(toks, words)
         if seeded:
             return seeded
@@ -1248,16 +1259,42 @@ class Parser:
                          if lone else 'I can\'t tell how big the board is',
                          hint='e.g. "The board is 30 wide and 12 high." or "The board is 30 by 12."')
         w, h = sizes[::-1] if m.group(1).startswith('NH') else sizes
-        if w > 200 or h > 60:
-            raise self.p('error', toks, 'a board can be at most 200 wide and 60 high in this version')
+        if w > 400 or h > 200:          # a picture can be big; to be played, it has to fit the terminal it is in
+            raise self.p('error', toks, 'a board can be at most 400 wide and 200 high in this version')
         self.prog.board, self.prog.board_line = (w, h), toks[0].line
         return f'board {w} wide, {h} high'
 
-    def decl_draw(self, toks):
-        """"Draw each rock at its x and y as "#"."  "Draw "@" at the column and the row."."""
-        hint = 'e.g. Draw each rock at its x and y as "#".'
+    def decl_background(self, toks):
+        """"The background is light yellow.": the colour of the board where nothing is drawn, in a picture."""
+        said = toks[3:]
+        if len(said) == 1 and said[0].kind == 'str' and colour_value(said[0].text):
+            colour = said[0].text.lower()
+        elif said and all(t.kind == 'word' for t in said) and ''.join(t.text for t in said) in COLOUR_NAMES:
+            colour = ''.join(t.text for t in said)
+        else:
+            raise self.p('error', said or toks, 'I don\'t know this colour',
+                         'a colour is one of the web\'s colour names ("salmon", "light blue") or "#rrggbb"')
+        self.prog.background = colour
+        return f'background {colour}'
+
+    def decl_draw(self, toks, spell=False):
+        """"Draw each rock at its x and y as "#"."  "Draw "@" at the column and the row."."
+        "Write "Hello" at 3 and 2.": with spell, every character of the text, one cell each, rightward."""
+        hint = 'e.g. Write "Hello" at 3 and 2.' if spell else 'e.g. Draw each rock at its x and y as "#".'
+        hexed = next((i for i in range(len(toks) - 1) if toks[i].kind == 'word' and toks[i].text == 'in' and
+                      toks[i + 1].kind == 'str' and colour_value(toks[i + 1].text)), None)
+        if hexed is not None:                       # in "#ff8800"
+            quoted = toks[hexed + 1].text.lower()
+            toks = toks[:hexed] + toks[hexed + 2:]
         looks = [i for i, t in enumerate(toks) if t.kind in ('str', 'bad')]
         own = None if looks else self.own_glyph(toks)
+        if not looks and not own and not spell:     # a picture drawn by hand: "Draw a flower at 5 and 3."
+            for i, t in enumerate(toks):
+                if i == 0 or (t.kind == 'word' and t.text == 'as'):
+                    found = self.a_figure(toks, i + 1)
+                    if found and (i or (found[0] + 1 < len(toks) and toks[found[0] + 1].text in ('at', 'in'))):
+                        own = (max(i, 1), found[0], ('figure', found[1]))
+                        break
         if own:                                     # as its glyph: each record says what it looks like
             a, g, glyph = own
         else:
@@ -1266,18 +1303,29 @@ class Parser:
                              'one thing is drawn as one character', hint=hint)
             g = a = looks[0]
             glyph = toks[g].text if toks[g].kind == 'str' else toks[g].raw
-            if len(glyph) != 1 or not 33 <= ord(glyph) <= 126:
-                raise self.p('error', toks[g], 'one thing is drawn as one plain character', hint=hint)
+            if spell and (not glyph or any(not 32 <= ord(ch) <= 126 for ch in glyph)):
+                raise self.p('error', toks[g], 'what is written is plain characters', hint=hint)
+            if not spell and (len(glyph) != 1 or not 33 <= ord(glyph) <= 126):
+                raise self.p('error', toks[g], 'one thing is drawn as one plain character',
+                             hint='to put a whole text on the board, write it: Write "Hello" at 3 and 2.')
 
         def word(i, among):
             return 0 <= i < len(toks) and toks[i].kind == 'word' and toks[i].text in among
 
         def colour_at(seq, i):
-            return 0 <= i < len(seq) and seq[i].kind == 'word' and seq[i].text in COLOURS and self.free(seq[i].text)
-        colour = None
-        if colour_at(toks, a - 1):                  # as a red "#"
-            a -= 1
-            colour = toks[a].text
+            """How many words from seq[i] name a colour: "red", "salmon", "light blue" (as the web's "lightblue")."""
+            for n in (3, 2, 1):
+                ws = seq[i:i + n]
+                if 0 <= i and len(ws) == n and all(t.kind == 'word' and self.free(t.text) for t in ws) and \
+                        ''.join(t.text for t in ws) in COLOUR_NAMES:
+                    return n
+            return 0
+        colour = quoted if hexed is not None else None
+        for n in (3, 2, 1):                         # as a red "#", as a light blue "#"
+            if a > n - 1 and colour_at(toks, a - n) == n:
+                a -= n
+                colour = ''.join(t.text for t in toks[a:a + n])
+                break
         if a > 1 and word(a - 1, ('a', 'an', 'the')) and not own:
             a -= 1
         if a > 1 and word(a - 1, ('as', 'with', 'like', 'using')) and not own:
@@ -1287,8 +1335,9 @@ class Parser:
         if ins:                                     # as "#" in red
             if colour or len(ins) > 1:
                 raise self.p('error', rest[ins[-1]:ins[-1] + 2], 'one thing is drawn in one colour')
-            colour = rest[ins[0] + 1].text
-            rest = rest[:ins[0]] + rest[ins[0] + 2:]
+            n = colour_at(rest, ins[0] + 1)
+            colour = ''.join(t.text for t in rest[ins[0] + 1:ins[0] + 1 + n])
+            rest = rest[:ins[0]] + rest[ins[0] + 1 + n:]
         if colour is None:                          # in its colour: each record says its own
             for i, t in enumerate(rest):
                 if t.kind == 'word' and t.text == 'in':
@@ -1297,6 +1346,8 @@ class Parser:
                         colour = found[1]
                         rest = rest[:i] + rest[found[0] + 1:]
                         break
+        if colour and isinstance(glyph, tuple) and glyph[0] == 'figure':
+            raise self.p('error', toks, 'a picture has its own colours', 'its legend gives them')
         inked = f' in {fmt_glyph(colour)[1:-1] if isinstance(colour, str) else fmt_glyph(colour)}' if colour else ''
         at = next((i for i, t in enumerate(rest) if t.kind == 'word' and t.text == 'at' and
                    not (i + 1 < len(rest) and rest[i + 1].text in ('least', 'most'))), None)
@@ -1329,14 +1380,94 @@ class Parser:
             subject = [CT('COLL', self.scope(used).name, used[0].toks)] + subject
         if not subject:
             T = Task(f'draw {len(self.prog.draws) + 1}', 'draw', None, toks[0].line, self.sent_text(toks), True)
-            if isinstance(glyph, tuple) and glyph[0] != 'value' or isinstance(colour, tuple) and colour[0] != 'value':
+            if isinstance(glyph, tuple) and glyph[0] == 'field' or isinstance(colour, tuple) and colour[0] != 'value':
                 raise self.p('error', toks, f'which {glyph[1].replace("_", " ")}?', 'there is no record here to have one',
                              'e.g. Draw each rock as its look at its x and y.')
-            T.at, T.glyph, T.colour = xy, glyph, colour
+            T.at, T.glyph, T.colour, T.spell = xy, glyph, colour, spell
             self.prog.draws.append(T)
-            return f'draw {fmt_glyph(glyph)}{inked} at ({fmt_expr(xy[0])}, {fmt_expr(xy[1])})'
-        self.trigger = ('draw', xy, glyph, colour)
+            return f'{"write" if spell else "draw"} {fmt_glyph(glyph)}{inked} at ({fmt_expr(xy[0])}, {fmt_expr(xy[1])})'
+        self.trigger = ('draw', xy, glyph, colour, spell)
         return self.task([CT('ACT', 'show', [toks[0]])] + subject)
+
+    def decl_figure(self, header, rows):
+        """"A flower looks like this, where r is red and g is green:" and its rows below."""
+        hint = 'e.g. "A flower looks like this, where r is red and g is green:" and its rows, indented, below'
+        words = [t.text if t.kind == 'word' else t.raw for t in header]
+        at = next((i for i in range(len(words) - 1) if words[i] == 'looks' and words[i + 1] == 'like'), None)
+        name_toks = [t for t in header[:at] if not (t.kind == 'word' and t.text in ('a', 'an', 'the'))]
+        if not name_toks or any(t.kind != 'word' for t in name_toks) or len(name_toks) > 3:
+            raise self.p('error', header, 'what is this picture called?', hint=hint)
+        name = '_'.join(t.text for t in name_toks)
+        self.taken(tuple(t.text for t in name_toks), name_toks)
+        if name in self.prog.figures:
+            raise self.p('error', name_toks, f'there is already a picture called "{name.replace("_", " ")}"')
+        rest = header[at + 2:]
+        if rest and rest[0].kind == 'word' and rest[0].text == 'this':
+            rest = rest[1:]
+        legend = {}
+        if rest:
+            if not (rest[0].kind == 'sym' and rest[0].text == ',' and len(rest) > 1 and rest[1].text == 'where') and \
+                    not (rest[0].kind == 'word' and rest[0].text == 'where'):
+                raise self.leftover([CT('UNK', rest[0].text, rest)])
+            rest = rest[2:] if rest[0].text == ',' else rest[1:]
+            parts, cur = [], []
+            for t in rest + [Tok('sym', ',', ',', 0, 0, 0)]:
+                if (t.kind == 'sym' and t.text == ',') or (t.kind == 'word' and t.text == 'and' and cur and
+                                                             cur[-1].kind == 'word' and cur[-1].text != 'is'):
+                    if cur:
+                        parts.append(cur)
+                    cur = []
+                else:
+                    cur.append(t)
+            for part in parts:          # r is red / "#" is dark green / . is nothing / "o" is "#ff8800"
+                if len(part) < 3 or part[1].kind != 'word' or part[1].text not in ('is', 'means'):
+                    raise self.p('error', part, 'I can\'t read this as a character and its colour',
+                                 hint='e.g. "r is red", "\'#\' is dark green", "x is nothing"')
+                ch = part[0].text if part[0].kind == 'str' else part[0].raw
+                if len(ch) != 1 or not 33 <= ord(ch) <= 126:
+                    raise self.p('error', part[0], 'a legend gives one plain character its colour')
+                said = part[2:]
+                while said and said[0].kind == 'word' and said[0].text in ('a', 'an'):
+                    said = said[1:]
+                if len(said) == 1 and said[0].kind == 'word' and said[0].text in ('nothing', 'empty', 'clear'):
+                    colour = None
+                elif len(said) == 1 and said[0].kind == 'str' and colour_value(said[0].text):
+                    colour = said[0].text.lower()
+                elif all(t.kind == 'word' for t in said) and ''.join(t.text for t in said) in COLOUR_NAMES:
+                    colour = ''.join(t.text for t in said)
+                else:
+                    raise self.p('error', said or part, 'I don\'t know this colour',
+                                 'a colour is one of the web\'s colour names ("salmon", "light blue") or "#rrggbb"')
+                if ch in legend:
+                    raise self.p('error', part[0], f'"{ch}" is given twice')
+                legend[ch] = colour
+        lines = []
+        for ln, row in rows:
+            bad = next((c for c in row if not 32 <= ord(c) <= 126), None)
+            if bad:
+                raise self.p('error', [Tok('bad', bad, bad, ln, row.index(bad), row.index(bad) + 1)],
+                             'a picture is drawn with plain characters')
+            lines.append(row)
+        if len(lines) > 200 or max(len(r) for r in lines) > 400:
+            raise self.p('error', header, 'a picture can be at most 400 wide and 200 high in this version')
+        F = Figure(name, lines, legend, header[0].line)
+        self.prog.figures[name] = F
+        unused = sorted(set(legend) - {c for r in lines for c in r})
+        if unused:
+            self.note(header, f'"{unused[0]}" is in the legend but not in the picture')
+        w = max(len(r) for r in lines)
+        return f'picture {name}: {w} wide, {len(lines)} high' + \
+            (', ' + ', '.join(f'"{c}" = {v or "nothing"}' for c, v in legend.items()) if legend else '')
+
+    def a_figure(self, toks, i):
+        """Does toks[i:] name a picture ("a flower", "the big goose")? (index of its last word, name) or None."""
+        while i < len(toks) and toks[i].kind == 'word' and toks[i].text in ('a', 'an', 'the'):
+            i += 1
+        for L in (3, 2, 1):
+            seg = toks[i:i + L]
+            if len(seg) == L and all(t.kind == 'word' for t in seg) and '_'.join(t.text for t in seg) in self.prog.figures:
+                return i + L - 1, '_'.join(t.text for t in seg)
+        return None
 
     def own_glyph(self, toks):
         """"as its look", "as the player look": the text whose first character is drawn.
@@ -1436,7 +1567,8 @@ class Parser:
         T.assigns = [(n, given[n]) for n in coll.fields if n not in counted]
         self.prog.seeds.append(T)
         each = ' for every ' + ' and every '.join(f'{n} from {lo} to {hi}' for n, lo, hi in T.ranges) if T.ranges else ''
-        return f'at the start, a {coll.name}{each}: ' + ', '.join(f'{n} = {fmt_expr(e)}' for n, e in T.assigns)
+        return f'at the start, a {coll.name}{each}' + (': ' + ', '.join(f'{n} = {fmt_expr(e)}' for n, e in T.assigns)
+                                                     if T.assigns else '')
 
     def seed_ranges(self, toks):
         """"for every x from 1 to 40 and every y from 1 to 12": one record for each combination.
@@ -2712,12 +2844,12 @@ class Parser:
                             raise self.p('error', self.cur, f'"{f.name.replace("_", " ")}" is a number', what)
                         f.type = 'text'
                 T.kind, T.name, T.named, T.fields = 'draw', f'draw {len(self.prog.draws) + 1}', True, None
-                T.at, T.glyph, T.colour = on[1], glyph, on[3]
+                T.at, T.glyph, T.colour, T.spell = on[1], glyph, on[3], on[4]
                 self.prog.draws.append(T)
                 w = f' where {fmt_cond(T.where)}' if T.where else ''
                 o = f', {"highest" if T.order[1] else "lowest"} {T.order[0]} first' if T.order else ''
                 inked = ' in ' + (T.colour if isinstance(T.colour, str) else fmt_glyph(T.colour)) if T.colour else ''
-                return f'draw {fmt_glyph(T.glyph)}{inked} at ({fmt_expr(T.at[0])}, {fmt_expr(T.at[1])})' + \
+                return f'{"write" if T.spell else "draw"} {fmt_glyph(T.glyph)}{inked} at ({fmt_expr(T.at[0])}, {fmt_expr(T.at[1])})' + \
                     ('' if T.coll == STATE else f' for each {T.coll}') + w + o
             if T.kind not in ('update', 'remove_where'):
                 raise self.p('error', self.cur, 'what should change?',
