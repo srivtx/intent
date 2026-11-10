@@ -12,6 +12,7 @@ import html
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 
@@ -44,7 +45,8 @@ def page(path, title, desc, body, kind='WebPage', extra_ld=None):
     }] + (extra_ld or [])
     full = title if title.startswith(NAME) else f'{title} · {NAME}'
     nav = ''.join(f'<a href="{SITE}{p}"{" aria-current=page" if p == path else ""}>{n}</a>'
-                  for p, n in (('', 'Home'), ('guide/', 'Guide'), ('examples/', 'Examples'), ('changelog/', 'Changelog')))
+                  for p, n in (('', 'Home'), ('guide/', 'Guide'), ('gallery/', 'Gallery'), ('examples/', 'Examples'),
+                               ('changelog/', 'Changelog')))
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -131,6 +133,17 @@ img{max-width:100%;height:auto}
 .foot{color:var(--dim);font-size:14px;border-top:1px solid var(--line);margin-top:64px;padding-top:12px;padding-bottom:32px}
 blockquote{margin:16px 0;padding:2px 16px;border-left:3px solid var(--amber);color:var(--dim)}
 details{border-bottom:1px solid var(--line);padding:10px 0}
+.art{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:22px;margin:22px 0}
+.piece{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--code)}
+.piece svg{display:block;width:100%;height:auto}
+.piece .say{padding:12px 16px 4px}
+.piece h3{margin:0 0 2px;font-size:18px}
+.piece p{margin:0 0 6px;color:var(--dim);font-size:15px}
+.piece details{border:0;padding:0 16px 12px}
+.piece pre{font-size:12.5px;white-space:pre-wrap}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:12px;margin:18px 0;align-items:start}
+.strip a{display:block;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.strip svg{display:block;width:100%;height:auto}
 summary{cursor:pointer;font-weight:600}
 '''
 
@@ -138,7 +151,7 @@ summary{cursor:pointer;font-weight:600}
 def rewrite_links(text, src_dir):
     """Links between repository files point at GitHub, except the pages this site has itself."""
     local = {'docs/language.md': 'guide/', 'CHANGELOG.md': 'changelog/', 'README.md': '', 'examples': 'examples/',
-             'examples/': 'examples/'}
+             'examples/': 'examples/', 'examples/art': 'gallery/', 'examples/art/': 'gallery/'}
 
     def fix(m):
         href = m.group(2)
@@ -196,14 +209,17 @@ FAQ = [
 ]
 
 
-def home():
+def home(pieces=()):
     feats = [('Deterministic', 'No AI in the compiler. The same sentences always mean the same program.'),
              ('Asks, never guesses', 'Unknown words are errors; ambiguous sentences become pointed questions.'),
              ('Chooses the algorithms', 'Hash indexes, fused passes and removal strategies come from what you declared.'),
              ('Native via LLVM IR', 'Straight to LLVM IR and clang. Tested against a reference interpreter.'),
              ('Money, exactly', 'Decimals kept as hundredths: 0.1 + 0.2 is 0.30, rounding is explicit.'),
-             ('Games and servers', 'Time, keys, chance and a board; serve any program over HTTP or in a window.')]
+             ('Games and servers', 'Time, keys, chance and a board; serve any program over HTTP or in a window.'),
+             ('Pictures', 'Sines, square roots and grids of records: generative art, saved as SVG.')]
     cards = ''.join(f'<div class="card"><h3>{t}</h3><p>{d}</p></div>' for t, d in feats)
+    strip = ''.join(f'<a href="{SITE}gallery/#{n}" aria-label="{n.replace("-", " ")}">{svg}</a>'
+                    for n, _, _, _, svg in pieces[:3])
     faq = ''.join(f'<details><summary>{html.escape(q)}</summary><p>{html.escape(a)}</p></details>' for q, a in FAQ)
     body = f'''
 <h1>Write what you mean.<br>Get native code.</h1>
@@ -247,6 +263,14 @@ browser window. Time, keys and chance are events, so every game can be replayed 
 The game is over when any segment's x is the column and its y is the row.
 Draw each segment at its x and y as a green "o".</code></pre>
 <p><img src="{SITE}window-shooter.jpg" width="560" height="350" alt="The shooter example written in Intent, running in a browser window" loading="lazy"></p>
+
+<h2>Draw with sentences</h2>
+<p>A picture is a grid of records, and sentences decide what each one looks like. One sentence makes the grid:</p>
+<pre><code>At the start there is a dot for every x from 1 to 60 and every y from 1 to 21, whose look is ".".
+Every 50 milliseconds, set the look of each dot to "@" if the absolute value of
+  (its y minus 11 minus 8 times the sine of (its x times 12 plus the phase)) is under 1, otherwise ".".</code></pre>
+<div class="strip">{strip}</div>
+<p><a href="{SITE}gallery/">See the gallery</a>: every picture there comes with the program that draws it.</p>
 
 <h2>Questions</h2>
 {faq}
@@ -296,6 +320,64 @@ EXAMPLE_TEXT = {
 }
 
 
+def art():
+    """The programs in examples/art, each with the picture it draws. How to draw it (after which events, in
+    which style) is read from the "./intent svg" line in the program's own header, so the two never disagree."""
+    from intentc.check import check
+    from intentc.interp import Machine
+    from intentc.parser import parse
+    from intentc.svg import picture
+    out = []
+    for path in sorted(glob.glob(os.path.join(ROOT, 'examples', 'art', '*.intent'))):
+        name = os.path.splitext(os.path.basename(path))[0]
+        with open(path) as fh:
+            code = fh.read()
+        lines = code.split('\n')
+        what = lines[0].lstrip('# ').strip()
+        cmd = next((l.lstrip('# ').strip() for l in lines if l.lstrip('# ').startswith('./intent svg')), '')
+        args = shlex.split(cmd)[3:]
+        opt = {k.lstrip('-'): v for k, v in zip(args[::2], args[1::2])}
+        prog, diags, p = parse(code)
+        diags += check(prog, p.src)
+        bad = [d.msg for d in diags if d.level != 'note']
+        if bad:
+            raise SystemExit(f'{path}: {bad}')
+        m = Machine(prog)
+        for c in opt.get('after', '').split(';'):
+            if c.strip():
+                m.run(c.strip())
+        svg = picture(m, opt.get('style', 'glyphs'), opt.get('paper', 'dark'), title=name.replace('-', ' '))
+        svg = re.sub(r' width="\d+" height="\d+" role', ' role', svg, count=1)      # let the page size it
+        out.append((name, what, cmd, code, svg))
+    return out
+
+
+def gallery(pieces):
+    cards = ''.join(f'''<figure class="piece" id="{n}">{svg}<figcaption class="say"><h3>{n.replace('-', ' ')}</h3>
+<p>{html.escape(what)}</p></figcaption><details><summary>The program</summary><pre><code>{html.escape(code)}</code></pre>
+<p><code>{html.escape(cmd)}</code> · <a href="{REPO}/blob/main/examples/art/{n}.intent">source</a></p></details></figure>'''
+                    for n, what, cmd, code, svg in pieces)
+    body = f'''<h1>Gallery</h1>
+<p class="lede">Pictures drawn by Intent programs. Each is a grid of records: where every dot sits, what character it
+is and what colour it has all come from a few English sentences with sines, square roots and distances. The same
+programs animate in a terminal; these are single frames saved with <code>./intent svg</code>.</p>
+<div class="art">{cards}</div>
+<h2>Make your own</h2>
+<pre><code>./intent run examples/art/ripple.intent          # play it in a terminal (q stops)
+./intent window examples/art/ripple.intent       # or in a window of its own
+./intent svg examples/art/ripple.intent --after "wait 500" --style dots -o ripple.svg</code></pre>
+<p>Styles: <code>glyphs</code> (each cell as its character), <code>dots</code> (a halftone: "." is a small dot,
+"@" a full one) and <code>blocks</code>. The language guide has the
+<a href="{SITE}guide/#pictures">sentences that make pictures</a>.</p>'''
+    ld = [{'@context': 'https://schema.org', '@type': 'ImageObject', 'name': n.replace('-', ' '), 'description': what,
+           'contentUrl': f'{SITE}gallery/#{n}', 'creator': {'@type': 'Person', 'name': 'srivtx'}}
+          for n, what, _, _, _ in pieces]
+    return page('gallery/', 'Gallery: pictures drawn in plain English',
+                'Generative art written as plain English sentences and compiled to native code: halftone suns, '
+                'ripples, orbits and cross-stitch, drawn by Intent programs with sines and square roots.',
+                body, 'CollectionPage', ld)
+
+
 def examples():
     parts = ['<h1>Examples</h1><p class="lede">Complete Intent programs from the repository. Each one compiles to a '
              'native executable with <code>./intent build</code>.</p>']
@@ -321,7 +403,9 @@ def write(rel, text):
 def main():
     shutil.rmtree(OUT, ignore_errors=True)
     os.makedirs(OUT)
-    pages = {'': home(), 'guide/': guide(), 'examples/': examples(), 'changelog/': changelog()}
+    pieces = art()
+    pages = {'': home(pieces), 'guide/': guide(), 'gallery/': gallery(pieces), 'examples/': examples(),
+             'changelog/': changelog()}
     for path, text in pages.items():
         write(path + 'index.html', text)
     write('404.html', page('404', 'Page not found', 'This page does not exist.',
@@ -356,6 +440,7 @@ Version {__version__}. Experimental research prototype; tested on macOS and Linu
 
 - [Language guide]({SITE}guide/): every kind of sentence the compiler understands
 - [Examples]({SITE}examples/): complete programs, from a shop with money to a snake game
+- [Gallery]({SITE}gallery/): pictures drawn by Intent programs, each with its source
 - [Changelog]({SITE}changelog/): what changed in each version
 - [Full text for language models]({SITE}llms-full.txt): the README and the guide in one file
 

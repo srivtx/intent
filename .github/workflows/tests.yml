@@ -29,7 +29,7 @@ jobs:
       - run: python site/build.py
       - name: every page has a title, a description, a canonical address and a social card
         run: |
-          for f in _site/index.html _site/guide/index.html _site/examples/index.html _site/changelog/index.html; do
+          for f in _site/index.html _site/guide/index.html _site/gallery/index.html _site/examples/index.html _site/changelog/index.html; do
             for tag in '<title>' 'name="description"' 'rel="canonical"' 'property="og:image"' 'application/ld+json'; do
               grep -q "$tag" "$f" || { echo "$f is missing $tag"; exit 1; }
             done
