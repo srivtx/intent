@@ -332,6 +332,7 @@ def main():
     for f in glob.glob(os.path.join(ROOT, 'site', 'static', '*')):
         shutil.copy(f, os.path.join(OUT, os.path.basename(f)))
     write('.nojekyll', '')
+    # IndexNow (Bing, Yandex, Seznam, Naver): the key file proves the site is ours; see site/indexnow.py
     write('robots.txt', f'User-agent: *\nAllow: /\n\nSitemap: {SITE}sitemap.xml\n')
     urls = ''.join(f'  <url><loc>{SITE}{p}</loc><lastmod>{TODAY}</lastmod>'
                    f'<priority>{"1.0" if not p else "0.8"}</priority></url>\n' for p in pages)
