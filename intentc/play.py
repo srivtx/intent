@@ -78,6 +78,8 @@ def play(m, out=sys.stdout):
                         break
                     if code in names and not m.over():
                         m.press(names[code])
+                if not going:
+                    break               # stopped: no more time passes, so the last board is the one shown
             now = time.monotonic()
             passed = min(int((now - last) * 1000), LONGEST_STEP)
             if passed > 0:
