@@ -12,10 +12,10 @@ import copy
 import difflib
 import re
 from fractions import Fraction
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 
 from .ir import (CHANCE_WIDEST, COLOURS, KEYS, LONGEST_WAIT, STATE, Collection, Diag, Field, Program, Task, binop,
-                 canon, fmt_cond, fmt_dec, fmt_event, fmt_expr, negate, task_exprs, walk_cond_exprs, walk_expr)
+                 canon, fmt_glyph, fmt_cond, fmt_dec, fmt_event, fmt_expr, negate, task_exprs, walk_cond_exprs, walk_expr)
 from .lexicon import (BOARD_WORDS, CONVENTION, COUNT_NOUNS, DRAW_WORDS, HIGH_WORDS, MAX_PHRASE, PHRASES, PRESS_VERBS,
                       PRESSED, SYMS, TYPE_WORDS, UNITS, UNSUPPORTED_TYPES, WIDE_WORDS, all_known_words, singular)
 from .source import Source, Tok, split_sentences, tokenize
@@ -168,13 +168,26 @@ class Parser:
         return any(edit_distance(singular(word), n) <= (1 if len(n) < 8 else 2) for n in self.prog.collections)
 
     def snapshot(self):
-        return copy.deepcopy(self.prog), list(self.diags), list(self.readings), dict(self.macros), \
+        """Everything a sentence could change, so that a reading that fails can be taken back.
+
+        A sentence only appends to the program's lists, and never changes what earlier sentences put
+        there, so those are copied shallowly; the declarations are small and can change, so they are
+        copied whole. That keeps reading a long program linear in its length."""
+        return self.copy_prog(self.prog), list(self.diags), list(self.readings), dict(self.macros), \
             copy.deepcopy(self.state)
 
     def restore(self, snap):
-        self.prog, self.diags, self.readings = copy.deepcopy(snap[0]), list(snap[1]), list(snap[2])
+        self.prog, self.diags, self.readings = self.copy_prog(snap[0]), list(snap[1]), list(snap[2])
         self.macros = dict(snap[3])
         self.state = copy.deepcopy(snap[4])
+
+    @staticmethod
+    def copy_prog(prog):
+        parts = {}
+        for f in fields(prog):
+            v = getattr(prog, f.name)
+            parts[f.name] = list(v) if isinstance(v, list) else copy.deepcopy(v) if isinstance(v, dict) else v
+        return type(prog)(**parts)
 
     def respell(self, toks, problem, depth=0):
         """Every way of correcting the unknown word(s) that makes the whole sentence readable.
