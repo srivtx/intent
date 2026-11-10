@@ -1376,7 +1376,8 @@ class Parser:
         L = next((len(o) for o in OPENERS if tuple(words[:len(o)]) == o), 0)
         if not L:
             return None
-        rest = [t for t in toks[L:] if not (t.kind == 'word' and t.text == 'at' and self.free('at'))]
+        rest, spans = self.seed_ranges(toks[L:])
+        rest = [t for t in rest if not (t.kind == 'word' and t.text == 'at' and self.free('at'))]
         try:
             content = self.content_of(rest)
         except Problem:
@@ -1406,6 +1407,22 @@ class Parser:
                 joined = False          # one "is" between a property and its value
             elif f:
                 raise self.leftover([c])
+        for name, lo, hi, where in spans:
+            if name not in coll.fields or name in given:
+                raise self.p('error', where, f'"{name}" is given twice' if name in given else
+                             f'{coll.label} has no property "{name}"', self.could_be(coll))
+            if coll.fields[name].type == 'text':
+                raise self.p('error', where, f'"{name}" is text, so it cannot count from {lo} to {hi}')
+            coll.fields[name].type = 'int'
+            given[name] = ('num', lo)
+        if spans and coll.unique_fields():
+            raise self.p('error', toks, f'starting with many {coll.label.lower()} at once is not supported yet '
+                         f'when a property is unique')
+        many = 1
+        for _, lo, hi, _ in spans:
+            many *= hi - lo + 1
+        if many > 100000:
+            raise self.p('error', toks, f'that is {many} {coll.label.lower()} at the start; at most 100000 in this version')
         missing = [n for n in coll.fields if n not in given]
         if f or missing:
             raise self.p('question', toks, f'what is the {f or missing[0]} of this {coll.name}?',
@@ -1414,9 +1431,46 @@ class Parser:
         if any(fl.ref for fl in coll.fields.values()):
             raise self.p('error', toks, f'starting with {coll.label.lower()} that belong to something is not supported yet')
         T = Task(f'start {len(self.prog.seeds) + 1}', 'seed', coll.name, toks[0].line, self.sent_text(toks), True)
-        T.assigns = [(n, given[n]) for n in coll.fields]
+        T.ranges = [(n, lo, hi) for n, lo, hi, _ in spans]
+        counted = {n for n, _, _ in T.ranges}
+        T.assigns = [(n, given[n]) for n in coll.fields if n not in counted]
         self.prog.seeds.append(T)
-        return f'at the start, a {coll.name}: ' + ', '.join(f'{n} = {fmt_expr(e)}' for n, e in T.assigns)
+        each = ' for every ' + ' and every '.join(f'{n} from {lo} to {hi}' for n, lo, hi in T.ranges) if T.ranges else ''
+        return f'at the start, a {coll.name}{each}: ' + ', '.join(f'{n} = {fmt_expr(e)}' for n, e in T.assigns)
+
+    def seed_ranges(self, toks):
+        """"for every x from 1 to 40 and every y from 1 to 12": one record for each combination.
+
+        Returns the tokens without that phrase, and [(property, lowest, highest, its tokens)]."""
+        def word(i, *among):
+            return i < len(toks) and toks[i].kind == 'word' and toks[i].text in among
+        start = next((i for i in range(len(toks)) if word(i, 'for') and word(i + 1, 'every', 'each')), None)
+        if start is None:
+            return toks, []
+        spans, i = [], start + 1
+        while word(i, 'every', 'each'):
+            frm = next((k for k in range(i + 1, min(i + 5, len(toks))) if word(k, 'from')), None)
+            if frm is None or frm == i + 1 or not (frm + 3 < len(toks) + 0 and toks[frm + 1].kind == 'num' and
+                                                   word(frm + 2, 'to') and toks[frm + 3].kind == 'num'):
+                raise self.p('error', toks[i:frm or i + 2], 'every what, from which number to which?',
+                             hint='e.g. "for every x from 1 to 40 and every y from 1 to 12"')
+            ws = toks[i + 1:frm]
+            if any(w.kind != 'word' for w in ws):
+                raise self.p('error', ws, 'I can\'t read this as a property name')
+            name = '_'.join([w.text for w in ws[:-1]] + [singular(ws[-1].text)])
+            lo, hi = toks[frm + 1], toks[frm + 3]
+            if '.' in lo.text or '.' in hi.text:
+                raise self.p('error', [lo, hi], 'counting goes in whole numbers')
+            lo_, hi_ = int(lo.text), int(hi.text)
+            if hi_ < lo_:
+                raise self.p('error', [lo, hi], f'from {lo_} up to {hi_} is no numbers at all')
+            spans.append((name, lo_, hi_, toks[i:frm + 4]))
+            i = frm + 4
+            if word(i, 'and') and word(i + 1, 'every', 'each'):
+                i += 1
+            elif i < len(toks) and toks[i].kind == 'sym' and toks[i].text == ',' and word(i + 1, 'every', 'each'):
+                i += 1
+        return toks[:start] + toks[i:], spans
 
     def decl_end(self, toks, words):
         """"The game is over when the lives are 0."  "When any rock is ..., the game ends."."""

@@ -2125,13 +2125,34 @@ class Gen:
             f.store('i64', '1', g(STATE, 'len'))
         for s in self.prog.seeds:       # what is there from the start
             c, cp = self.prog.collections[s.coll], self.plan.colls[s.coll]
-            f.e(f'call void {g(c.name, "grow")}()')
-            n = f.load('i64', g(c.name, 'len'))
-            vals = {name: self.expr(f, e, c, None, {}) for name, e in s.assigns}
-            self.store_record(f, c, self.rec(f, c, n), vals)
-            f.store('i64', f.r(f'add i64 {n}, 1'), g(c.name, 'len'))
-            for ix in cp.indexes:
-                f.e(f'call void {g(c.name, ix, "put")}(i64 {n})')
+
+            def one(counted, s=s, c=c, cp=cp):
+                f.e(f'call void {g(c.name, "grow")}()')
+                n = f.load('i64', g(c.name, 'len'))
+                vals = {name: self.expr(f, e, c, None, {}) for name, e in s.assigns}
+                vals.update(counted)
+                self.store_record(f, c, self.rec(f, c, n), vals)
+                f.store('i64', f.r(f'add i64 {n}, 1'), g(c.name, 'len'))
+                for ix in cp.indexes:
+                    f.e(f'call void {g(c.name, ix, "put")}(i64 {n})')
+
+            def count(k, counted, s=s, c=c, one=one):
+                if k == len(s.ranges):      # every combination, the first range outermost
+                    return one(counted)
+                name, lo, hi = s.ranges[k]
+                v = f.var('i64', str(lo))
+                head, body, done = f.lab('count'), f.lab('each'), f.lab('counted')
+                f.br(head)
+                f.at(head)
+                cur = f.load('i64', v)
+                f.cbr(f.r(f'icmp sle i64 {cur}, {hi}'), body, done)
+                f.at(body)
+                val = f.r(f'mul i64 {cur}, 100') if c.fields[name].dec else cur
+                count(k + 1, dict(counted, **{name: (val, 'int')}))
+                f.store('i64', f.r(f'add i64 {cur}, 1'), v)
+                f.br(head)
+                f.at(done)
+            count(0, {})
         if self.prog.rules:
             f.e('call void @settle()')
         f.e('ret void')

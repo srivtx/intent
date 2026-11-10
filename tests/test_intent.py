@@ -2487,6 +2487,34 @@ class TestMaths(unittest.TestCase):
         self.assertEqual(level, 'error')
 
 
+class TestArt(unittest.TestCase):
+    """Pictures: a grid of records from one sentence."""
+    setUpClass = classmethod(TestNativeAgainstReference.setUpClass.__func__)
+    tearDownClass = classmethod(TestNativeAgainstReference.tearDownClass.__func__)
+    script = TestLive.script
+
+    def test_a_grid_from_one_sentence(self):
+        prog, diags, _ = understand('Dots have an x (number), a y (number) and a look (text).\n'
+                                    'At the start there is a dot for every x from 1 to 3 and every y from -1 to 0, '
+                                    'whose look is "o".\nHow many dots are there?\n', '')
+        self.assertEqual(diags, [])
+        m = Machine(prog)
+        self.assertEqual([(r['x'], r['y'], r['look']) for r in m.data['dot']],
+                         [(1, -1, 'o'), (1, 0, 'o'), (2, -1, 'o'), (2, 0, 'o'), (3, -1, 'o'), (3, 0, 'o')])
+
+    def test_grid_mistakes(self):
+        base = 'Dots have an x (number), a y (number) and a look (text).\n'
+        for text, msg in [('At the start there is a dot for every x from 5 to 1 and every y from 1 to 2, whose look is "o".',
+                           'from 5 up to 1 is no numbers at all'),
+                          ('At the start there is a dot for every look from 1 to 2 and every y from 1 to 2, whose x is 1.',
+                           '"look" is text, so it cannot count from 1 to 2'),
+                          ('At the start there is a dot for every x from 1 to 1000 and every y from 1 to 1000, '
+                           'whose look is "o".', 'that is 1000000 dots at the start; at most 100000 in this version')]:
+            with self.subTest(text):
+                self.assertEqual(problem(text + '\n', base)[2].msg, msg)
+
+
+
 class TestCrowdedNames(unittest.TestCase):
     """Programs with many short names, like the trig values of a 3D scene: no name may silently become another."""
 
