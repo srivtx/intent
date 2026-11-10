@@ -9,6 +9,8 @@ and for the flexibility added after the first version:
   6. Programs can teach the compiler words                         (TestDefinitions)
   7. Word order, rankings, ranges, percentages                     (TestFlexibility)
   8. The example apps, and remembering between runs                (TestApps)
+  9. Bugs found by the gemini-build stress experiments stay fixed  (TestStressFindings)
+ 10. Relationships between collections                             (TestRelationships)
 """
 import os
 import random
@@ -311,6 +313,7 @@ by-score: show people sorted by score, lowest first.
 
 def commands(prog, rng, n):
     names = ['ann', 'bob', 'cy', 'dee', 'x', 'keep', 'rome', 'oslo', 'lima']
+    small = {f.name for c in prog.collections.values() for f in c.fields.values() if f.unique or f.ref}
     out = []
     for _ in range(n):
         t = rng.choice(prog.tasks)
@@ -318,7 +321,9 @@ def commands(prog, rng, n):
             t = rng.choice([x for x in prog.tasks if x.kind == 'add'])
         args = []
         for p in t.params:
-            if t.ptypes[p] == 'int':
+            if t.ptypes[p] == 'int' and p in small and rng.random() < 0.85:
+                args.append(str(rng.randint(0, 12)))        # keys and links: make hits likely
+            elif t.ptypes[p] == 'int':
                 args.append(str(rng.choice([rng.randint(-20, 120), rng.randint(0, 30),
                                             2 ** 62, -(2 ** 63), 0])))
             elif p == 'email':
@@ -590,6 +595,209 @@ class TestApps(TestNativeAgainstReference):
         self.assertEqual(run('list\n'), 'tom,10\nivy,1\n')
         with open(log) as fh:                                       # queries are not recorded
             self.assertEqual(fh.read(), 'add rex,3\nadd tom,5\ndouble-age\nremove-by-name rex\nadd ivy,1\n')
+
+
+class TestStressFindings(unittest.TestCase):
+    """Each of these was a real bug found by building larger programs with the language."""
+
+    def test_not_between_is_outside_the_range(self):
+        self.assertEqual(meaning('Show customers whose age is not between 18 and 30.'),
+                         'list all of customer where age < 18 or age > 30')
+        self.assertEqual(problem('Show customers whose salary is over 5 and whose age is not between 1 and 3.')[0],
+                         'question')
+
+    def test_taught_word_inside_a_hyphenated_name(self):
+        prog, diags, _ = understand('"vip" means salary at least 100.\nshow-vip: show the names of customers vip.\n')
+        self.assertEqual(diags, [])
+        self.assertEqual(prog.tasks[0].name, 'show-vip')
+
+    def test_property_named_like_a_collection(self):
+        base = ('Customers is a collection.\nEach customer has a handle (text).\n'
+                'Bookings is a collection.\nEach booking has an id (number) and a customer (text).\n')
+        self.assertEqual(meaning('Add a customer.', base), 'add customer')
+        self.assertEqual(meaning('Show the bookings whose customer is "ann".', base),
+                         'list all of booking where customer == "ann"')
+
+    def test_declared_name_beats_builtin_phrase(self):
+        base = 'Orders is a collection.\nEach order has an id (number) and a price (number).\n'
+        self.assertEqual(meaning('Find an order by id.', base), 'find order by id')
+        self.assertEqual(meaning('Show the orders sorted by price.', base),
+                         'list all of order sorted by price ascending')
+
+    def test_bare_trailing_condition(self):
+        self.assertEqual(meaning('"cheap" means salary is 10.\nShow the customers cheap.\n'),
+                         'list all of customer where salary == 10')
+
+    def test_calculation_on_the_left(self):
+        self.assertEqual(meaning('Show customers whose age times 2 is over salary.'),
+                         'list all of customer where age * 2 > salary')
+
+    def test_text_tests(self):
+        self.assertEqual(meaning('Show customers whose name contains "ob".'),
+                         'list all of customer where name contains "ob"')
+        self.assertEqual(meaning('Show customers whose email does not end with ".io".'),
+                         'list all of customer where email does not end with ".io"')
+        prog, diags, _ = understand('', 'Samples is a collection.\nEach sample contains a message and a level.\n')
+        self.assertEqual(list(prog.collections['sample'].fields), ['message', 'level'])
+
+    def test_parity_and_modulo(self):
+        self.assertEqual(meaning('Show customers whose age is even.'), 'list all of customer where age mod 2 == 0')
+        self.assertEqual(meaning('Show customers whose age is not even.'), meaning('Show customers whose age is odd.'))
+        self.assertEqual(meaning('Set the age to age mod 7.'), 'update customer: age = age mod 7')
+
+    def test_own_definition_beats_builtin_word(self):
+        self.assertEqual(meaning('An even customer is a customer whose age is 2.\nShow the even customers.\n'),
+                         'list all of customer where age == 2')
+
+    def test_rules_apply_to_the_collection_just_described(self):
+        prog, diags, _ = understand('', 'Pets is a collection.\nEach pet has a tag.\nToys is a collection.\n'
+                                    'Each toy has a code.\nCodes are unique.\nReject duplicates.\nAdd a toy.\n')
+        self.assertEqual(prog.collections['toy'].on_dup, 'reject')
+        self.assertIsNone(prog.collections['pet'].on_dup)
+
+
+STORE = """Customers is a collection.
+Each customer has a name and a city (text).
+Names are unique. Reject duplicates.
+Orders is a collection.
+Each order has a number (number), a customer and a total (number).
+Numbers are unique. %s
+%s
+Lines is a collection.
+Each line has a sku (text) and a quantity (number).
+Each line belongs to an order.
+%s
+signup: add a customer.
+place: add an order.
+add-line: add a line.
+close: remove a customer by name.
+cancel: remove an order by number.
+purge: remove the customers whose city is a given city.
+refund: remove the orders whose total is over a given limit.
+orders-of: show the orders of a given customer.
+spent: what is the sum of the total of orders for a given customer?
+lines-of: show the sku and quantity of lines for a given order.
+receipt: show the number, the total and the customer's city of orders sorted by number.
+from-city: show the numbers of orders whose customer's city is a given city.
+discount: decrease the total by 10 percent for orders whose customer's city is a given city.
+who: show the order's customer of lines whose sku is a given sku.
+contains-o: show the numbers of orders whose customer's name contains "o".
+customers: show the customers.
+orders: show the orders.
+lines: show the lines.
+"""
+CASCADE = ('When a customer is removed, remove its orders.', 'When an order is removed, remove its lines.')
+RESTRICT = ('A customer with orders cannot be removed.', 'An order with lines cannot be removed.')
+STORE_BASE = STORE.split('signup:')[0]
+
+
+class TestRelationships(TestNativeAgainstReference):
+    def base(self, rules=CASCADE):
+        return STORE_BASE % ('Reject duplicates.', '', '\n'.join(rules))
+
+    def test_readings(self):
+        b = self.base()
+        for text, want in [
+                ('Show the orders of a given customer.', 'list all of order where customer == <customer>'),
+                ('For a given customer, show the orders.', 'list all of order where customer == <customer>'),
+                ('How many orders does a given customer have?', 'count() of order where customer == <customer>'),
+                ("Show the orders whose customer's city is \"rome\".", 'list all of order where customer.city == "rome"'),
+                ('Show the orders where the city of the customer is "rome".',
+                 'list all of order where customer.city == "rome"'),
+                ("Show the number and the customer's city of orders.", 'list number, customer.city of order'),
+                ("Show the lines whose order's customer is a given customer.",
+                 'list all of line where order.customer == <customer>'),
+                ('Remove the orders of a given customer.', 'remove order by customer')]:
+            with self.subTest(text):
+                self.assertEqual(meaning(text, b), want)
+
+    def test_has_a_customer_is_the_same_declaration(self):
+        prog, _, _ = understand('', 'Shops is a collection.\nEach shop has a name.\nItems is a collection.\n'
+                                'Each item has an id and a shop.\n')
+        self.assertEqual(prog.collections['item'].fields['shop'].ref, 'shop')
+
+    def test_removal_rule_must_be_stated(self):
+        level, _, d = problem('Remove a customer by name.', self.base(rules=()))
+        self.assertEqual(level, 'question')
+        self.assertIn('orders of a removed customer', d.msg)
+
+    def test_rules(self):
+        prog, diags, _ = understand('', self.base(RESTRICT))
+        self.assertEqual(prog.collections['order'].fields['customer'].on_removed, 'restrict')
+        prog, diags, _ = understand('', self.base())
+        self.assertEqual(prog.collections['line'].fields['order'].on_removed, 'cascade')
+        self.assertEqual(problem('Orders are removed with their customer.', self.base(rules=()))[0], 'question')
+
+    def test_owner_must_be_identifiable(self):
+        level, _, d = problem('Each item belongs to a shop.\n', 'Shops is a collection.\nEach shop has a name (text).\n'
+                              'Items is a collection.\nEach item has an id (number).\n')
+        self.assertEqual(level, 'question')
+        self.assertIn('how is a shop identified', d.msg)
+
+    def test_the_other_direction_is_refused_not_guessed(self):
+        level, where, _ = problem('Show the customers who have orders.', self.base())
+        self.assertEqual(level, 'error')
+
+    def test_owner_key_gets_an_index_because_of_the_link(self):
+        prog, diags, p = parse(STORE % ('Reject duplicates.', '', '\n'.join(CASCADE)))
+        check(prog, p.src)
+        plan = make_plan(prog)
+        self.assertIn('name', plan.colls['customer'].indexes)
+        self.assertTrue(any('must check that its customer exists' in why
+                            for title, _, whys in plan.colls['customer'].decisions for _, why in whys))
+
+    def test_native_cascade(self):
+        self.differential('rel-cascade', STORE % ('Reject duplicates.', '', '\n'.join(CASCADE)), seeds=5, n=500)
+
+    def test_native_cascade_ordered_replace_no_index(self):
+        self.differential('rel-ordered', STORE % ('Replace duplicates.', 'Keep orders in the order they were added.',
+                                                  '\n'.join(CASCADE)), no_index=True, seeds=4, n=400)
+
+    def test_native_restrict(self):
+        self.differential('rel-restrict', STORE % ('Reject duplicates.', '', '\n'.join(RESTRICT)), seeds=5, n=500)
+
+    def test_store_example(self):
+        with open(os.path.join(ROOT, 'examples', 'store.intent')) as fh:
+            self.differential('store', fh.read(), seeds=4, n=400)
+
+
+@unittest.skipUnless(shutil.which('clang'), 'clang is needed to build native code')
+class TestService(unittest.TestCase):
+    SRC = ('Users is a collection. Each user has an email (text) and an age (number). Emails are unique. '
+           'Reject duplicates. Add a user. Find a user by email. Remove a user by email.')
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp(prefix='intent-svc-')
+        src = os.path.join(cls.dir, 's.intent')
+        cls.exe = os.path.join(cls.dir, 's')
+        with open(src, 'w') as fh:
+            fh.write(cls.SRC)
+        build(src, cls.exe, quiet=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def test_answers_each_request_over_a_pipe(self):
+        p = subprocess.Popen([self.exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        try:
+            for req, want in [('add a@x,3', None), ('find-by-email a@x', 'a@x,3'), ('find-by-email', 'error: missing email'),
+                              ('find-by-email zz', 'none')]:
+                p.stdin.write(req + '\n')
+                p.stdin.flush()
+                if want:
+                    self.assertEqual(p.stdout.readline().rstrip('\n'), want)   # would hang if output were held back
+        finally:
+            p.stdin.close()
+            p.wait(timeout=10)
+
+    def test_only_real_changes_are_remembered(self):
+        log = os.path.join(self.dir, 's.log')
+        subprocess.run([self.exe, log], input='add a@x,3\nadd a@x,9\nadd b@x,notanumber\nadd\nremove-by-email zz\n'
+                       'find-by-email a@x\nremove-by-email a@x\n', capture_output=True, text=True)
+        with open(log) as fh:
+            self.assertEqual(fh.read(), 'add a@x,3\nremove-by-email a@x\n')
 
 
 if __name__ == '__main__':
