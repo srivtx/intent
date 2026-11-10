@@ -6,7 +6,7 @@ Four tiers, in this order, and each is reported differently:
   assumed   - a naming convention (email -> text); reported as a note, overridable
   asked     - nothing decides it; compilation stops with a question
 """
-from .ir import (NEGATE, STATE, TEXT_OPS, Diag, cond_cmps, fmt_dec, lookups, task_conds, task_exprs, walk_cond_exprs,
+from .ir import (FNNAME, NEGATE, STATE, TEXT_OPS, Diag, cond_cmps, fmt_dec, lookups, task_conds, task_exprs, walk_cond_exprs,
                  walk_expr)
 from .lexicon import CONVENTION
 
@@ -28,6 +28,43 @@ def nonzero(c, yes):
     if (c[0] == 'and') == yes:      # every part is known to hold
         return nonzero(c[1], yes) + nonzero(c[2], yes)
     return []
+
+
+def notneg(c, yes):
+    """The values that cannot be below zero when condition c is true (yes) or false (not yes)."""
+    if c is None or c[0] in ('any', 'none'):
+        return []
+    if c[0] == 'cmp':
+        op = c[1] if yes else NEGATE.get(c[1])
+        x, y = c[2], c[3]
+        if y[0] in ('num', 'dec') and ((op in ('ge', 'eq') and y[1] >= 0) or (op == 'gt' and y[1] >= -1)):
+            return [x]
+        if x[0] in ('num', 'dec') and ((op in ('le', 'eq') and x[1] >= 0) or (op == 'lt' and x[1] >= -1)):
+            return [y]
+        return []
+    if (c[0] == 'and') == yes:
+        return notneg(c[1], yes) + notneg(c[2], yes)
+    return []
+
+
+def nonneg(e, known):
+    """Can e be shown never to be below zero? Squares, sums and products of such, and what a condition says."""
+    k = e[0]
+    if e in known:
+        return True
+    if k in ('num', 'dec'):
+        return e[1] >= 0
+    if k == 'fn':
+        return e[1] in ('sqrt', 'dsqrt', 'abs') or (e[1] in ('round', 'trunc') and nonneg(e[2], known))
+    if k == 'agg':
+        return e[1] == 'count'
+    if k == 'if':
+        return nonneg(e[2], known) and nonneg(e[3], known)
+    if k == 'bin':
+        if e[1] == 'mul' and e[2] == e[3]:
+            return True
+        return e[1] in ('add', 'mul', 'div', 'rem') and nonneg(e[2], known) and nonneg(e[3], known)
+    return False
 
 
 TYPE_NAME = {'int': 'a number', 'text': 'text'}
@@ -53,7 +90,7 @@ class Checker:
     # ------------------------------------------------------------------ types
     def ty(self, e, coll, t):
         k = e[0]
-        if k in ('num', 'bin', 'rand', 'agg', 'dec', 'cents'):
+        if k in ('num', 'bin', 'rand', 'agg', 'dec', 'cents', 'fn'):
             return 'int'
         if k == 'outer':
             return self.outer.fields[e[1]].type
@@ -87,7 +124,8 @@ class Checker:
         if e[0] == 'outer':
             return f'"{e[1]}"'
         return {'field': f'"{e[1]}"', 'param': f'the given {e[1]}', 'num': str(e[1]),
-                'str': f'"{e[1]}"', 'bin': 'a calculation'}[e[0]] if e[0] != 'num' else str(e[1])
+                'str': f'"{e[1]}"', 'bin': 'a calculation', 'fn': 'a calculation', 'rand': 'a random number'
+                }.get(e[0], 'this') if e[0] != 'num' else str(e[1])
 
     def need(self, e, typ, coll, t):
         k = e[0]
@@ -295,6 +333,12 @@ class Checker:
                 self.d('error', t.line, f'a rule cannot remove {coll.label.lower()} that other records belong to yet')
         for t in P.work() + P.looks():
             coll = P.collections.get(t.coll)
+            for e in task_exprs(t):
+                if e[0] == 'fn' and self.ty(e[2], coll, t) == 'text':
+                    self.d('error', t.line, f'{FNNAME[e[1]]} {self.name_of(e[2])} is not a number: that is text')
+            for top in [e for _, e in t.assigns] + ([t.expr] if t.expr else []) + list(t.at or ()) + \
+                    [x for c in cond_cmps(t.where) for x in c[2:4]]:
+                self.roots(top, notneg(t.where, True), t)
             safe = nonzero(t.where, True)
             for _, e in t.assigns:
                 self.divisions(e, safe, t)
@@ -416,6 +460,8 @@ class Checker:
             return e[1] != 'count' and cs[e[2]].fields[e[3]].dec
         if k in ('if', 'bin'):
             return self.isdec(e[2], coll, t) or self.isdec(e[3], coll, t)
+        if k == 'fn':           # a sine is a decimal number; a root or a size is whatever it is of; a rounding, whole
+            return e[1] in ('sin', 'cos', 'dsqrt') or (e[1] in ('sqrt', 'abs') and self.isdec(e[2], coll, t))
         return False
 
     def make_dec(self, e, coll, t):
@@ -465,6 +511,8 @@ class Checker:
                 conds(e[1], c)
                 exprs(e[2], c)
                 exprs(e[3], c)
+            elif e[0] == 'fn':
+                exprs(e[2], c)
             elif e[0] == 'agg' and e[4] is not None:
                 was, self.outer = self.outer, c
                 conds(e[4], self.prog.collections[e[2]])
@@ -516,6 +564,15 @@ class Checker:
                 if da != db and self.ty(e[2], c, t) == 'int':
                     a, b = (a if da else cents(a)), (b if db else cents(b))
                 return ('if', cond, a, b), da or db
+            if k == 'fn':
+                a, da = low(e[2], c)
+                if e[1] in ('sin', 'cos'):          # worked out on hundredths of a degree
+                    return ('fn', e[1], a if da else cents(a)), True
+                if e[1] == 'abs':
+                    return ('fn', 'abs', a), da
+                if e[1] in ('round', 'trunc'):      # a whole number already is its own rounding
+                    return (('fn', 'd' + e[1], a) if da else a), False
+                return (('fn', 'dsqrt', a), True) if da else (('fn', 'sqrt', a), False)
             if k != 'bin':
                 return e, self.isdec(e, c, t)
             (a, da), (b, db) = low(e[2], c), low(e[3], c)
