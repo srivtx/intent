@@ -2637,3 +2637,158 @@ class TestCrowdedNames(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+ORDERED = {
+    # the workload from the critique: a hash index on email, a tree on age
+    'crm': '''Customers is a collection.
+Each customer has an id (number), a name, an email and an age.
+Emails are unique. Reject duplicates.
+Add a customer.
+Find a customer by email.
+Remove a customer by email.
+in-range: show the customers whose age is between a given low and a given high.
+by-age: show the customers sorted by age.
+oldest: show the top 3 customers by age.
+How many customers are aged at least a given age?
+''',
+    # records that keep their order: removal closes the gap, ties stay first-added first
+    'kept': '''Customers is a collection.
+Each customer has a name, an email and an age.
+Emails are unique. Reject duplicates.
+Keep customers in the order they were added.
+Add a customer.
+Remove a customer by email.
+in-range: show the customers whose age is between a given low and a given high.
+young: show the customers whose age is under a given limit.
+eldest: show the customers sorted by age, largest first.
+top: show the top 3 customers by age.
+bottom: show the bottom 2 customers by age.
+some: show the first 2 customers whose age is over a given limit.
+What is the total age of customers whose age is at most a given age?
+by-name: show the customers sorted by name.
+''',
+    # money and text keys; a replacing add; a change and a removal that move many records
+    'money': '''Accounts is a collection.
+Each account has a number (number), an owner (text) and a balance (decimal).
+Numbers are unique. Replace duplicates.
+Add an account.
+Remove an account by number.
+rich: show the accounts whose balance is over a given amount.
+mid: show the accounts whose balance is between a given low and a given high, sorted by balance, largest first.
+poorest: show the bottom 3 accounts by balance.
+by-owner: show the accounts sorted by owner.
+What is the sum of the balance of accounts whose balance is at least a given amount?
+fee: decrease the balance of accounts whose balance is under a given amount by 1.
+purge: remove the accounts whose balance is under a given amount.
+''',
+    # removing a team sweeps its players away; one player's score changes through the name index
+    'teams': '''Teams is a collection.
+Each team has a title.
+Titles are unique. Reject duplicates.
+Players is a collection.
+Each player has a name and a score.
+Names are unique. Replace duplicates.
+Each player belongs to a team.
+When a team is removed, remove its players.
+Add a player.
+Add a team.
+Remove a team by title.
+Remove a player by name.
+bonus: increase the score of the player with a given name by a given amount.
+leaders: show the top 5 players by score.
+band: show the players whose score is between a given low and a given high, sorted by score.
+How many players have a score over a given score?
+''',
+}
+
+
+class TestOrderedIndex(TestNativeAgainstReference):
+    """Ranges and orderings read through a balanced tree that the planner chooses by itself."""
+
+    def plan(self, text, **kw):
+        prog, diags, _ = understand('', text)
+        self.assertEqual([d.msg for d in diags], [])
+        return prog, make_plan(prog, **kw)
+
+    def test_the_planner_chooses_a_tree_for_ranges_and_orderings(self):
+        _, plan = self.plan(ORDERED['crm'])
+        cp = plan.colls['customer']
+        self.assertEqual((cp.indexes, cp.orders), (['email'], ['age']))
+        self.assertEqual(sorted(plan.walks), ['by-age', 'count', 'in-range', 'oldest'])
+        self.assertEqual(plan.tasks['in-range'][0], 'O(log n + k)')
+        self.assertEqual(plan.tasks['oldest'][0], 'O(log n)')
+        self.assertEqual(plan.tasks['add'][0], 'O(log n) expected')
+        self.assertIn('into the age index, O(log n)', plan.tasks['add'][1])
+        self.assertIn('out of the age index, O(log n)', plan.tasks['remove-by-email'][1])
+
+    def test_bounds_from_any_way_of_saying_it(self):
+        from intentc.plan import bounds
+        for cond in ('whose age is between a given low and a given high',
+                     'whose age is at least a given low and at most a given high',
+                     'whose age is at least a given low and whose age is not over a given high'):
+            prog, _ = self.plan(BASE + f'x: show the customers {cond}.\n')
+            t = next(t for t in prog.tasks if t.name == 'x')
+            w = bounds(prog.collections['customer'], t.where)['age']
+            self.assertEqual((w.lo, w.hi, w.whole), ((False, ('param', 'low')), (False, ('param', 'high')), True),
+                             cond)
+
+    def test_what_it_will_not_walk(self):
+        # a bound that depends on the record itself, or on chance, narrows nothing
+        _, plan = self.plan(BASE + 'x: show the customers whose age is over their salary.\n'
+                            'y: show the customers whose age is over a random number between 1 and 9.\n')
+        self.assertEqual(plan.walks, {})
+        self.assertEqual(plan.colls['customer'].orders, [])
+
+    def test_a_tree_rebuilt_as_often_as_it_is_read_is_not_kept(self):
+        _, plan = self.plan(BASE + 'Add a customer.\nx: show the customers sorted by age.\n'
+                            'For every customer, double their age.\n')
+        cp = plan.colls['customer']
+        self.assertEqual(cp.orders, [])
+        self.assertIn('no ordered index on age', [d[0] for d in cp.decisions])
+        _, plan = self.plan(BASE + 'Add a customer.\nx: show the customers sorted by age.\n'
+                            'y: show the top 3 customers by age.\nFor every customer, double their age.\n')
+        self.assertEqual(plan.colls['customer'].orders, ['age'])
+
+    def test_a_rule_that_keeps_changing_it_means_no_tree(self):
+        _, plan = self.plan(BASE + 'Add a customer.\nx: show the customers sorted by age.\n'
+                            'When a customer\'s age is over 100, the age becomes 100.\n')
+        self.assertEqual(plan.colls['customer'].orders, [])
+
+    def test_no_order_forbids_only_the_tree(self):
+        _, plan = self.plan(ORDERED['crm'], no_index='order')
+        cp = plan.colls['customer']
+        self.assertEqual((cp.indexes, cp.orders), (['email'], []))
+        self.assertEqual(plan.tasks['by-age'][0], 'O(n log n)')
+
+    def test_crm_natively(self):
+        self.differential('crm', ORDERED['crm'], seeds=6, n=600)
+
+    def test_kept_order_natively(self):
+        self.differential('kept', ORDERED['kept'], seeds=6, n=600)
+
+    def test_money_and_text_natively(self):
+        self.differential('money', ORDERED['money'], seeds=6, n=600)
+
+    def test_teams_natively(self):
+        self.differential('teams', ORDERED['teams'], seeds=6, n=600)
+
+    def test_without_the_tree_natively(self):
+        for name in ('kept', 'money'):
+            self.differential(name + '-plain', ORDERED[name], no_index=True, seeds=3, n=400)
+
+    def test_a_deep_run_of_sorted_adds_stays_shallow(self):
+        """Ages arriving already sorted would make a plain search tree a list; the treap stays balanced."""
+        src = os.path.join(self.dir, 'sorted.intent')
+        exe = os.path.join(self.dir, 'sorted')
+        with open(src, 'w') as fh:
+            fh.write(ORDERED['crm'])
+        self.assertIsNotNone(build(src, exe, quiet=True))
+        n = 200000
+        cmds = [f'add {i},n{i},e{i},{i}' for i in range(n)] + ['in-range 1000,1002', 'oldest', 'count 199998']
+        got = subprocess.run([exe], input='\n'.join(cmds) + '\n', capture_output=True, text=True, timeout=60)
+        self.assertEqual(got.returncode, 0, got.stderr[-300:])
+        self.assertEqual(got.stdout.split('\n')[-8:-1],
+                         ['1000,n1000,e1000,1000', '1001,n1001,e1001,1001', '1002,n1002,e1002,1002',
+                          '199999,n199999,e199999,199999', '199998,n199998,e199998,199998',
+                          '199997,n199997,e199997,199997', '2'])
