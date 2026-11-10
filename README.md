@@ -7,7 +7,7 @@
 
 <p align="center">
   <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-f59e0b">
-  <img alt="version 0.7.0" src="https://img.shields.io/badge/version-0.7.0-6366f1">
+  <img alt="version 0.8.0" src="https://img.shields.io/badge/version-0.8.0-6366f1">
   <a href="https://github.com/srivtx/intent/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/srivtx/intent/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
   <img alt="backend: LLVM IR" src="https://img.shields.io/badge/backend-LLVM%20IR-262d3a">
@@ -206,6 +206,22 @@ what happens to their orders** and accepts either rule:
 The planner indexes the owner's key because of the link, and `explain` says so.
 Not yet: asking about owners through what they own (`customers with more than 3 orders`) —
 that is refused with an explanation, not misread.
+
+## Money, exactly
+
+```
+Each product has a code (text), a price (money) and a stock (number).
+The till starts at 0.00.
+
+sale: decrease the price by a given discount for products whose stock is over 3.
+tax: take a decimal p and return p times 1.08.
+```
+
+Decimals are kept as whole hundredths, natively and in the reference, so `0.1 + 0.2` is
+`0.30`. Multiplying and dividing round to the nearest cent, halves away from zero. Which
+numbers are decimal is worked out from how they meet (`a given discount` taken off a price is
+money), and a whole number is never given a fraction silently: `increase the stock by 0.5` is
+an error that names the line declaring the stock.
 
 ## Values, decisions and rules
 
@@ -431,7 +447,8 @@ with what you meant; that is what `check` is for — read the right-hand column.
 
 - Relationships go one way: from a record to its owner. A sentence can count, total or match
   the records of another collection, but there is no grouping yet (`the average salary per city`).
-- Whole numbers (64-bit, wrapping) and text only. No decimals, dates, or missing values.
+- Whole numbers (64-bit, wrapping), decimals to the hundredth (money) and text. No dates,
+  yes/no or missing values.
 - Text may not contain commas (the command format is comma-separated).
 - Conditions are a flat list of `and` or of `or`; no grouping.
 - No constraints other than uniqueness; a unique property cannot be changed in bulk.
@@ -446,7 +463,7 @@ with what you meant; that is what `check` is for — read the right-hand column.
   put it behind something that has them. The largest or smallest of no records is 0. The
   reference server does not keep a journal; the compiled one does. A program cannot call
   other servers.
-- Calculations work on whole numbers only (no text, no decimals), and cannot read a collection.
+- Calculations work on numbers only (no text), and cannot read a collection.
 - Rules look only at the record a command added or changed when every rule in the program
   reads and changes one record. As soon as one rule reads a single value, an owner or another
   collection, all rules are re-applied in full after every change, as before.
@@ -504,7 +521,7 @@ sentence it was missing is `remove the cells if the number of cells with the sam
 Done so far: definitions, spelling tolerance, rankings, remembering, text tests, relationships,
 single values, values that depend on a condition, standing rules, time, keys and a board,
 colour, chance, records that appear, conditions about another collection, steps, playing again,
-counting and matching across collections, a server, a window.
+counting and matching across collections, a server, a window, decimal numbers and money.
 The stress experiments show the same thing from eight directions: people fall back to
 arithmetic tricks when the language cannot *say* something. So, in order:
 
@@ -520,7 +537,7 @@ arithmetic tricks when the language cannot *say* something. So, in order:
    refusal reported, so a guarded change no longer fails silently.
 5. **Capabilities made of steps.** `To check out: decrease the stock, then add an order.` and
    `repeat until nothing changes`.
-6. **More kinds of value.** Decimals and money, dates, yes/no, "may be missing"; properties
+6. **More kinds of value.** Dates, yes/no, "may be missing"; properties
    defined by a calculation (`A line's cost is its price times its quantity.`).
 7. **Better structures.** An ordered index for ranges and top-N, tombstones so ordered
    removal stops being O(n).

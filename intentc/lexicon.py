@@ -160,6 +160,7 @@ _add('POLICY', 'reject', 'reject|rejected|refuse|refused|is an error|fail|fails|
 _add('POLICY', 'replace', 'replace|replaced|replaces|overwrite|overwritten|overwrites|wins')
 _add('TYPE', 'text', 'text|string|strings|textual|word|words')
 _add('TYPE', 'int', 'number|numbers|integer|integers|numeric|int|whole number|whole numbers')
+_add('TYPE', 'dec', 'decimal|decimals|decimal number|decimal numbers|money|amount of money')
 
 MAX_PHRASE = max(len(k) for k in PHRASES)
 
@@ -184,12 +185,13 @@ CONVENTION = {n: t for t, names in CONVENTIONAL_TYPES.items() for n in names}
 TYPE_WORDS = {
     'text': 'text', 'string': 'text', 'strings': 'text', 'textual': 'text', 'word': 'text', 'words': 'text',
     'number': 'int', 'numbers': 'int', 'integer': 'int', 'integers': 'int', 'numeric': 'int', 'int': 'int',
+    'decimal': 'dec', 'decimals': 'dec', 'money': 'dec', 'currency': 'dec',
 }
 # Plural words that name one number, not several values ("each player has points").
 COUNT_NOUNS = set('''points units cents credits coins likes votes views stars wins losses lives hits steps
  days hours minutes seconds years months weeks goals runs sales visits clicks orders_count'''.split())
 
-UNSUPPORTED_TYPES = {'decimal', 'float', 'real', 'fraction', 'date', 'boolean', 'bool', 'money', 'currency'}
+UNSUPPORTED_TYPES = {'float', 'real', 'fraction', 'date', 'boolean', 'bool'}
 
 
 # Words that end in "us" and are one thing, not several: "status" stays "status", while
