@@ -1,0 +1,33 @@
+note: this program describes information but nothing to do with it yet
+ --> gemini-build/build-07-graphics-mandelbrot-and-raytracer/attempt_failed.intent:5
+  |
+5 | Pixels is a collection.
+  | ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: decimal numbers are not supported yet
+  --> gemini-build/build-07-graphics-mandelbrot-and-raytracer/attempt_failed.intent:12
+   |
+12 | reset-origin: for every pixel, set cx to -2.0 and set cy to 0.5.
+   |                                          ^^^^ whole numbers only in this version
+
+error: I expected a value here, not "+"
+  --> gemini-build/build-07-graphics-mandelbrot-and-raytracer/attempt_failed.intent:17
+   |
+17 | check-escape: for every pixel whose zx2 + zy2 is over 4000, set escaped to 1.
+   |                                         ^
+
+error: I don't know the word "sqrt"
+  --> gemini-build/build-07-graphics-mandelbrot-and-raytracer/attempt_failed.intent:21
+   |
+21 | compute-normal: for every pixel, set zx to sqrt(1000 - cx).
+   |                                            ^^^^ not a concept I know, and not a name this program declared
+   = I never drop a word I don't understand, because it might change the meaning.
+
+not compiled: 3 things I could not read
+How I read this program:
+
+   5  Pixels is a collection                                        ->  collection pixel
+   6  Each pixel has an id (number), a cx (number), a cy (number), a zx (number), a zy (number), a zx2 (number), a zy2 (number) and an escaped (number)  ->  pixel has id: int, cx: int, cy: int, zx: int, zy: int, zx2: int, zy2: int, escaped: int
+   7  Ids are unique                                                ->  pixel: id unique
+   8  Reject duplicates                                             ->  pixel: on duplicate, reject
+

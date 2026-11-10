@@ -1,0 +1,21 @@
+# =============================================================================
+# BUILD 07 (FAILED ATTEMPT): First-Instinct Graphics & Mandelbrot Renderer
+# =============================================================================
+
+Pixels is a collection.
+Each pixel has an id (number), a cx (number), a cy (number), a zx (number), a zy (number), a zx2 (number), a zy2 (number) and an escaped (number).
+Ids are unique.
+Reject duplicates.
+
+# FAILURE 1: Floating-point coordinates (-2.0, 0.5) are rejected by parser.py:401
+# ("decimal numbers are not supported yet")
+reset-origin: for every pixel, set cx to -2.0 and set cy to 0.5.
+
+# FAILURE 2: Arithmetic expression on the LEFT-HAND side of a WHERE comparison
+# ("whose zx2 + zy2 is over 4000"). parser.py:707 requires the LHS of a comparison
+# to be a single property name, while only the RHS can be an expression!
+check-escape: for every pixel whose zx2 + zy2 is over 4000, set escaped to 1.
+
+# FAILURE 3: Square root function for 3D sphere normal z = sqrt(R^2 - x^2 - y^2)
+# ("sqrt" is an unknown word; Intent has no math intrinsics)
+compute-normal: for every pixel, set zx to sqrt(1000 - cx).

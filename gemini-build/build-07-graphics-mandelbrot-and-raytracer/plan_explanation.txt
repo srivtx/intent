@@ -1,0 +1,54 @@
+Pixels  —  px_id: number (unique), row_idx: number, col_idx: number, cx: number, cy: number, zx: number, zy: number, zx2: number, zy2: number, mag2: number, iter: number, escaped: number, r: number, g: number, b: number, glyph: text
+  order: insertion order is kept
+
+  storage: one growable array of pixel records, 128 bytes each
+  index on px_id: open-addressing hash table from the property to the row number
+      because line 19: px_id is unique, so every add must look for an existing px_id
+
+Voxels  —  vx_id: number (unique), sx: number, sy: number, r2: number, sz: number, diffuse: number, red: number, green: number, blue: number, shade_char: text
+  order: insertion order is kept
+
+  storage: one growable array of voxel records, 80 bytes each
+  index on vx_id: open-addressing hash table from the property to the row number
+      because line 46: vx_id is unique, so every add must look for an existing vx_id
+
+Commands the compiled program accepts (one per line on stdin):
+
+  add-pixel <px_id>,<row_idx>,<col_idx>,<cx>,<cy>,<zx>,<zy>,<zx2>,<zy2>,<mag2>,<iter>,<escaped>,<r>,<g>,<b>,<glyph>   O(1) expected  probe the index for a clash, then append
+                                                                                                                      line 23: add-pixel: add a pixel
+  step-mandelbrot                                                                                                     O(n)           one pass, changed in place
+                                                                                                                      line 26: step-mandelbrot: for every pixel whose escaped is 0, set zx2 to (zx * zx) / 1000, then set zy2 to (zy * zy) / 1000, then set mag2 to zx2 + zy2, then set zy to (2 * zx * zy) / 1000 + cy, then set zx to zx2 - zy2 + cx, then increase iter by 1
+  mark-escaped                                                                                                        O(n)           one pass, changed in place
+                                                                                                                      line 29: mark-escaped: for every pixel whose escaped is 0 and mag2 is over 4000, set escaped to 1
+  shade-mandelbrot-interior                                                                                           O(n)           one pass, changed in place
+                                                                                                                      line 32: shade-mandelbrot-interior: for every pixel whose escaped is 0, set r to 10, then set g to 15, then set b to 30, then set glyph to "@"
+  shade-mandelbrot-low                                                                                                O(n)           one pass, changed in place
+                                                                                                                      line 33: shade-mandelbrot-low: for every pixel whose escaped is 1 and iter is at most 3, set r to 20, then set g to 40, then set b to 90, then set glyph to "."
+  shade-mandelbrot-mid                                                                                                O(n)           one pass, changed in place
+                                                                                                                      line 34: shade-mandelbrot-mid: for every pixel whose escaped is 1 and iter is between 4 and 7, set r to 40, then set g to 140, then set b to 220, then set glyph to "+"
+  shade-mandelbrot-high                                                                                               O(n)           one pass, changed in place
+                                                                                                                      line 35: shade-mandelbrot-high: for every pixel whose escaped is 1 and iter is between 8 and 14, set r to 240, then set g to 190, then set b to 60, then set glyph to "*"
+  shade-mandelbrot-edge                                                                                               O(n)           one pass, changed in place
+                                                                                                                      line 36: shade-mandelbrot-edge: for every pixel whose escaped is 1 and iter is at least 15, set r to 255, then set g to 255, then set b to 255, then set glyph to "#"
+  dump-mandelbrot-rgb                                                                                                 O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                      line 38: dump-mandelbrot-rgb: show the r, g and b of pixels
+  dump-mandelbrot-glyphs                                                                                              O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                      line 39: dump-mandelbrot-glyphs: show the glyph of pixels
+  interior-pixel-count                                                                                                O(n)           one pass, constant extra memory
+                                                                                                                      line 40: interior-pixel-count: how many pixels whose escaped is 0 are there
+  add-voxel <vx_id>,<sx>,<sy>,<r2>,<sz>,<diffuse>,<red>,<green>,<blue>,<shade_char>                                   O(1) expected  probe the index for a clash, then append
+                                                                                                                      line 50: add-voxel: add a voxel
+  raycast-sphere                                                                                                      O(n)           one pass, changed in place
+                                                                                                                      line 53: raycast-sphere: for every voxel, set r2 to sx * sx + sy * sy, then set red to 15, then set green to 18, then set blue to 28, then set shade_char to "."
+  shade-sphere-hit                                                                                                    O(n)           one pass, changed in place
+                                                                                                                      line 55: shade-sphere-hit: for every voxel whose r2 is at most 1000000, set sz to 1000 - r2 / 2000 - ((r2 / 2000) * (r2 / 2000)) / 2000, then set diffuse to (sz * 8 - sx * 4 - sy * 4) / 80, then set red to 50 + diffuse, then set green to 30 + (diffuse * 7) / 10, then set blue to 90 + diffuse, then set shade_char to "+"
+  shade-sphere-bright                                                                                                 O(n)           one pass, changed in place
+                                                                                                                      line 57: shade-sphere-bright: for every voxel whose r2 is at most 1000000 and diffuse is at least 100, set shade_char to "*"
+  shade-sphere-core                                                                                                   O(n)           one pass, changed in place
+                                                                                                                      line 58: shade-sphere-core: for every voxel whose r2 is at most 1000000 and diffuse is at least 150, set red to 255, then set green to 220, then set blue to 255, then set shade_char to "@"
+  shade-sphere-shadow                                                                                                 O(n)           one pass, changed in place
+                                                                                                                      line 59: shade-sphere-shadow: for every voxel whose r2 is at most 1000000 and diffuse is under 40, set red to 35, then set green to 20, then set blue to 55, then set shade_char to ":"
+  dump-sphere-rgb                                                                                                     O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                      line 61: dump-sphere-rgb: show the red, green and blue of voxels
+  dump-sphere-glyphs                                                                                                  O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                      line 62: dump-sphere-glyphs: show the shade_char of voxels

@@ -1,0 +1,62 @@
+# =============================================================================
+# BUILD 07 (WORKING): Native LLVM Mandelbrot Fractal & 3D Sphere Raycaster
+# =============================================================================
+# Proves that while Intent has no GPU/windowing syscalls, it CAN execute real
+# 2D fractal rendering and 3D software raycasting in native LLVM IR by:
+#   1. Using fixed-point integer math (1.0 = 1000).
+#   2. Moving LHS condition expressions (`zx2 + zy2 > 4000`) into either an
+#      algebraic RHS (`zx2 is over 4000 - zy2`) or a materialized register (`mag2`).
+#   3. Approximating `sqrt(R^2 - r^2)` on the sphere surface via a 2nd-order
+#      Taylor polynomial (`sz = 1000 - r2 / 2000 - (r2 / 2000) * (r2 / 2000) / 2000`).
+#   4. Emitting scanline-ordered RGB pixels (for Netpbm P3 `.ppm` images) and
+#      ASCII luminance glyphs (`@`, `#`, `*`, `+`, `.`, ` `).
+# =============================================================================
+
+# ---- 1. 2D Mandelbrot Set Fractal Framebuffer -------------------------------
+
+Pixels is a collection.
+Each pixel has a px_id (number), a row_idx (number), a col_idx (number), a cx (number), a cy (number), a zx (number), a zy (number), a zx2 (number), a zy2 (number), a mag2 (number), a iter (number), a escaped (number), a r (number), a g (number), a b (number) and a glyph (text).
+No two pixels share the same px_id.
+If a pixel already exists, replace it.
+Keep pixels in the order they were added.
+
+add-pixel: add a pixel.
+
+# One Mandelbrot iteration z = z^2 + c in fixed-point (scale = 1000):
+step-mandelbrot: for every pixel whose escaped is 0, set zx2 to (zx * zx) / 1000, then set zy2 to (zy * zy) / 1000, then set mag2 to zx2 + zy2, then set zy to (2 * zx * zy) / 1000 + cy, then set zx to zx2 - zy2 + cx, then increase iter by 1.
+
+# Note: also works with algebraic RHS `whose escaped is 0 and zx2 is over 4000 - zy2`!
+mark-escaped: for every pixel whose escaped is 0 and mag2 is over 4000, set escaped to 1.
+
+# Map iteration depth & escape status to RGB color + ASCII shading glyph
+shade-mandelbrot-interior: for every pixel whose escaped is 0, set r to 10, then set g to 15, then set b to 30, then set glyph to "@".
+shade-mandelbrot-low: for every pixel whose escaped is 1 and iter is at most 3, set r to 20, then set g to 40, then set b to 90, then set glyph to ".".
+shade-mandelbrot-mid: for every pixel whose escaped is 1 and iter is between 4 and 7, set r to 40, then set g to 140, then set b to 220, then set glyph to "+".
+shade-mandelbrot-high: for every pixel whose escaped is 1 and iter is between 8 and 14, set r to 240, then set g to 190, then set b to 60, then set glyph to "*".
+shade-mandelbrot-edge: for every pixel whose escaped is 1 and iter is at least 15, set r to 255, then set g to 255, then set b to 255, then set glyph to "#".
+
+dump-mandelbrot-rgb: show the r, g and b of pixels.
+dump-mandelbrot-glyphs: show the glyph of pixels.
+interior-pixel-count: how many pixels whose escaped is 0 are there?
+
+# ---- 2. 3D Lambertian Sphere Software Raycaster -----------------------------
+
+Voxels is a collection.
+Each voxel has a vx_id (number), a sx (number), a sy (number), a r2 (number), a sz (number), a diffuse (number), a red (number), a green (number), a blue (number) and a shade_char (text).
+No two voxels share the same vx_id.
+If a voxel already exists, replace it.
+Keep voxels in the order they were added.
+
+add-voxel: add a voxel.
+
+# Ray-sphere intersection (radius R = 1000, R^2 = 1,000,000) + polynomial normal + directional light L=(-4, -4, 8)
+raycast-sphere: for every voxel, set r2 to sx * sx + sy * sy, then set red to 15, then set green to 18, then set blue to 28, then set shade_char to ".".
+
+shade-sphere-hit: for every voxel whose r2 is at most 1000000, set sz to 1000 - r2 / 2000 - ((r2 / 2000) * (r2 / 2000)) / 2000, then set diffuse to (sz * 8 - sx * 4 - sy * 4) / 80, then set red to 50 + diffuse, then set green to 30 + (diffuse * 7) / 10, then set blue to 90 + diffuse, then set shade_char to "+".
+
+shade-sphere-bright: for every voxel whose r2 is at most 1000000 and diffuse is at least 100, set shade_char to "*".
+shade-sphere-core: for every voxel whose r2 is at most 1000000 and diffuse is at least 150, set red to 255, then set green to 220, then set blue to 255, then set shade_char to "@".
+shade-sphere-shadow: for every voxel whose r2 is at most 1000000 and diffuse is under 40, set red to 35, then set green to 20, then set blue to 55, then set shade_char to ":".
+
+dump-sphere-rgb: show the red, green and blue of voxels.
+dump-sphere-glyphs: show the shade_char of voxels.
