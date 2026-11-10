@@ -1,0 +1,39 @@
+# A game you can play: steer the @ with the arrow keys and keep away from the falling rocks.
+#   ./intent build examples/dodge.intent -o build/dodge
+#   build/dodge                  (in a terminal: left and right arrows move, q stops)
+#
+# Time, keys and the board are ordinary events, so the same program can be driven by a
+# script and replayed exactly:
+#   printf 'wait 450\npress left\nscreen\n' | build/dodge
+
+The board is 30 wide and 12 high.
+The column starts at 15.
+The row starts at 12.
+The score is a number.
+
+Rocks is a collection where each rock has an x and a y.
+Start with a rock at x 4, y 1.
+Start with a rock at x 11, y 5.
+Start with a rock at x 19, y 9.
+Start with a rock at x 26, y 3.
+Start with a rock at x 8, y 7.
+
+# What happens by itself as time passes. Things due at the same moment happen in the order written.
+Every 150 milliseconds, the y of each rock increases by 1.
+Every 150 milliseconds, increase the x of each rock whose y is over 12 by 7.
+Every 150 milliseconds, decrease the x of each rock whose x is over 30 by 30.
+Every second, the score goes up by 1.
+
+# A standing rule: a rock that fell off the bottom comes back at the top.
+Whenever the y of a rock is over 12, its y becomes 1.
+
+# The keyboard.
+When the left key is pressed, the column decreases by 1 if the column is over 1.
+When the right key is pressed, the column increases by 1 if the column is under 30.
+
+The game is over when any rock has an x equal to the column and a y equal to the row.
+
+# What the player sees. Later sentences draw over earlier ones.
+Draw each rock at its x and y as "#".
+Draw "@" at the column and the row.
+Show the score above the board.
