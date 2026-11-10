@@ -9,8 +9,8 @@ import functools
 import itertools
 import re
 
-from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, COLOURS, INK_LETTER, LONGEST_WAIT, MUTATING, OVER, STATE, builtins,
-                 decides_first, draw_char, droot, fmt_dec, rdiv, root, sine, usage)
+from .ir import (BAD_SEED, BAD_WAIT, CHANCE_ADD, CHANCE_MUL, LONGEST_WAIT, MUTATING, OVER, STATE, builtins,
+                 colour_value, decides_first, draw_char, ink_text, inked, RGB, droot, fmt_dec, rdiv, root, sine, usage)
 
 UNSETTLED = 'error: the rules keep changing each other'
 ROUNDS = 100
@@ -189,21 +189,39 @@ class Machine:
         """What is in every cell of the board, and its colour (0 where none was said)."""
         w, h = self.prog.board
         grid = [[' '] * w for _ in range(h)]
+        self.written = set()                # cells that hold a written text: a picture shows them as letters
         ink = [[0] * w for _ in range(h)]
         for d in self.prog.draws:
             for _, r in (self.chosen(d, {}) if d.coll else [(0, None)]):
                 if d.coll or holds(d.where, r, {}, self):
                     x, y = ev(d.at[0], r, {}, self), ev(d.at[1], r, {}, self)
+                    if isinstance(d.glyph, tuple) and d.glyph[0] == 'figure':     # its top left corner is here
+                        for i, j, ch, c in self.prog.figures[d.glyph[1]].cells():
+                            if 1 <= x + i <= w and 1 <= y + j <= h:
+                                self.written.discard((x + i - 1, y + j - 1))
+                                grid[y + j - 1][x + i - 1] = ch
+                                ink[y + j - 1][x + i - 1] = colour_value(c) if c else 0
+                        continue
+                    if d.spell:             # every character of the text, rightward; a space leaves the cell as it was
+                        text = d.glyph if isinstance(d.glyph, str) else ev(d.glyph, r, {}, self)
+                        code = colour_value(d.colour if isinstance(d.colour, str) else
+                                            ev(d.colour, r, {}, self)) if d.colour else 0
+                        for i, b in enumerate(text.encode()):
+                            if 33 <= b <= 126 and 1 <= x + i <= w and 1 <= y <= h:
+                                grid[y - 1][x + i - 1], ink[y - 1][x + i - 1] = chr(b), code
+                                self.written.add((x + i - 1, y - 1))
+                        continue
                     ch = d.glyph if isinstance(d.glyph, str) else draw_char(ev(d.glyph, r, {}, self))
                     if 1 <= x <= w and 1 <= y <= h and ch:
+                        self.written.discard((x - 1, y - 1))
                         grid[y - 1][x - 1] = ch
-                        ink[y - 1][x - 1] = COLOURS[d.colour] if isinstance(d.colour, str) else \
-                            COLOURS.get(ev(d.colour, r, {}, self), 0) if d.colour else 0
+                        ink[y - 1][x - 1] = colour_value(d.colour if isinstance(d.colour, str) else
+                                                         ev(d.colour, r, {}, self)) if d.colour else 0
         return grid, ink
 
     def picture(self):
         ink = self.paint()[1]
-        return self.screen() + ['~'] + [''.join(INK_LETTER[k] for k in row) for row in ink] + \
+        return self.screen() + ['~'] + [''.join(ink_text(k) for k in row) for row in ink] + \
             ([OVER] if self.over() else [])
 
     def screen(self, colour=False):
@@ -215,12 +233,14 @@ class Machine:
         edge = '+' + '-' * w + '+'
 
         def line(cells, inks):
-            if not colour or not any(d.colour for d in self.prog.draws):
+            if not colour or not inked(self.prog):
                 return '|' + ''.join(cells) + '|'
             out, cur = '|', 0
             for ch, code in zip(cells, inks):
                 if code != cur:
-                    out, cur = out + f'\x1b[{code}m', code
+                    rgb = code & 0xffffff
+                    out += f'\x1b[38;2;{rgb >> 16};{(rgb >> 8) & 255};{rgb & 255}m' if code >= RGB else f'\x1b[{code}m'
+                    cur = code
                 out += ch
             return out + ('\x1b[0m' if cur else '') + '|'
 
