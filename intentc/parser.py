@@ -272,7 +272,8 @@ class Parser:
             return reading + '; ' + self.decl_fields(toks, content, h, coll)
         h = index_of(content, 'HAS')
         if h and not self.prog.collections.get(singular(content[h - 1].toks[0].text)) and \
-                content[h - 1].kind == 'UNK' and all(c.kind == 'QUANT' for c in content[:h - 1]) and \
+                (content[h - 1].kind == 'UNK' or (content[h - 1].kind == 'GEN' and not self.prog.collections)) and \
+                all(c.kind == 'QUANT' for c in content[:h - 1]) and \
                 not kinds & {'CMP', 'BETWEEN'} and not any(c.kind == 'ACT' for c in content[:h]) and \
                 not self.near_a_name(content[h - 1].toks[0].text):
             # "Each customer has a name and an age." with no earlier declaration: describing it declares it
@@ -513,6 +514,10 @@ class Parser:
             return next(iter(cs.values()))
         if recent and getattr(self.prog, 'recent', None) in cs:
             return cs[self.prog.recent]             # "Reject duplicates." right after describing orders
+        used = {c.val for c in content if c.kind == 'FIELD'}
+        owners = [c for c in cs.values() if used and used <= set(c.fields)]
+        if len(owners) == 1:
+            return owners[0]                        # "What is the largest cost?": only visits have a cost
         if not cs:
             raise self.p('error', anchor or self.cur, 'there is nothing to work on yet',
                          hint='declare a collection first, e.g. "Customers is a collection."')
