@@ -11,10 +11,11 @@ Any step that cannot proceed raises a Problem pointing at the exact words.
 import copy
 import difflib
 import re
+from fractions import Fraction
 from dataclasses import dataclass, replace
 
 from .ir import (CHANCE_WIDEST, COLOURS, KEYS, LONGEST_WAIT, STATE, Collection, Diag, Field, Program, Task, binop,
-                 canon, fmt_cond, fmt_event, fmt_expr, negate, task_exprs, walk_cond_exprs, walk_expr)
+                 canon, fmt_cond, fmt_dec, fmt_event, fmt_expr, negate, task_exprs, walk_cond_exprs, walk_expr)
 from .lexicon import (BOARD_WORDS, CONVENTION, COUNT_NOUNS, DRAW_WORDS, HIGH_WORDS, MAX_PHRASE, PHRASES, PRESS_VERBS,
                       PRESSED, SYMS, TYPE_WORDS, UNITS, UNSUPPORTED_TYPES, WIDE_WORDS, all_known_words, singular)
 from .source import Source, Tok, split_sentences, tokenize
@@ -23,7 +24,7 @@ ARTICLES = {'a', 'an', 'the', 'their', 'its', 'some', 'one'}
 MANY = [('a', 'list', 'of'), ('a', 'set', 'of'), ('lists', 'of'), ('list', 'of'), ('set', 'of'), ('one', 'or', 'more'),
         ('zero', 'or', 'more'), ('any', 'number', 'of'), ('a', 'few'), ('several',), ('many',), ('multiple',),
         ('some',)]
-LEADING_TYPES = {'numeric': 'int', 'integer': 'int', 'text': 'text', 'string': 'text', 'textual': 'text'}
+LEADING_TYPES = {'numeric': 'int', 'integer': 'int', 'decimal': 'dec', 'text': 'text', 'string': 'text', 'textual': 'text'}
 SCALE_NAME = {2: 'double', 3: 'triple', 4: 'quadruple'}
 STARTERS = [('as', 'soon', 'as'), ('every', 'time'), ('each', 'time'), ('when',), ('whenever',), ('if',), ('once',)]
 KEY_ALIASES = {'return': 'enter', 'spacebar': 'space'}
@@ -477,9 +478,15 @@ class Parser:
         while i < n:
             t = toks[i]
             if t.kind == 'num':
-                if '.' in t.text:
-                    raise self.p('error', t, 'decimal numbers are not supported yet',
-                                 'whole numbers only in this version')
+                if '.' in t.text:           # 12.50: kept exactly, as hundredths
+                    whole, _, frac = t.text.lstrip('+-').partition('.')
+                    if not whole.isdigit() or not frac.isdigit() or len(frac) > 2:
+                        raise self.p('error', t, 'a decimal number has one or two digits after the point',
+                                     'it is kept exactly, to the hundredth', 'e.g. 12.5 or 12.50')
+                    v = int(whole) * 100 + int(frac.ljust(2, '0'))
+                    out.append(CT('DEC', -v if t.text.startswith('-') else v, [t]))
+                    i += 1
+                    continue
                 out.append(CT('NUM', int(t.text), [t]))
                 i += 1
                 continue
@@ -665,11 +672,8 @@ class Parser:
             t = toks[j] if j < n else None
             if t is None:
                 return None
-            if t.kind == 'num':
-                if '.' in t.text:
-                    raise self.p('error', t, 'decimal numbers are not supported yet',
-                                 'say it in milliseconds: "every 500 milliseconds"')
-                return int(t.text)
+            if t.kind == 'num':         # "every 0.5 seconds" is exact; a decimal elsewhere is not a time
+                return Fraction(t.text) if '.' in t.text else int(t.text)
             got = PHRASES.get((t.text,)) if t.kind == 'word' else None
             return got[0][1] if got and len(got) == 1 and got[0][0] == 'NUM' else None
 
@@ -679,14 +683,21 @@ class Parser:
                     return i, i + 2, UNITS[toks[i + 1].text]
                 k = count(i + 1)
                 if k is not None and unit(i + 2):
-                    return i, i + 3, k * UNITS[toks[i + 2].text]
+                    return i, i + 3, self.whole_ms(toks[i + 1], k * UNITS[toks[i + 2].text])
             k = count(i)
+            if isinstance(k, Fraction):
+                k = None
             times = k if k is not None and i + 1 < n and toks[i + 1].text == 'times' else \
                 {'once': 1, 'twice': 2}.get(t.text) if t.kind == 'word' else None
             j = i + (2 if times == k and k is not None else 1)
             if times and j < n and toks[j].text in ('a', 'per', 'each', 'every') and unit(j + 1):
                 return i, j + 2, UNITS[toks[j + 1].text] // times
         return None
+
+    def whole_ms(self, tok, ms):
+        if ms != int(ms):
+            raise self.p('error', tok, 'this is not a whole number of milliseconds', hint='e.g. "every 250 milliseconds"')
+        return int(ms)
 
     def keypress(self, toks):
         """"when the left key is pressed" / "when the player presses space" -> (start, end, key)."""
@@ -931,7 +942,7 @@ class Parser:
             first = k
             while k < n:
                 x = content[k]
-                if x.kind in ('NUM', 'STR', 'VALUE', 'LOOK', 'OP', 'LP', 'RP', 'SCALE', 'PARITY') or \
+                if x.kind in ('NUM', 'DEC', 'STR', 'VALUE', 'LOOK', 'OP', 'LP', 'RP', 'SCALE', 'PARITY') or \
                         (x.kind == 'FIELD' and (k == first or content[k - 1].kind in ('OP', 'LP', 'COLL'))) or \
                         (x.kind == 'COLL' and k + 1 < n and content[k + 1].kind == 'FIELD') or \
                         (x.kind == 'AND' and k + 1 < n and content[k + 1].kind == 'NUM' and
@@ -1322,10 +1333,10 @@ class Parser:
                                  f'"{c.val}" is given twice' if c.val in given else
                                  f'{coll.label} has no property "{c.val}"')
                 f, joined = c.val, True
-            elif c.kind in ('NUM', 'STR'):
+            elif c.kind in ('NUM', 'STR', 'DEC'):
                 if not f:
                     raise self.p('error', c, 'which property is this the value of?', self.could_be(coll))
-                given[f], f = ('num' if c.kind == 'NUM' else 'str', c.val), None
+                given[f], f = (c.kind.lower(), c.val), None
             elif c.kind in ('IS', 'EQSYM'):
                 if not f or not joined:
                     raise self.leftover([c])
@@ -1372,14 +1383,20 @@ class Parser:
             k += 1
         rest = [c for i, c in enumerate(content[k:]) if not (c.kind == 'WHERE' and i and content[k + i - 1].kind == 'TYPE')]
         kinds = [c.kind for c in rest]
-        if k == 0 and kinds[:2] == ['VALUE', 'STARTS'] and len(rest) == 3 and rest[2].kind in ('NUM', 'STR'):
+        if k == 0 and kinds[:2] == ['VALUE', 'STARTS'] and len(rest) == 3 and rest[2].kind in ('NUM', 'STR', 'DEC'):
             f = self.state.fields[rest[0].val]
+            if rest[2].kind == 'DEC' and f.type == 'int':
+                f.dec, f.init = True, rest[2].val
+                return f'value {f.name} starts at {fmt_dec(f.init)}'
+            if rest[2].kind == 'NUM' and f.dec:
+                f.init = rest[2].val * 100
+                return f'value {f.name} starts at {fmt_dec(f.init)}'
             if (f.type == 'int') != (rest[2].kind == 'NUM'):
                 raise self.p('error', rest[2], f'"{f.name}" is {"a number" if f.type == "int" else "text"}, '
                              f'so it cannot start as this')
             f.init = rest[2].val
             return f'value {f.name} starts at {fmt_expr((rest[2].kind.lower(), rest[2].val))}'
-        lit = ('NUM', 'STR')
+        lit = ('NUM', 'STR', 'DEC')
         shape = (kinds == ['IS', 'TYPE'] or (kinds[:3] == ['IS', 'TYPE', 'STARTS'] and len(rest) == 4 and
                                              rest[3].kind in lit) or
                  (len(rest) == 2 and kinds[0] in ('IS', 'STARTS') and rest[1].kind in lit))
@@ -1396,20 +1413,27 @@ class Parser:
                 raise self.unknown_word(c)
         self.taken(tuple(c.toks[0].text for c in words), words)
         typ = rest[1].val if rest[1].kind == 'TYPE' else None
+        dec = typ == 'dec'
+        typ = 'int' if dec else typ
         first = rest[-1] if rest[-1].kind in lit else None
         if first is not None:
-            given = 'int' if first.kind == 'NUM' else 'text'
+            given = 'text' if first.kind == 'STR' else 'int'
             if typ and typ != given:
                 raise self.p('error', first, f'this is not {"a number" if typ == "int" else "text"}')
-            typ = given
+            typ, dec = given, dec or first.kind == 'DEC'
         f = Field(name, typ, line=self.cur[0].line)
+        f.dec = dec
         f.init = first.val if first is not None else (0 if typ == 'int' else '')
+        if dec and first is not None and first.kind == 'NUM':
+            f.init *= 100
         self.state.fields[name] = f
         self.state.line = self.state.line or f.line
         if first is None:
-            self.note(words, f'"{name}" starts {"at 0" if typ == "int" else "empty"}, since nothing says otherwise',
+            self.note(words, f'"{name}" starts {("at 0.00" if dec else "at 0") if typ == "int" else "empty"}, '
+                      'since nothing says otherwise',
                       f'e.g. "The {name.replace("_", " ")} starts at {"10" if typ == "int" else chr(34) + "hello" + chr(34)}."')
-        return f'value {name}: {"number" if typ == "int" else "text"}, starts at {fmt_expr(("num" if typ == "int" else "str", f.init))}'
+        return f'value {name}: {"decimal" if dec else "number" if typ == "int" else "text"}, starts at ' + \
+            fmt_expr(('dec' if dec else 'num' if typ == 'int' else 'str', f.init))
 
     # ------------------------------------------------------------------ scope
     def scope(self, content, anchor=None, recent=False):
@@ -1572,7 +1596,7 @@ class Parser:
         if not added:
             raise self.p('error', self.cur, f'I expected the properties of {coll.label} here')
         return f'{coll.name} has ' + ', '.join(
-            f'{f.name}' + (f': {f.type}' if f.type else '') + (' (unique)' if f.unique else '') +
+            f'{f.name}' + (f': {"decimal" if f.dec else f.type}' if f.type else '') + (' (unique)' if f.unique else '') +
             (f' (the {f.ref} it belongs to)' if f.ref else '') for f in added)
 
     def field_item(self, item, coll):
@@ -1615,14 +1639,16 @@ class Parser:
             words = [w.text for w in tw if w.text not in ARTICLES]
             if ' '.join(words) in ('whole number', 'whole numbers'):
                 ftype = 'int'
+            elif ' '.join(words) in ('decimal number', 'decimal numbers', 'amount of money'):
+                ftype = 'dec'
             elif len(words) == 1 and words[0] in TYPE_WORDS:
                 ftype = TYPE_WORDS[words[0]]
             elif any(w in UNSUPPORTED_TYPES for w in words):
                 raise self.p('error', tw, f'the type "{" ".join(words)}" is not supported yet',
-                             'this version knows text and whole numbers')
+                             'this version knows text, whole numbers and decimal numbers')
             else:
                 raise self.p('error', tw or whole, 'I don\'t know this type',
-                             'this version knows text and whole numbers')
+                             'this version knows text, whole numbers and decimal numbers')
         ws = [w for w in ws if w.text not in ARTICLES]
         if not ws or any(w.kind != 'word' for w in ws) or len(ws) > 3:
             raise self.p('error', whole, 'I can\'t read this as a property name')
@@ -1637,16 +1663,18 @@ class Parser:
             return self.many_valued(coll, name, ws, ftype)
         if name in self.prog.collections and name != coll.name and ftype is None and name not in coll.fields:
             return self.make_ref(coll, self.prog.collections[name], ws)      # "each order has a customer"
+        dec, ftype = ftype == 'dec', ('int' if ftype == 'dec' else ftype)
         f = coll.fields.get(name)
         if f is None:
             f = coll.fields[name] = Field(name, ftype, line=ws[0].line)
+            f.dec = dec
             known = PHRASES.get((name,))
             if known and known[0][0] != 'FILLER':
                 self.note(ws, f'"{name}" is also a word I know; in this program it will always mean the property')
         elif ftype:
             if f.type and f.type != ftype:
                 raise self.p('error', whole, f'"{name}" was already declared as {f.type}')
-            f.type = ftype
+            f.type, f.dec = ftype, f.dec or dec
         if unique:
             f.unique, f.unique_line = True, ws[0].line
         return f
@@ -1729,6 +1757,8 @@ class Parser:
                 return ('value', c.val)
             if c.kind == 'RAND':
                 return ('rand',) + c.val
+            if c.kind == 'DEC':
+                return ('dec', c.val)
             if c.kind == 'LOOK':
                 return c.val
             if c.kind == 'OUTER':
@@ -1821,7 +1851,7 @@ class Parser:
                 if joined[-1].kind not in ('AND', 'OR', 'COMMA'):
                     joined.append(CT('AND', None, c.toks))
                 continue
-            if c.kind == 'FIELD' and joined and joined[-1].kind in ('NUM', 'STR', 'PARAM', 'GIVENBARE'):
+            if c.kind == 'FIELD' and joined and joined[-1].kind in ('NUM', 'DEC', 'STR', 'PARAM', 'GIVENBARE'):
                 joined.append(CT('AND', None, c.toks))      # "... at least 18 age over 64"
             joined.append(c)
         parts, ops, cur = [], [], []
@@ -1858,7 +1888,7 @@ class Parser:
         i, lhs = 0, None
         stop = next((k for k, c in enumerate(p) if c.kind in ('IS', 'NOT', 'CMP', 'EQSYM')), len(p))
         if p[0].kind in ('FIELD', 'PFIELD', 'VALUE', 'LOOK') or \
-                (p[0].kind in ('NUM', 'LP', 'PARAM', 'SCALE') and any(c.kind == 'OP' for c in p[:stop])) or \
+                (p[0].kind in ('NUM', 'DEC', 'LP', 'PARAM', 'SCALE') and any(c.kind == 'OP' for c in p[:stop])) or \
                 (p[0].kind == 'PARAM' and 0 < stop < len(p)):
             lhs, i = self.parse_expr(p[:stop])       # "whose price times quantity is over 100"
         op, neg, explicit, last_cmp = None, False, False, None
@@ -2422,14 +2452,17 @@ class Parser:
         return content[:w], content[w + 1:]
 
     def calc(self, content, ti, name):
-        j, params = ti + 1, []
+        j, params, pdec, as_dec = ti + 1, [], set(), False
         while j < len(content):
             c = content[j]
             if c.kind == 'TYPE':
-                if c.val != 'int':
-                    raise self.p('error', c, 'calculations work on whole numbers only in this version')
+                if c.val == 'text':
+                    raise self.p('error', c, 'calculations work on numbers only in this version')
+                as_dec = c.val == 'dec'
             elif c.kind == 'UNK':
                 params.append(c.toks[0].text)
+                if as_dec:
+                    pdec.add(c.toks[0].text)
             elif c.kind == 'NUM' and j + 1 < len(content) and content[j + 1].kind == 'TYPE':
                 pass                    # "take two numbers a and b"
             elif c.kind in ('AND', 'COMMA') and params and j + 1 < len(content) and \
@@ -2465,7 +2498,7 @@ class Parser:
         if not rest:
             raise self.p('question', self.cur, 'what should it give back?', hint='e.g. "... and return n times 2"')
         T = Task(name, 'calc', None, self.cur[0].line, self.sent_text(self.cur), named=name is not None)
-        T.params = params
+        T.params, T.pdec = params, pdec
         c = rest[0]
         P = lambda e: e
         if c.kind == 'VERB' and c.val in ('multiply', 'divide', 'increase', 'decrease'):
