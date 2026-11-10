@@ -131,8 +131,10 @@ class Machine:
         edge = '+' + '-' * w + '+'
 
         def status(names):
+            if not names:
+                return []
             row = self.data[STATE][0]
-            return ['   '.join(f'{n.replace("_", " ")} {row[n]}' for n in names)] if names else []
+            return ['   '.join(f'{n.replace("_", " ")} {row[n]}' for n in names)]
         return status(self.prog.above) + [edge] + ['|' + ''.join(g) + '|' for g in grid] + [edge] + \
             status(self.prog.below)
 
