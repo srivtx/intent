@@ -3,6 +3,29 @@
 Intent is experimental. Until 1.0, any version may change what a sentence means; `./intent check`
 always shows the current reading.
 
+## 0.5.0 — 2026-11-10
+
+### Added
+- **Time.** `Every 150 milliseconds, the y of each rock increases by 1.` `Every second, ...`
+  `4 times a second, ...` Things due together happen in the order written, then the rules settle.
+- **Keys.** `When the left key is pressed, ...` `When the player presses space, ...`
+  Arrows, space, enter, letters and digits.
+- **A board.** `The board is 30 wide and 12 high.` `Draw each rock at its x and y as "#".`
+  `Show the score above the board.`
+- **An ending.** `The game is over when the lives are under 1.` or `... when any rock has ...`
+- **Starting records.** `Start with a rock at x 4, y 1.`
+- **Playing.** A compiled program with a board, run in a terminal, is played with the real
+  clock and keyboard (`q`, `Esc`, `Ctrl-C` stop). `./intent run` plays it in the reference.
+  Over a pipe the same program takes `wait <milliseconds>`, `press <key>` and `screen`, so a
+  game is scripted, remembered and replayed exactly.
+- The thing may come before the verb: `the score increases by 1`, `the speed doubles`,
+  `goes up by`, `goes down by`.
+- `examples/dodge.intent`.
+
+### Fixed
+- Short names that differ by one letter (`px` and `py`, `x` and `y`) are no longer taken for
+  a slip of each other when declared as single values.
+
 ## 0.4.0 — 2026-11-10
 
 ### Added
