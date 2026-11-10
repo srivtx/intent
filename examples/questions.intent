@@ -1,0 +1,13 @@
+# Every sentence below leaves something open. Run:  ./intent check examples/questions.intent
+Customers is a collection.
+Each customer has a name, an age (number), a salary (number) and an email.
+Emails are unique.
+
+Add a customer.
+Transform customers and double it.
+Sort the customers.
+Show the largest positive age.
+Remove a customer.
+Show customers by age.
+Count the customers over 25.
+Show customers whose age is over 60 and salary is under 10 or age is under 18.
