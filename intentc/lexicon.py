@@ -83,7 +83,8 @@ _add('ACT', 'show', '''show|show me|list|print|print out|display|retrieve|return
  |output|produce|what are|what is|what|tell me|report|see|view|it returns|give back
  |pick|select|choose|who are|who is''')
 _add('ACT', 'find', 'find|look up|lookup|search|search for|locate')
-_add('ACT', 'remove', 'remove|delete|drop|discard|erase|get rid of|wipe out|throw away|throw out|purge|clear out')
+_add('ACT', 'remove', '''remove|delete|drop|discard|erase|get rid of|wipe out|throw away|throw out|purge|clear out
+ |removed|deleted|removing|removes|deleting|deletes''')
 _add('ACT', 'keep', 'keep|retain|keep only|only keep|retain only')
 _add('ACT', 'sort', 'sort|order|arrange|rank|sorted')
 _add('TAKE', None, '''take|takes|it takes|accept|accepts|it accepts|receive|receives|that takes|that accepts
@@ -128,6 +129,10 @@ _add('QUANT', None, '''each|every|all|for every|for each|for all|all of|all the|
  |each of|each of the|each one|every one|each of them|all of them''')
 _add('GEN', None, '''everyone|everybody|person|people|item|items|entry|entries|record|records|them|they
  |member|members|element|elements''')
+
+# ---- relationships -------------------------------------------------------------------
+_add('BELONGS', None, 'belongs to|belong to|is owned by|are owned by')
+_add('CANNOT', None, "cannot be|can not be|can't be|must not be|may not be|cannot|can never be|must never be")
 
 # ---- declarations ---------------------------------------------------------------------
 _add('COLLWORD', None, 'collection|collections')
