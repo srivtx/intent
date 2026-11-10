@@ -13,11 +13,14 @@ import difflib
 from dataclasses import dataclass, replace
 
 from .ir import Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, negate, walk_expr
-from .lexicon import (CONVENTION, MAX_PHRASE, PHRASES, SYMS, TYPE_WORDS, UNSUPPORTED_TYPES, all_known_words,
+from .lexicon import (CONVENTION, COUNT_NOUNS, MAX_PHRASE, PHRASES, SYMS, TYPE_WORDS, UNSUPPORTED_TYPES, all_known_words,
                       singular)
 from .source import Source, Tok, split_sentences, tokenize
 
 ARTICLES = {'a', 'an', 'the', 'their', 'its', 'some', 'one'}
+MANY = [('a', 'list', 'of'), ('a', 'set', 'of'), ('lists', 'of'), ('list', 'of'), ('set', 'of'), ('one', 'or', 'more'),
+        ('zero', 'or', 'more'), ('any', 'number', 'of'), ('a', 'few'), ('several',), ('many',), ('multiple',),
+        ('some',)]
 LEADING_TYPES = {'numeric': 'int', 'integer': 'int', 'text': 'text', 'string': 'text', 'textual': 'text'}
 SCALE_NAME = {2: 'double', 3: 'triple', 4: 'quadruple'}
 
@@ -135,6 +138,10 @@ class Parser:
                  if len(w) >= 3 and abs(len(w) - len(word)) <= limit]
         return [w for d, w in sorted(found) if d <= limit]
 
+    def near_a_name(self, word):
+        """Is this word probably a slip for a collection the program already declared?"""
+        return any(edit_distance(singular(word), n) <= (1 if len(n) < 8 else 2) for n in self.prog.collections)
+
     def snapshot(self):
         return copy.deepcopy(self.prog), list(self.diags), list(self.readings), dict(self.macros)
 
@@ -250,7 +257,30 @@ class Parser:
         colls = [c for c in content if c.kind == 'COLL']
         unk = [c for c in content if c.kind == 'UNK']
         if kinds & {'ISCOLL', 'COLLWORD'} and not colls and (unk or ('ISCOLL' in kinds and 'GEN' in kinds)):
-            return self.decl_collection(content)
+            mark = next(i for i, c in enumerate(content) if c.kind in ('ISCOLL', 'COLLWORD'))
+            cut = next((i for i, c in enumerate(content) if i > mark and c.kind in ('WHERE', 'HAS')), None)
+            if cut is None:
+                return self.decl_collection(content)
+            # "Customers is a collection where each customer has a name and an age."
+            reading = self.decl_collection(content[:cut])
+            coll = self.prog.collections[self.prog.recent]
+            h = index_of(content, 'HAS', start=cut)
+            h = cut if h is None else h
+            for c in content[cut + 1:h]:
+                if c.kind == 'UNK' and singular(c.toks[0].text) != coll.name:
+                    raise self.unknown_word(c)
+            return reading + '; ' + self.decl_fields(toks, content, h, coll)
+        h = index_of(content, 'HAS')
+        if h and not self.prog.collections.get(singular(content[h - 1].toks[0].text)) and \
+                content[h - 1].kind == 'UNK' and all(c.kind == 'QUANT' for c in content[:h - 1]) and \
+                not kinds & {'CMP', 'BETWEEN'} and not any(c.kind == 'ACT' for c in content[:h]) and \
+                not self.near_a_name(content[h - 1].toks[0].text):
+            # "Each customer has a name and an age." with no earlier declaration: describing it declares it
+            tok = content[h - 1].toks[0]
+            name = singular(tok.text)
+            label = tok.raw if tok.text != name else tok.raw + 's'
+            self.prog.collections[name] = Collection(name, label, tok.line)
+            return f'collection {name}; ' + self.decl_fields(toks, content, h, self.prog.collections[name])
         taught = self.teach_noun(toks, content)
         if taught:
             return taught
@@ -604,8 +634,8 @@ class Parser:
         self.prog.recent = name
         return f'collection {name}'
 
-    def decl_fields(self, toks, content, h):
-        coll = self.scope(content[:h])
+    def decl_fields(self, toks, content, h, coll=None):
+        coll = coll or self.scope(content[:h])
         self.prog.recent = coll.name
         start = toks.index(content[h].toks[-1]) + 1
         items, cur = [], []
@@ -629,8 +659,14 @@ class Parser:
 
     def field_item(self, item, coll):
         ws = list(item)
-        while ws and ((ws[0].kind == 'sym' and ws[0].text == ':') or
-                      (ws[0].kind == 'word' and ws[0].text in ARTICLES)):
+        while ws and ws[0].kind == 'sym' and ws[0].text == ':':
+            ws.pop(0)
+        lead = tuple(w.text for w in ws[:3])
+        many = next((m for m in MANY if lead[:len(m)] == m), None)
+        one = bool(ws) and ws[0].text in ('a', 'an', 'one') and not many
+        if many:
+            ws = ws[len(many):]
+        while ws and ws[0].kind == 'word' and ws[0].text in ARTICLES:
             ws.pop(0)
         if not ws:
             return None
@@ -673,6 +709,14 @@ class Parser:
         if not ws or any(w.kind != 'word' for w in ws) or len(ws) > 3:
             raise self.p('error', whole, 'I can\'t read this as a property name')
         name = '_'.join([w.text for w in ws[:-1]] + [singular(ws[-1].text)])
+        plural = ws[-1].text != singular(ws[-1].text)
+        if plural and not one and not many and tw is None and ftype is None and name not in coll.fields and \
+                ws[-1].text not in COUNT_NOUNS:
+            many = True
+            self.note(ws, f'reading "{ws[-1].raw}" as several values per {coll.name}, because it is plural',
+                      f'write "{ws[-1].raw} (number)" or "a {name}" if each {coll.name} has just one')
+        if many and name != coll.name:
+            return self.many_valued(coll, name, ws, ftype)
         if name in self.prog.collections and name != coll.name and ftype is None and name not in coll.fields:
             return self.make_ref(coll, self.prog.collections[name], ws)      # "each order has a customer"
         f = coll.fields.get(name)
@@ -688,6 +732,21 @@ class Parser:
         if unique:
             f.unique, f.unique_line = True, ws[0].line
         return f
+
+    def many_valued(self, coll, name, ws, ftype):
+        """'each customer has several phones': the phones are records of their own that belong to
+        the customer and go when the customer goes. Everything that works on a collection works on them."""
+        other = self.prog.collections.get(name)
+        made = other is None
+        if made:
+            other = self.prog.collections[name] = Collection(name, ws[-1].raw, ws[0].line)
+            other.fields[name] = Field(name, ftype, line=ws[0].line)
+        elif coll.name in other.fields and not other.fields[coll.name].ref:
+            raise self.p('error', ws, f'{other.label} already have a plain property called "{coll.name}"')
+        link = self.make_ref(other, coll, ws)
+        if made:
+            link.on_removed, link.on_removed_line = 'cascade', ws[0].line
+        return Field(f'several {other.label.lower()}' + ('' if made else f' (each {name} belongs to a {coll.name})'))
 
     def decl_unique(self, content):
         unk = [c for c in content if c.kind == 'UNK']
@@ -1007,6 +1066,17 @@ class Parser:
             raise self.unknown_word(unk[0])
         content = self.relate(content)
         coll = self.scope(content)
+        if coll.name in coll.fields:        # several-valued property: "phones whose phone starts with ..."
+            mine = [i for i, c in enumerate(content) if c.kind == 'COLL' and c.val == coll.name]
+            for i in mine:
+                c = content[i]
+                prev = content[i - 1] if i else None
+                nxt = content[i + 1] if i + 1 < len(content) else None
+                if (prev and prev.kind in ('WHERE', 'AND', 'OR', 'BY', 'SORTBY')) or \
+                        (nxt and nxt.kind in ('IS', 'CMP', 'EQSYM', 'NOT')) or \
+                        (len(mine) > 1 and c.toks[0].text == coll.name and
+                         any(content[j].toks[0].text != coll.name for j in mine)):
+                    content[i] = CT('FIELD', coll.name, c.toks)
         everyone = any((c.kind == 'QUANT' and c.toks[0].text in ('all', 'every')) or
                        (c.kind == 'GEN' and c.toks[0].text in ('everyone', 'everybody')) for c in content)
         kept = []
@@ -1029,7 +1099,7 @@ class Parser:
         for i, c in enumerate(content):     # "the orders of a given customer": the owner picks the records
             if c.kind == 'PARAM' and c.val in coll.fields and coll.fields[c.val].ref and \
                     (i == 0 or content[i - 1].kind not in ('WHERE', 'AND', 'OR', 'IS', 'CMP', 'EQSYM', 'NOT', 'OP',
-                                                           'TO', 'BY', 'BECOMES', 'MODAL', 'FROM')):
+                                                           'TO', 'BY', 'BECOMES', 'MODAL', 'FROM', 'VERB')):
                 content = content[:i] + content[i + 1:]
                 if not content or content[-1].kind != 'WHERE':
                     content.append(CT('WHERE', None, c.toks))
@@ -1066,6 +1136,10 @@ class Parser:
         def is_verb(c, *vals):
             return c.kind == 'VERB' and c.val in vals
 
+        if any(is_verb(c, 'addv', 'insert') for c in main) and not any(c.kind in ('FIELD', 'NUM') for c in main):
+            owner = lambda c: c.kind == 'PARAM' and c.val in coll.fields and coll.fields[c.val].ref    # noqa: E731
+            if any(owner(c) for c in main):         # "Add a phone to a given customer."
+                main = [c for c in main if not owner(c) and c.kind not in ('TO', 'FROM')]
         upd = any(c.kind in ('SCALE', 'HALVE', 'BECOMES', 'MODAL', 'EQSYM') or
                   is_verb(c, 'multiply', 'divide', 'increase', 'decrease', 'subv', 'set', 'make', 'generic')
                   for c in main)
