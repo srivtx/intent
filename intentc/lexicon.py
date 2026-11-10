@@ -192,12 +192,23 @@ COUNT_NOUNS = set('''points units cents credits coins likes votes views stars wi
 UNSUPPORTED_TYPES = {'decimal', 'float', 'real', 'fraction', 'date', 'boolean', 'bool', 'money', 'currency'}
 
 
+# Words that end in "us" and are one thing, not several: "status" stays "status", while
+# "menus" and "skus" are several of a menu and a sku.
+ONE_US = set('''status bonus virus campus census focus radius genus corpus nexus surplus consensus apparatus chorus
+ circus minus plus bus versus thus us stimulus cactus fungus nucleus syllabus terminus abacus octopus walrus citrus
+ lotus opus locus modulus calculus sinus torus fetus rebus exodus impetus hiatus prospectus discus caucus crocus
+ hibiscus papyrus platypus rhombus thesaurus genius alumnus cumulus bogus onus mucus humus lupus typhus uterus
+ isthmus litmus ruckus venus magus nimbus tetanus tinnitus detritus emeritus colossus esophagus hippopotamus'''.split())
+
+
 def singular(w):
     if len(w) > 3 and w.endswith('ies'):
         return w[:-3] + 'y'
     if len(w) > 4 and w.endswith(('sses', 'shes', 'ches', 'xes')):
         return w[:-2]
-    if len(w) > 2 and w.endswith('s') and not w.endswith(('ss', 'us', 'is')):
+    if w.endswith('us'):
+        return w if len(w) < 4 or w in ONE_US or w.endswith('ous') else w[:-1]
+    if len(w) > 2 and w.endswith('s') and not w.endswith(('ss', 'is')):
         return w[:-1]
     return w
 
