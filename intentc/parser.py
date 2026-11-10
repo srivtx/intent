@@ -12,7 +12,7 @@ import copy
 import difflib
 from dataclasses import dataclass, replace
 
-from .ir import Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, negate
+from .ir import Collection, Diag, Field, Program, Task, binop, canon, fmt_cond, negate, walk_expr
 from .lexicon import (CONVENTION, MAX_PHRASE, PHRASES, SYMS, TYPE_WORDS, UNSUPPORTED_TYPES, all_known_words,
                       singular)
 from .source import Source, Tok, split_sentences, tokenize
@@ -309,6 +309,8 @@ class Parser:
         if not self.macros or not ci:
             return self.expand(toks)
         pre, post = toks[:ci], self.expand(toks[ci + 1:])
+        if any(t.kind == 'sym' and t.text == '-' for t in pre):
+            return pre + [toks[ci]] + post          # "show-vip:" is a name, whatever "vip" means
         words = tuple(t.text for t in pre)
         m = self.macros.get(words) or self.macros.get(words[:-1] + (singular(words[-1]),))
         if any(t.kind != 'word' for t in pre) or m is None:
@@ -359,13 +361,19 @@ class Parser:
         k = 0
         while k < len(content) and content[k].kind == 'UNK':
             k += 1
+        j = index_of(content, 'IS')
+        if j and 2 <= j <= 4 and content[j - 1].kind == 'COLL' and j + 1 < len(content) and \
+                content[j + 1].kind in ('COLL', 'GEN') and \
+                all(len(c.toks) == 1 and c.toks[0].kind == 'word' and c.kind not in ('COLL', 'QUANT', 'GEN')
+                    for c in content[:j - 1]):
+            k = j - 1       # "An even stone is a stone whose ...": the program's meaning for "even stone" wins
         words = [c.toks[0].text for c in content[:k]]
         named = content[:k]
         if 1 <= k < len(content) and content[k].kind == 'COLL':       # "An open task is a task whose ..."
             words.append(content[k].val)
             k += 1
             named = content[:k]
-        if not 1 <= len(words) <= 4 or not content[0].kind == 'UNK' or k + 1 >= len(content) or \
+        if not 1 <= len(words) <= 4 or k + 1 >= len(content) or \
                 content[k].kind != 'IS' or content[k + 1].kind not in ('COLL', 'GEN') or \
                 any(c.kind == 'UNK' for c in content[k:]):
             return None
@@ -431,9 +439,9 @@ class Parser:
                     if key in fields:
                         el, ev = L, ('FIELD', key)
                         break
-            if not el and singular(t.text) in self.prog.collections:
-                el, ev = 1, ('COLL', singular(t.text))
-            if el and el >= pl:
+            if el <= 1 and singular(t.text) in self.prog.collections:
+                el, ev = 1, ('COLL', singular(t.text))      # a collection name, even if a property shares it
+            if el:                                          # a declared name beats any built-in phrase
                 out.append(CT(ev[0], ev[1], toks[i:i + el]))
                 i += el
             elif pl:
@@ -455,7 +463,7 @@ class Parser:
         return out
 
     # ------------------------------------------------------------------ scope
-    def scope(self, content, anchor=None):
+    def scope(self, content, anchor=None, recent=False):
         names = []
         for c in content:
             if c.kind == 'COLL' and c.val not in names:
@@ -468,11 +476,33 @@ class Parser:
                          'one sentence can only be about one collection in this version')
         if len(cs) == 1:
             return next(iter(cs.values()))
+        if recent and getattr(self.prog, 'recent', None) in cs:
+            return cs[self.prog.recent]             # "Reject duplicates." right after describing orders
         if not cs:
             raise self.p('error', anchor or self.cur, 'there is nothing to work on yet',
                          hint='declare a collection first, e.g. "Customers is a collection."')
         raise self.p('question', anchor or self.cur, 'which collection is this about?',
                      'could be: ' + ', '.join(c.label for c in cs.values()))
+
+    def relate(self, content):
+        """A property may share its name with a collection ("each booking has a customer").
+
+        When a sentence names two collections and one of them is such a property of the other,
+        the sentence is about the owner and the other word is its property.
+        """
+        names = []
+        for c in content:
+            if c.kind == 'COLL' and c.val not in names:
+                names.append(c.val)
+        if len(names) != 2:
+            return content
+        cs = self.prog.collections
+        a, b = names
+        if a in cs[b].fields and b not in cs[a].fields:
+            a, b = b, a
+        elif b not in cs[a].fields:
+            return content
+        return [CT('FIELD', b, c.toks) if c.kind == 'COLL' and c.val == b else c for c in content]
 
     # ------------------------------------------------------------------ declarations
     def decl_collection(self, content):
@@ -486,10 +516,12 @@ class Parser:
         tok = names[0].toks[0]
         name = singular(tok.text)
         self.prog.collections[name] = Collection(name, tok.raw, tok.line)
+        self.prog.recent = name
         return f'collection {name}'
 
     def decl_fields(self, toks, content, h):
         coll = self.scope(content[:h])
+        self.prog.recent = coll.name
         start = toks.index(content[h].toks[-1]) + 1
         items, cur = [], []
         for t in toks[start:]:
@@ -573,7 +605,8 @@ class Parser:
         unk = [c for c in content if c.kind == 'UNK']
         if unk:
             raise self.unknown_word(unk[0])
-        coll = self.scope(content)
+        content = self.relate(content)
+        coll = self.scope(content, recent=True)
         fs = [c for c in content if c.kind == 'FIELD']
         if not fs:
             raise self.p('question', self.cur, 'which property must be unique?', self.could_be(coll))
@@ -588,7 +621,7 @@ class Parser:
         unk = [c for c in content if c.kind == 'UNK']
         if unk:
             raise self.unknown_word(unk[0])
-        coll = self.scope(content)
+        coll = self.scope(content, recent=True)
         coll.ordered = any(c.kind == 'INSORDER' for c in content)
         coll.ordered_line = self.cur[0].line
         return f'{coll.name}: ' + ('insertion order is part of the meaning' if coll.ordered else 'order does not matter')
@@ -597,7 +630,7 @@ class Parser:
         unk = [c for c in content if c.kind == 'UNK']
         if unk:
             raise self.unknown_word(unk[0])
-        coll = self.scope(content)
+        coll = self.scope(content, recent=True)
         pol = [c for c in content if c.kind == 'POLICY']
         if len({c.val for c in pol}) > 1:
             raise self.p('question', pol, 'reject or replace? I see both')
@@ -638,7 +671,7 @@ class Parser:
         def mul():
             nonlocal pos
             a = prim(False)
-            while pos < len(toks) and toks[pos].kind == 'OP' and toks[pos].val in ('mul', 'div'):
+            while pos < len(toks) and toks[pos].kind == 'OP' and toks[pos].val in ('mul', 'div', 'rem'):
                 op = toks[pos].val
                 pos += 1
                 a = binop(op, a, prim(True))
@@ -703,9 +736,11 @@ class Parser:
             raise self.p('error', anchor or self.cur[-1], 'a condition is missing here')
         if p[0].kind == 'PARAM' and len(p) == 1 and p[0].val in coll.fields:
             return ('cmp', 'eq', ('field', p[0].val), ('param', p[0].val)), p[0].val
-        i, fld = 0, None
-        if p[0].kind == 'FIELD':
-            fld, i = p[0].val, 1
+        i, lhs = 0, None
+        stop = next((k for k, c in enumerate(p) if c.kind in ('IS', 'NOT', 'CMP', 'EQSYM')), len(p))
+        if p[0].kind in ('FIELD', 'PFIELD') or \
+                (p[0].kind in ('NUM', 'LP', 'PARAM', 'SCALE') and any(c.kind == 'OP' for c in p[:stop])):
+            lhs, i = self.parse_expr(p[:stop])       # "whose price times quantity is over 100"
         op, neg, explicit = None, False, False
         while i < len(p) and p[i].kind in ('IS', 'NOT', 'CMP', 'EQSYM'):
             c = p[i]
@@ -716,23 +751,28 @@ class Parser:
             elif c.kind == 'EQSYM':
                 op = 'eq'
             i += 1
-        if fld is None:
+        if lhs is None:
             if prev and explicit:
-                fld = prev                  # "at least 18 and at most 65": same property, elided
+                lhs = prev                  # "at least 18 and at most 65": same property, elided
             else:
                 raise self.p('question', p, 'which property is this comparing?', self.could_be(coll, explicit),
                              'e.g. "whose age is over 25"')
         rest = p[i:]
         if not rest:
             raise self.p('error', p, 'compared with what?', 'a value is missing')
+        if len(rest) == 1 and rest[0].kind == 'PARITY':
+            odd = (rest[0].val == 1) != neg
+            return ('cmp', 'ne' if odd else 'eq', ('bin', 'rem', lhs, ('num', 2)), ('num', 0)), lhs
         if len(rest) == 1 and rest[0].kind == 'GIVENBARE':
-            rhs = ('param', fld)
+            if lhs[0] not in ('field', 'pfield'):
+                raise self.p('error', rest, 'a given what?', hint='name it, e.g. "a given limit"')
+            rhs = ('param', lhs[-1])
         else:
             rhs = self.whole_expr(rest)
         op = op or 'eq'
         if neg:
             op = negate(('cmp', op, 0, 0))[1]
-        return ('cmp', op, ('field', fld), rhs), fld
+        return ('cmp', op, lhs, rhs), lhs
 
     # ------------------------------------------------------------------ updates
     def need_field(self, t, i, coll, what):
@@ -875,11 +915,20 @@ class Parser:
         unk = [c for c in content if c.kind == 'UNK']
         if unk:
             raise self.unknown_word(unk[0])
+        content = self.relate(content)
         coll = self.scope(content)
         everyone = any((c.kind == 'QUANT' and c.toks[0].text in ('all', 'every')) or
                        (c.kind == 'GEN' and c.toks[0].text in ('everyone', 'everybody')) for c in content)
-        content = [CT('WHERE', None, c.toks) if c.kind == 'HAS' else c
-                   for c in content if c.kind not in ('COLL', 'QUANT', 'GEN')]
+        kept = []
+        for c in content:
+            if c.kind in ('COLL', 'QUANT', 'GEN'):
+                continue
+            if c.kind == 'HAS':
+                text_test = c.toks[0].text in ('contains', 'contain', 'includes', 'include') and kept and \
+                    kept[-1].kind in ('FIELD', 'PFIELD', 'NOT')
+                c = CT('CMP', 'has', c.toks) if text_test else CT('WHERE', None, c.toks)
+            kept.append(c)
+        content = kept
         for c in content:
             if c.kind == 'FIELD' and c.val not in coll.fields:
                 raise self.p('error', c, f'{coll.label} has no property "{c.val}"', self.could_be(coll))
@@ -940,6 +989,9 @@ class Parser:
 
         if cond_t is None and not upd:
             k = index_of(main, 'CMP')
+            if k is None:               # "show the orders price is 10": a bare trailing condition
+                k = next((j for j in range(2, len(main) - 1)
+                          if main[j].kind == 'IS' and main[j - 1].kind == 'FIELD'), None)
             if k is not None:
                 s = k
                 if s and main[s - 1].kind in ('IS', 'NOT'):
@@ -1113,6 +1165,10 @@ class Parser:
         a = index_of(content, 'AND', start=b)
         if a is None:
             raise self.p('error', content[b], 'between what and what?', hint='e.g. "between 18 and 30"')
+        if b and content[b - 1].kind == 'NOT':      # outside the range: below the low end OR above the high end
+            return (content[:b - 1] + [CT('CMP', 'lt', content[b].toks)] + content[b + 1:a] +
+                    [CT('OR', None, content[a].toks), CT('CMP', 'gt', content[a].toks)] +
+                    self.between(content[a + 1:]))
         return (content[:b] + [CT('CMP', 'ge', content[b].toks)] + content[b + 1:a + 1] +
                 [CT('CMP', 'le', content[a].toks)] + self.between(content[a + 1:]))
 
@@ -1253,12 +1309,15 @@ class Parser:
 
     def derived_name(self, t):
         def first_field(c):
-            return c[2][1] if c[0] == 'cmp' and c[2][0] == 'field' else first_field(c[1])
+            if c[0] != 'cmp':
+                return first_field(c[1])
+            return next((e[-1] for side in (c[2], c[3]) for e in walk_expr(side) if e[0] in ('field', 'pfield')),
+                        'value')
         if t.kind == 'update':
             f, e = t.assigns[0]
             verb = 'set'
             if e[0] == 'bin' and e[2] == ('field', f):
-                verb = {'mul': 'multiply', 'add': 'increase', 'sub': 'decrease', 'div': 'divide'}[e[1]]
+                verb = {'mul': 'multiply', 'add': 'increase', 'sub': 'decrease', 'div': 'divide', 'rem': 'mod'}[e[1]]
                 if e[1] == 'mul' and e[3][0] == 'num' and e[3][1] in SCALE_NAME:
                     verb = SCALE_NAME[e[3][1]]
                 if e[1] == 'div' and e[3] == ('num', 2):
