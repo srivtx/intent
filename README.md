@@ -7,7 +7,7 @@
 
 <p align="center">
   <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-f59e0b">
-  <img alt="version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-6366f1">
+  <img alt="version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-6366f1">
   <a href="https://github.com/srivtx/intent/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/srivtx/intent/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
   <img alt="backend: LLVM IR" src="https://img.shields.io/badge/backend-LLVM%20IR-262d3a">
@@ -229,6 +229,38 @@ The level is always 3 if the score is at least 50, otherwise 1.
 - **Standing rules** are never called. After every change they are applied until nothing
   moves, natively. A rule that could never come to rest is refused at compile time.
 
+## A game you can play
+
+A program can run by itself: time passes, keys are pressed, and a board is drawn.
+
+```
+The board is 30 wide and 12 high.
+The column starts at 15.
+Rocks is a collection where each rock has an x and a y.
+Start with a rock at x 4, y 1.
+
+Every 150 milliseconds, the y of each rock increases by 1.
+Whenever the y of a rock is over 12, its y becomes 1.
+When the left key is pressed, the column decreases by 1 if the column is over 1.
+The game is over when any rock has an x equal to the column and a y equal to 12.
+
+Draw each rock at its x and y as "#".
+Draw "@" at the column and 12.
+```
+
+```bash
+./intent build examples/dodge.intent -o build/dodge
+```
+
+```bash
+./build/dodge
+```
+
+Run in a terminal, it is played with the arrow keys (`q` stops). Over a pipe, the same program
+takes `wait 450`, `press left` and `screen` as commands. Time and keys are events handed to the
+program, never read behind its back, so a game is replayed exactly and the native code is
+tested against the reference like everything else.
+
 ## Small programs written in it
 
 | file | what it is |
@@ -239,6 +271,7 @@ The level is always 3 if the score is at least 50, otherwise 1.
 | [examples/store.intent](examples/store.intent) | customers, their orders and order lines, with cascading removal |
 | [examples/calculator.intent](examples/calculator.intent) | a calculator: nothing stored, values that depend on conditions |
 | [examples/arcade.intent](examples/arcade.intent) | the scorekeeping of a game: single values, players, standing rules |
+| [examples/dodge.intent](examples/dodge.intent) | a game played in the terminal: time, arrow keys, a board, an ending |
 | [examples/tour.intent](examples/tour.intent) | every kind of sentence in the [language guide](docs/language.md) |
 
 ```bash
@@ -298,8 +331,9 @@ dicts). It is the definition of meaning. The tests build native programs and fee
 the same random command streams — unordered and ordered collections, text and numeric keys,
 reject and replace, with and without indexes, including malformed input and 64-bit overflow
 — and require identical output (as a multiset where order is not part of the meaning).
-114 tests pass, including the example apps and three-collection relationship programs run
-against the reference on random commands.
+155 tests pass, including the example apps, three-collection relationship programs and a
+game, run against the reference on random commands; the game is also played through a real
+terminal.
 
 This shows the backend agrees with the reference. It does not show the reference agrees
 with what you meant; that is what `check` is for — read the right-hand column.
@@ -311,8 +345,11 @@ with what you meant; that is what `check` is for — read the right-hand column.
 - Text may not contain commas (the command format is comma-separated).
 - Conditions are a flat list of `and` or of `or`; no grouping.
 - No constraints other than uniqueness; a unique property cannot be changed in bulk.
-- **No time, screen, keys or network.** A program only reacts to command lines on standard
-  input. So there is no game loop, no drawing, and no server over a network yet.
+- **Games are simple ones.** There is time, keys and a board of characters in the terminal, but
+  no chance (`a random number`), nothing can appear while the game runs (`every second, add a
+  rock`), a hit cannot change a single value (`lose a life`), and a period is fixed when compiled.
+  No colours, no window, no sound. Played only on macOS so far.
+- **No network.** No server yet.
 - Calculations work on whole numbers only (no text, no decimals), and cannot read a collection.
 - Rules are re-applied in full after every change: each rule costs one pass over its collection.
 - No summaries of a calculation (`total of price times stock`), no grouping
@@ -355,26 +392,28 @@ Its `build-04` test now fails on purpose: it asserts the old buggy behaviour.
 ## Where it can go next
 
 Done so far: definitions, spelling tolerance, rankings, remembering, text tests, relationships,
-single values, values that depend on a condition, standing rules.
+single values, values that depend on a condition, standing rules, time, keys and a board.
 The stress experiments show the same thing from eight directions: people fall back to
 arithmetic tricks when the language cannot *say* something. So, in order:
 
-1. **Faces.** The program stays the same and one sentence says how it meets the world:
-   `Serve this on the web.` turns every capability into an endpoint.
-   Then **time and a screen**: `Every tick, the snake moves one cell.` `Draw each cell of the
-   snake.` With values and rules in place, that is what a game still needs.
-2. **Summaries per owner and per group.** `customers with more than 3 orders`,
+1. **What a snake game still needs.** Chance (`a random number between 1 and 30`), rules that
+   add and remove records (`every tick, add a segment at the head`), conditions over another
+   collection (`when any segment is at the head`), several steps in one sentence.
+2. **Faces.** The program stays the same and one sentence says how it meets the world:
+   `Serve this on the web.` turns every capability into an endpoint; a window instead of
+   terminal characters is another face.
+3. **Summaries per owner and per group.** `customers with more than 3 orders`,
    `the total of the lines of each order`, `the average salary for each city`.
-3. **Rules on data.** `Stock is never under 0.` checked on every add and change, with the
+4. **Rules on data.** `Stock is never under 0.` checked on every add and change, with the
    refusal reported, so a guarded change no longer fails silently.
-4. **Capabilities made of steps.** `To check out: decrease the stock, then add an order.` and
+5. **Capabilities made of steps.** `To check out: decrease the stock, then add an order.` and
    `repeat until nothing changes`.
-5. **More kinds of value.** Decimals and money, dates, yes/no, "may be missing"; properties
+6. **More kinds of value.** Decimals and money, dates, yes/no, "may be missing"; properties
    defined by a calculation (`A line's cost is its price times its quantity.`).
-6. **Better structures.** An index on linking properties, an ordered index for ranges and
+7. **Better structures.** An index on linking properties, an ordered index for ranges and
    top-N, tombstones so ordered removal stops being O(n).
-7. **Rules that only look where something changed**, instead of a full pass each time.
-8. **A model that turns loose speech into Intent text**, with `check` showing the reading
+8. **Rules that only look where something changed**, instead of a full pass each time.
+9. **A model that turns loose speech into Intent text**, with `check` showing the reading
    before anything is compiled.
 
 ## Layout
@@ -389,7 +428,8 @@ intentc/check.py        type inference and open decisions
 intentc/plan.py         representation discovery, with reasons
 intentc/interp.py       reference interpreter (the meaning)
 intentc/llvm.py         Intent IR + plan -> LLVM IR
+intentc/play.py         playing in a terminal with the reference interpreter
 tests/                  phrasings, questions, planner, spelling, definitions, apps, native-vs-reference
 bench/bench.py          the table above
-examples/               customers, questions, leaderboard, todo, shop, store, calculator, arcade
+examples/               customers, questions, leaderboard, todo, shop, store, calculator, arcade, dodge
 ```
