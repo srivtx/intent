@@ -37,7 +37,7 @@ CMP = {'gt': lambda a, b: a > b, 'ge': lambda a, b: a >= b, 'lt': lambda a, b: a
        'ends': lambda a, b: a.endswith(b), 'nends': lambda a, b: not a.endswith(b)}
 
 
-def ev(e, row, args):
+def ev(e, row, args, m=None):
     k = e[0]
     if k in ('num', 'str'):
         return e[1]
@@ -45,7 +45,9 @@ def ev(e, row, args):
         return row[e[1]]
     if k == 'param':
         return args[e[1]]
-    a, b = ev(e[2], row, args), ev(e[3], row, args)
+    if k == 'pfield':
+        return m.parent_row(e[1], row[e[1]])[e[2]]
+    a, b = ev(e[2], row, args, m), ev(e[3], row, args, m)
     if e[1] == 'mul':
         return wrap(a * b)
     if e[1] == 'add':
@@ -57,14 +59,14 @@ def ev(e, row, args):
     return tdiv(a, b)
 
 
-def holds(c, row, args):
+def holds(c, row, args, m=None):
     if c is None:
         return True
     if c[0] == 'cmp':
-        return CMP[c[1]](ev(c[2], row, args), ev(c[3], row, args))
+        return CMP[c[1]](ev(c[2], row, args, m), ev(c[3], row, args, m))
     if c[0] == 'and':
-        return holds(c[1], row, args) and holds(c[2], row, args)
-    return holds(c[1], row, args) or holds(c[2], row, args)
+        return holds(c[1], row, args, m) and holds(c[2], row, args, m)
+    return holds(c[1], row, args, m) or holds(c[2], row, args, m)
 
 
 class Machine:
@@ -74,7 +76,37 @@ class Machine:
         self.tasks = {t.name: t for t in prog.tasks}
 
     def show(self, row, fields=None):
-        return ','.join(str(row[f]) for f in (fields or row))
+        def one(f):
+            if '.' in f:
+                ref, name = f.split('.')
+                return self.parent_row(ref, row[ref])[name]
+            return row[f]
+        return ','.join(str(one(f)) for f in (fields or row))
+
+    # ---- relationships: a record points at its owner by the owner's unique property
+    def parent_row(self, ref, value):
+        k = self.prog.key_of(ref).name
+        return next(r for r in self.data[ref] if r[k] == value)
+
+    def blocked(self, cname, gone):
+        """The refusal, if any record about to be removed still owns records it must not lose."""
+        for d, rf in self.prog.children_of(cname):
+            if rf.on_removed == 'restrict':
+                keys = [r[self.prog.key_of(cname).name] for r in gone]
+                if any(r[rf.name] in keys for r in self.data[d.name]):
+                    return f'{cname} still has {d.label.lower()}'
+        return None
+
+    def swept(self, cname):
+        """After removals from `cname`: remove the records that belonged to what is gone."""
+        for d, rf in self.prog.children_of(cname):
+            if rf.on_removed == 'cascade':
+                keys = [r[self.prog.key_of(cname).name] for r in self.data[cname]]
+                rows = self.data[d.name]
+                keep = [r for r in rows if r[rf.name] in keys]
+                if len(keep) != len(rows):
+                    self.data[d.name] = keep
+                    self.swept(d.name)
 
     def run(self, line):
         """Execute one command line; return the lines it prints."""
@@ -108,6 +140,9 @@ class Machine:
     def do_add(self, t, a):
         c = self.prog.collections[t.coll]
         rows = self.data[t.coll]
+        for f in c.fields.values():
+            if f.ref and not any(r[self.prog.key_of(f.ref).name] == a[f.name] for r in self.data[f.ref]):
+                return [f'no such {f.ref}']
         for f in c.unique_fields():
             for i, r in enumerate(rows):
                 if r[f.name] == a[f.name]:
@@ -123,24 +158,34 @@ class Machine:
         return out or ['none']
 
     def do_remove_key(self, t, a):
-        rows = self.data[t.coll]
-        keep = [r for r in rows if r[t.key] != a[t.key]]
-        self.data[t.coll] = keep
-        return [] if len(keep) < len(rows) else ['none']
+        return self.remove(t.coll, lambda r: r[t.key] == a[t.key]) or \
+            ([] if self.removed else ['none'])
 
     def do_remove_where(self, t, a):
-        self.data[t.coll] = [r for r in self.data[t.coll] if not holds(t.where, r, a)]
-        return []
+        return self.remove(t.coll, lambda r: holds(t.where, r, a, self)) or []
+
+    def remove(self, cname, goes):
+        rows = self.data[cname]
+        gone = [r for r in rows if goes(r)]
+        self.removed = len(gone)
+        refusal = self.blocked(cname, gone) if gone else None
+        if refusal:
+            self.removed = -1
+            return [refusal]
+        self.data[cname] = [r for r in rows if not goes(r)]
+        if gone:
+            self.swept(cname)
+        return None
 
     def do_update(self, t, a):
         for r in self.data[t.coll]:
-            if holds(t.where, r, a):
+            if holds(t.where, r, a, self):
                 for f, e in t.assigns:
-                    r[f] = ev(e, r, a)
+                    r[f] = ev(e, r, a, self)
         return []
 
     def do_list(self, t, a):
-        rows = [(i, r) for i, r in enumerate(self.data[t.coll]) if holds(t.where, r, a)]
+        rows = [(i, r) for i, r in enumerate(self.data[t.coll]) if holds(t.where, r, a, self)]
         if t.order:
             f, desc = t.order
 
@@ -158,7 +203,7 @@ class Machine:
         return [self.show(r, t.fields) for _, r in rows]
 
     def do_agg(self, t, a):
-        rows = [r for r in self.data[t.coll] if holds(t.where, r, a)]
+        rows = [r for r in self.data[t.coll] if holds(t.where, r, a, self)]
         if t.fn == 'count':
             return [str(len(rows))]
         vals = [r[t.field] for r in rows]
