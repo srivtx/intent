@@ -33,6 +33,7 @@ declare i32 @strcmp(ptr, ptr)
 declare ptr @strchr(ptr, i32)
 declare ptr @strsep(ptr, ptr)
 declare i64 @strtoll(ptr, ptr, i32)
+declare i32 @snprintf(ptr, i64, ptr, ...)
 declare ptr @memmove(ptr, ptr, i64)
 declare void @qsort(ptr, i64, i64, ptr)
 declare ptr @strstr(ptr, ptr)
@@ -217,6 +218,10 @@ class Gen:
             return self.fload(f, o, '%outer', e[1]), o.fields[e[1]].type
         if k == 'agg':
             return f.r(f'call i64 {self.other(e, c)}(ptr {rec or "null"})'), 'int'
+        if k == 'dec':                  # hundredths
+            return str(e[1]), 'int'
+        if k == 'cents':
+            return f.r(f'mul i64 {self.expr(f, e[1], c, rec, vals)[0]}, 100'), 'int'
         if k == 'if':                   # only the chosen side is worked out (the other may divide by zero)
             yes, no, done = f.lab('then'), f.lab('else'), f.lab('fi')
             f.cbr(self.cond(f, e[1], c, rec, vals), yes, no)
@@ -233,6 +238,10 @@ class Gen:
             return f.load(LL[ty], slot), ty
         a, _ = self.expr(f, e[2], c, rec, vals)
         b, _ = self.expr(f, e[3], c, rec, vals)
+        if e[1] == 'dmul':              # hundredths times hundredths, back to hundredths
+            return f.r(f'call i64 @rdiv(i64 {f.r(f"mul i64 {a}, {b}")}, i64 100)'), 'int'
+        if e[1] == 'rdiv':
+            return f.r(f'call i64 @rdiv(i64 {a}, i64 {b})'), 'int'
         if e[1] in ('div', 'rem') and e[3][0] != 'num':
             # the divisor is known not to be zero here; -1 is done by hand because the
             # most negative number divided by -1 does not fit
@@ -435,10 +444,97 @@ class Gen:
             self.remove_row(c, cp, size)
 
     def print_fields(self, f, c, rec, names):
-        got = [self.expr(f, ('pfield',) + tuple(n.split('.')) if '.' in n else ('field', n), c, rec, {})
-               for n in names]
+        got = []
+        for n in names:
+            if '.' in n:
+                ref, name = n.split('.')
+                v, ty = self.expr(f, ('pfield', ref, name), c, rec, {})
+                fl = self.prog.collections[c.fields[ref].ref].fields[name]
+            else:
+                v, ty = self.expr(f, ('field', n), c, rec, {})
+                fl = c.fields[n]
+            got.append(self.shown(f, v, ty, fl.dec))
         fmt = ','.join('%lld' if ty == 'int' else '%s' for _, ty in got) + '\n'
         self.printf(f, fmt, ', '.join(f'{LL[ty]} {v}' for v, ty in got))
+
+    def shown(self, f, v, ty, dec):
+        """A value ready for printf: a decimal number becomes its text, 12.50."""
+        if not dec:
+            return v, ty
+        buf = f.var('[32 x i8]')
+        return f.r(f'call ptr @decstr(i64 {v}, ptr {buf})'), 'text'
+
+    def decimals(self):
+        f = self.fn('@rdiv', 'i64', 'i64 %a, i64 %b',
+                    'a / b rounded to the nearest whole number, halves away from zero (b is not 0)')
+        na, nb = f.r('icmp slt i64 %a, 0'), f.r('icmp slt i64 %b, 0')
+        ua = f.r(f'select i1 {na}, i64 {f.r("sub i64 0, %a")}, i64 %a')
+        ub = f.r(f'select i1 {nb}, i64 {f.r("sub i64 0, %b")}, i64 %b')
+        q = f.r(f'udiv i64 {f.r(f"add i64 {ua}, {f.r(f"lshr i64 {ub}, 1")}")}, {ub}')
+        f.e(f'ret i64 {f.r(f"select i1 {f.r(f"xor i1 {na}, {nb}")}, i64 {f.r(f"sub i64 0, {q}")}, i64 {q}")}')
+
+        f = self.fn('@decstr', 'ptr', 'i64 %n, ptr %buf', 'hundredths as they are written: 1250 -> "12.50"')
+        neg = f.r('icmp slt i64 %n, 0')
+        u = f.r(f'select i1 {neg}, i64 {f.r("sub i64 0, %n")}, i64 %n')
+        sign = f.r(f'select i1 {neg}, ptr {self.cstr("-")}, ptr {self.cstr("")}')
+        f.e(f'call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 32, ptr {self.cstr("%s%llu.%02llu")}, ptr {sign}, '
+            f'i64 {f.r(f"udiv i64 {u}, 100")}, i64 {f.r(f"urem i64 {u}, 100")})')
+        f.e('ret ptr %buf')
+
+        f = self.fn('@decparse', 'i64', 'ptr %s, ptr %ok',
+                    '"12.5" -> 1250; *ok is 0 unless it is a number with at most two decimal places')
+        f.store('i1', 'false', '%ok')
+        p = f.var('ptr', '%s')
+        skip, look, body = f.lab('skip'), f.lab('look'), f.lab('sign')
+        f.br(look)
+        f.at(look)
+        ch = f.load('i8', f.load('ptr', p))
+        space = f.r(f'or i1 {f.r(f"icmp eq i8 {ch}, 32")}, {f.r(f"icmp ult i8 {f.r(f"sub i8 {ch}, 9")}, 5")}')
+        f.cbr(space, skip, body)
+        f.at(skip)
+        f.store('ptr', f.r(f'getelementptr i8, ptr {f.load("ptr", p)}, i64 1'), p)
+        f.br(look)
+        f.at(body)
+        minus = f.r(f'icmp eq i8 {ch}, 45')
+        signed = f.r(f'or i1 {minus}, {f.r(f"icmp eq i8 {ch}, 43")}')
+        start = f.r(f'getelementptr i8, ptr {f.load("ptr", p)}, i64 {f.r(f"zext i1 {signed} to i64")}')
+
+        def digit(q):
+            return f.r(f'icmp ult i8 {f.r(f"sub i8 {f.load("i8", q)}, 48")}, 10')
+        bad, whole = f.lab('bad'), f.lab('whole')
+        f.cbr(digit(start), whole, bad)
+        f.at(bad)
+        f.e('ret i64 0')
+        f.at(whole)
+        endp = f.var('ptr')
+        w = f.r(f'call i64 @strtoll(ptr {start}, ptr {endp}, i32 10)')
+        frac = f.var('i64', '0')
+        end = f.load('ptr', endp)
+        point, last = f.lab('point'), f.lab('last')
+        f.cbr(f.r(f'icmp eq i8 {f.load("i8", end)}, 46'), point, last)
+        f.at(point)
+        d1 = f.r(f'getelementptr i8, ptr {end}, i64 1')
+        one, two, tenths = f.lab('one'), f.lab('two'), f.lab('tenths')
+        f.cbr(digit(d1), one, bad)
+        f.at(one)
+        f.store('i64', f.r(f'mul i64 {f.r(f"zext i8 {f.r(f"sub i8 {f.load("i8", d1)}, 48")} to i64")}, 10'), frac)
+        d2 = f.r(f'getelementptr i8, ptr {end}, i64 2')
+        f.store('ptr', d2, endp)
+        f.cbr(digit(d2), two, last)
+        f.at(two)
+        f.store('i64', f.r(f'add i64 {f.load("i64", frac)}, {f.r(f"zext i8 {f.r(f"sub i8 {f.load("i8", d2)}, 48")} to i64")}'), frac)
+        f.store('ptr', f.r(f'getelementptr i8, ptr {end}, i64 3'), endp)
+        f.br(last)
+        f.at(last)
+        done = f.lab('done')
+        f.cbr(f.r(f'icmp eq i8 {f.load("i8", f.load("ptr", endp))}, 0'), done, bad)
+        f.at(done)
+        mag = f.r(f'add i128 {f.r(f"mul i128 {f.r(f"zext i64 {w} to i128")}, 100")}, {f.r(f"zext i64 {f.load("i64", frac)} to i128")}')
+        v = f.r(f'select i1 {minus}, i128 {f.r(f"sub i128 0, {mag}")}, i128 {mag}')
+        v = f.r(f'select i1 {f.r(f"icmp sgt i128 {v}, 9223372036854775807")}, i128 9223372036854775807, i128 {v}')
+        v = f.r(f'select i1 {f.r(f"icmp slt i128 {v}, -9223372036854775808")}, i128 -9223372036854775808, i128 {v}')
+        f.store('i1', 'true', '%ok')
+        f.e(f'ret i64 {f.r(f"trunc i128 {v} to i64")}')
 
     # ------------------------------------------------------------------ relationships
     def kids(self, c, policy):
@@ -685,7 +781,17 @@ class Gen:
             self.puts(f, f'error: missing {p}')
             f.e('ret void')
             f.at(ok)
-            if t.ptypes[p] == 'int':
+            if p in t.pdec:
+                okp = f.var('i1')
+                v = f.r(f'call i64 @decparse(ptr {tok}, ptr {okp})')
+                bad, ok = f.lab('notnum'), f.lab('ok')
+                f.cbr(f.load('i1', okp), ok, bad)
+                f.at(bad)
+                self.puts(f, f'error: {p} must be a number like 12.50')
+                f.e('ret void')
+                f.at(ok)
+                vals[p] = (v, 'int')
+            elif t.ptypes[p] == 'int':
                 endp = f.var('ptr')
                 v = f.r(f'call i64 @strtoll(ptr {tok}, ptr {endp}, i32 10)')
                 end = f.load('ptr', endp)
@@ -748,7 +854,10 @@ class Gen:
         k = t.kind
         if k == 'calc':
             v, _ = self.expr(f, t.expr, None, None, vals)
-            self.printf(f, '%lld\n', f'i64 {v}')
+            if t.dec:
+                self.printf(f, '%s\n', f'ptr {self.shown(f, v, "int", True)[0]}')
+            else:
+                self.printf(f, '%lld\n', f'i64 {v}')
         elif k == 'add':
             for fl in c.fields.values():
                 if fl.ref:
@@ -915,6 +1024,7 @@ class Gen:
                 f.e(f'call void @free(ptr {idx})')
         elif k == 'agg':
             acc, cnt = f.var('i64', '0'), f.var('i64', '0')
+            dec = t.fn != 'count' and c.fields[t.field].dec
 
             def body(i, cont):
                 rec = self.rec(f, c, i)
@@ -936,7 +1046,8 @@ class Gen:
             if t.fn == 'count':
                 self.printf(f, '%lld\n', f'i64 {n}')
             elif t.fn == 'sum':
-                self.printf(f, '%lld\n', f'i64 {a}')
+                v, ty = self.shown(f, a, 'int', dec)
+                self.printf(f, '%s\n' if dec else '%lld\n', f'{LL[ty]} {v}')
             else:
                 none, some = f.lab('none'), f.lab('some')
                 f.cbr(f.r(f'icmp eq i64 {n}, 0'), none, some)
@@ -946,9 +1057,12 @@ class Gen:
                 f.at(some)
                 if t.fn == 'avg':
                     q = f.r(f'fdiv double {f.r(f"sitofp i64 {a} to double")}, {f.r(f"sitofp i64 {n} to double")}')
+                    if dec:
+                        q = f.r(f'fdiv double {q}, 100.0')
                     self.printf(f, '%.2f\n', f'double {q}')
                 else:
-                    self.printf(f, '%lld\n', f'i64 {a}')
+                    v, ty = self.shown(f, a, 'int', dec)
+                    self.printf(f, '%s\n' if dec else '%lld\n', f'{LL[ty]} {v}')
         f.e('ret void')
 
     def none_if_zero(self, f, n):
@@ -1091,7 +1205,7 @@ class Gen:
                 return
             S = self.prog.collections[STATE]
             rec = self.rec(f, S, '0')
-            got = [(n, self.fload(f, S, rec, n), S.fields[n].type) for n in names]
+            got = [(n,) + self.shown(f, self.fload(f, S, rec, n), S.fields[n].type, S.fields[n].dec) for n in names]
             fmt = '   '.join(f'{n.replace("_", " ").replace("%", "%%")} ' + ('%lld' if ty == 'int' else '%s')
                              for n, _, ty in got)
             which = f.r(f'select i1 %live, ptr {self.cstr(fmt + chr(27) + "[K" + chr(10))}, '
@@ -2098,6 +2212,7 @@ class Gen:
             for rf in d.fields.values():
                 if rf.ref:
                     self.relation(d, rf)
+        self.decimals()
         for t in self.prog.tasks:
             self.task(t)
         for r in self.prog.rules:
