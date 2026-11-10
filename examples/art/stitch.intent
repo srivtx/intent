@@ -1,0 +1,15 @@
+# Cross-stitch: wavy bands of thread inside an egg, on a grid of empty holes.
+#   ./intent svg examples/art/stitch.intent --after "wait 100" --style blocks --paper light
+# Every hole is a record. Where it sits decides whether it is inside the egg, and a sine wave decides
+# which row of thread it belongs to; the colour follows the row.
+
+The board is 37 wide and 45 high.
+Holes have an x (number), a y (number), a row (number), a look (text) and a hue (text).
+At the start there is a hole for every x from 1 to 37 and every y from 1 to 45, whose row is 0, whose look is "." and whose hue is "grey".
+
+Every 100 milliseconds, set the row of each hole to the nearest whole number to (its y plus 2 times the sine of (its x times 45)) plus 8.
+Every 100 milliseconds, set the look of each hole to "#" if (its x minus 19) times (its x minus 19) times 441 plus (its y minus 23) times (its y minus 23) times 256 is at most 112896 and its row modulo 4 is 0, otherwise ".".
+Every 100 milliseconds, set the hue of each hole to "magenta" if its row modulo 16 is 0, otherwise "green" if its row modulo 16 is 4, otherwise "red" if its row modulo 16 is 8, otherwise "yellow".
+Every 100 milliseconds, set the hue of each hole to "grey" if its look is ".".
+
+Draw each hole as its look in its hue at its x and its y.

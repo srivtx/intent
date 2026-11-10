@@ -18,6 +18,7 @@ and for the flexibility added after the first version:
  15. Counting and matching across collections, word order, numbered names (TestAcross)
  16. The same commands over the network, and a window                  (TestNetwork)
 """
+import glob
 import os
 import random
 import shutil
@@ -2488,7 +2489,7 @@ class TestMaths(unittest.TestCase):
 
 
 class TestArt(unittest.TestCase):
-    """Pictures: a grid of records from one sentence."""
+    """Pictures: a grid of records from one sentence, worked on with maths, saved as SVG."""
     setUpClass = classmethod(TestNativeAgainstReference.setUpClass.__func__)
     tearDownClass = classmethod(TestNativeAgainstReference.tearDownClass.__func__)
     script = TestLive.script
@@ -2513,6 +2514,24 @@ class TestArt(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(problem(text + '\n', base)[2].msg, msg)
 
+    def test_every_art_example_runs_the_same_natively(self):
+        for path in sorted(glob.glob(os.path.join(ROOT, 'examples', 'art', '*.intent'))):
+            with self.subTest(path), open(path) as fh:
+                self.script(os.path.basename(path)[:-7], fh.read(),
+                            ['picture', 'wait 100', 'picture', 'wait 450', 'picture', 'wait 2000', 'screen'])
+
+    def test_svg(self):
+        from intentc.svg import picture
+        prog, _, _ = understand('', 'The board is 4 wide and 2 high.\nDots have an x (number) and a y (number).\n'
+                                    'At the start there is a dot for every x from 1 to 2 and every y from 1 to 1.\n'
+                                    'Draw each dot as "@" in red at its x and its y.\nDraw "." at 4 and 2.\n')
+        m = Machine(prog)
+        dots = picture(m, 'dots', title='two & more')
+        self.assertTrue(dots.startswith('<svg ') and dots.rstrip().endswith('</svg>'))
+        self.assertEqual(dots.count('fill="#ff5a4e"'), 2)                       # the two red dots
+        self.assertIn('<title>two &amp; more</title>', dots)
+        self.assertEqual(picture(m, 'glyphs').count('<text '), 3)
+        self.assertIn('fill-opacity', picture(m, 'blocks'))                      # a "." carries little ink
 
 
 class TestCrowdedNames(unittest.TestCase):

@@ -164,6 +164,32 @@ def cmd_run(a):
     return 0
 
 
+def cmd_svg(a):
+    """The board as a picture, after the given events: the art a program makes, as a file."""
+    from .svg import picture
+    prog, diags, p, plan = load(a.file)
+    if not report(diags, p, quiet_notes=True):
+        return 1
+    if not prog.board:
+        print('error: this program has no board to draw', file=sys.stderr)
+        return 1
+    m = Machine(prog)
+    for c in (x.strip() for x in a.after.split(';')):
+        if c:
+            for line in m.run(c):
+                if line.startswith('error:'):
+                    print(f'{line} (after "{c}")', file=sys.stderr)
+                    return 1
+    title = a.title or os.path.splitext(os.path.basename(a.file))[0].replace('-', ' ')
+    svg = picture(m, a.style, a.paper, a.cell, title)
+    if a.output:
+        with open(a.output, 'w') as fh:
+            fh.write(svg)
+    else:
+        sys.stdout.write(svg)
+    return 0
+
+
 def cmd_serve(a, opened=None):
     """The same commands as on stdin, over the network; a program with a board lives in real time."""
     from .web import Server, title_of
@@ -210,14 +236,21 @@ def main(argv=None):
                             ('build', cmd_build, 'compile to a native executable'),
                             ('run', cmd_run, 'run in the reference interpreter (commands on stdin)'),
                             ('serve', cmd_serve, 'answer commands over the network (plain lines or HTTP)'),
-                            ('window', cmd_window, 'show the program in a window: its board, or a console')):
+                            ('window', cmd_window, 'show the program in a window: its board, or a console'),
+                            ('svg', cmd_svg, 'save the board as an SVG picture, after the given events')):
         sp = sub.add_parser(name, help=help_)
         sp.add_argument('file')
         sp.set_defaults(fn=fn)
         if name in ('explain', 'ir', 'build'):
             sp.add_argument('--no-index', action='store_true', help='experiment: forbid hash indexes')
-        if name == 'build':
+        if name in ('build', 'svg'):
             sp.add_argument('-o', '--output')
+        if name == 'svg':
+            sp.add_argument('--after', default='', help='events first, e.g. "wait 2000; press space"')
+            sp.add_argument('--style', default='glyphs', choices=('glyphs', 'dots', 'blocks'))
+            sp.add_argument('--paper', default='dark', choices=('dark', 'light'))
+            sp.add_argument('--cell', type=int, default=18, help='the size of one cell, in pixels')
+            sp.add_argument('--title', default='')
         if name in ('serve', 'window'):
             sp.add_argument('--port', type=int, default=8080 if name == 'serve' else 0)
         if name == 'serve':

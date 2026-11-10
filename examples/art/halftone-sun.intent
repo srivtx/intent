@@ -1,0 +1,15 @@
+# A halftone sun that breathes: each dot's size comes from its distance to the middle.
+#   ./intent svg examples/art/halftone-sun.intent --after "wait 400" --style dots
+# The square root gives the distance; a ramp of characters, from "@" to ".", gives the ink.
+
+The board is 44 wide and 30 high.
+Dots have an x (number), a y (number), a far (decimal), a look (text) and a hue (text).
+At the start there is a dot for every x from 1 to 44 and every y from 1 to 30, whose far is 0, whose look is " " and whose hue is "yellow".
+The glow starts at 0.
+
+Every 100 milliseconds, the glow increases by 20.
+Every 100 milliseconds, set the far of each dot to the square root of ((its x minus 22) times (its x minus 22) plus (its y minus 15) times (its y minus 15)) minus 3 times the sine of the glow.
+Every 100 milliseconds, set the look of each dot to "@" if its far is under 4, otherwise "#" if its far is under 6, otherwise "o" if its far is under 8, otherwise "+" if its far is under 10, otherwise ":" if its far is under 12, otherwise "." if its far is under 15, otherwise " ".
+Every 100 milliseconds, set the hue of each dot to "white" if its far is under 4, otherwise "yellow" if its far is under 10, otherwise "red".
+
+Draw each dot as its look in its hue at its x and its y.
