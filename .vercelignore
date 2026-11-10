@@ -1,0 +1,11 @@
+# Upload only what the website build needs.
+/*
+!/site
+!/intentc
+!/docs
+!/examples
+!/assets
+!/README.md
+!/CHANGELOG.md
+!/vercel.json
+**/__pycache__
