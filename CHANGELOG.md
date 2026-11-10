@@ -3,6 +3,50 @@
 Intent is experimental. Until 1.0, any version may change what a sentence means; `./intent check`
 always shows the current reading.
 
+## 0.6.0 — 2026-11-10
+
+A snake game can now be written, and two things that scanned no longer do.
+
+### Added
+- **Colour.** `Draw each rock at its x and y as a red "#".` `Draw a green "@" at ...`
+  `... as "#" in red.` Shown while playing in a terminal; `screen` stays plain text.
+- **Chance.** `a random number between 1 and 30`, `from 1 to 30`. One number is kept and each
+  draw moves it on by a fixed step, identically in the reference and natively. `seed <number>`
+  sets it; a command that drew a number is journaled; playing in a terminal seeds from the
+  clock and writes the seed to the journal. Refused in rules, drawings and endings.
+- **Records that appear.** `Every second, add a rock whose x is ... and whose y is 1.`, also
+  on a key, with a condition in front or behind.
+- **Conditions about other records.** `if any rock has an x equal to the column and ...`,
+  `if no shot has ...`, on something that happens by itself, on a rule, and on a record
+  that appears. This is how a hit takes a life.
+- **Several steps.** `..., and then ...` in a sentence that happens by itself.
+- **Playing again.** `restart`. In a terminal a finished game stays on show: enter plays
+  again, `q` stops.
+- `examples/snake.intent`.
+
+### Faster, with the same meaning
+- **One record is found through the index.** When a condition fixes a unique property
+  (`increase the points of the player with a given name`, `show the player with a given
+  name`, counting, top-N), the hash index that already existed is probed instead of every
+  record being looked at. 20,000 players and 40,000 awards: 79 s before, 0.65 s now, same output.
+- **Rules look only where something changed**, when every rule in the program reads and
+  changes a single record. After an add or a one-record change, the rules are applied to that
+  record alone; after a removal, not at all. A record no command touched is still as the rules
+  left it, so nothing is missed. Any rule that reads a single value, an owner or another
+  collection puts the whole program back on the full pass. Rules that never come to rest are
+  still reported on every command, as the reference does.
+- `./intent explain` says which of these a capability gets, and why.
+
+### Fixed
+- `Menus`, `Skus`, `Gurus` are now several of a menu, a sku, a guru. `status`, `bonus`,
+  `virus` and the like are still one thing.
+- A game with no commands no longer gets the note "nothing to do with it yet".
+- `as a "#"` (an article before the character) is read.
+
+### Changed
+- A game that can end needs one more terminal line, for the line that offers another game.
+- `help` lists `seed` and `restart` where they apply.
+
 ## 0.5.1 — 2026-11-10
 
 Hardening of 0.5.0. No new sentences.

@@ -7,7 +7,7 @@
 
 <p align="center">
   <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-f59e0b">
-  <img alt="version 0.5.1" src="https://img.shields.io/badge/version-0.5.1-6366f1">
+  <img alt="version 0.6.0" src="https://img.shields.io/badge/version-0.6.0-6366f1">
   <a href="https://github.com/srivtx/intent/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/srivtx/intent/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
   <img alt="backend: LLVM IR" src="https://img.shields.io/badge/backend-LLVM%20IR-262d3a">
@@ -17,7 +17,7 @@
 
 > **Experimental.** Intent is a research prototype, a day or two old. The language changes
 > between versions, there are things it cannot say yet ([limits](#what-this-version-cannot-do)),
-> and it has only been run on macOS. Use it to explore the idea, not to hold data you care about.
+> and it is tested on macOS and Linux only. Use it to explore the idea, not to hold data you care about.
 
 **[Language guide](docs/language.md)** · **[Changelog](CHANGELOG.md)** · **[Examples](examples/)** · **[Stress experiments](gemini-build/README.md)**
 
@@ -261,6 +261,33 @@ takes `wait 450`, `press left` and `screen` as commands. Time and keys are event
 program, never read behind its back, so a game is replayed exactly and the native code is
 tested against the reference like everything else.
 
+Things can appear, be hit, and be left to chance, and what is drawn can have a colour.
+[examples/snake.intent](examples/snake.intent) is a whole snake game in 26 sentences:
+
+```
+Every 120 milliseconds, add a segment whose x is the column, whose y is the row and whose age is 0.
+Every 120 milliseconds, remove the segments whose age is at least the length.
+Every 120 milliseconds, if the column is the food x and the row is the food y,
+  the score increases by 1, the length increases by 1,
+  the food x becomes a random number between 1 and 30,
+  and the food y becomes a random number between 1 and 14.
+The game is over when any segment's x is the column and its y is the row.
+Draw each segment at its x and y as a green "o".
+```
+
+```bash
+./intent build examples/snake.intent -o build/snake
+```
+
+```bash
+./build/snake
+```
+
+Chance is an event like the others. The program keeps one number and every draw moves it on
+by a fixed step, so `seed 7` followed by the same waits and keys gives the same game, natively
+and in the reference. Played in a terminal, the starting number comes from the clock and is
+written to the journal, so even a game someone played by hand can be replayed exactly.
+
 ## Small programs written in it
 
 | file | what it is |
@@ -272,6 +299,7 @@ tested against the reference like everything else.
 | [examples/calculator.intent](examples/calculator.intent) | a calculator: nothing stored, values that depend on conditions |
 | [examples/arcade.intent](examples/arcade.intent) | the scorekeeping of a game: single values, players, standing rules |
 | [examples/dodge.intent](examples/dodge.intent) | a game played in the terminal: time, arrow keys, a board, an ending |
+| [examples/snake.intent](examples/snake.intent) | snake: records that appear and go, chance, a hit, colour, playing again |
 | [examples/tour.intent](examples/tour.intent) | every kind of sentence in the [language guide](docs/language.md) |
 
 ```bash
@@ -331,10 +359,11 @@ dicts). It is the definition of meaning. The tests build native programs and fee
 the same random command streams — unordered and ordered collections, text and numeric keys,
 reject and replace, with and without indexes, including malformed input and 64-bit overflow
 — and require identical output (as a multiset where order is not part of the meaning).
-160 tests pass, including the example apps, three-collection relationship programs and a
-game, run against the reference on random commands. The game is also played through a real
-terminal (keys, signals, a window that is too small), and randomly mangled copies of it must
-end in a diagnosis or a program, never a crash.
+187 tests pass, including the example apps, three-collection relationship programs and two
+games, run against the reference on random commands, with chance seeded the same on both
+sides. The games are also played through a real terminal (keys, colour, signals, a window that
+is too small, losing and playing again), and randomly mangled copies must end in a diagnosis
+or a program, never a crash. They run on macOS and Linux on every push.
 
 This shows the backend agrees with the reference. It does not show the reference agrees
 with what you meant; that is what `check` is for — read the right-hand column.
@@ -346,20 +375,25 @@ with what you meant; that is what `check` is for — read the right-hand column.
 - Text may not contain commas (the command format is comma-separated).
 - Conditions are a flat list of `and` or of `or`; no grouping.
 - No constraints other than uniqueness; a unique property cannot be changed in bulk.
-- **Games are simple ones.** There is time, keys and a board of characters in the terminal, but
-  no chance (`a random number`), nothing can appear while the game runs (`every second, add a
-  rock`), a hit cannot change a single value (`lose a life`), and a period is fixed when compiled.
-  No colours, no window, no sound. Played only on macOS so far.
+- **Games are terminal games.** A board of coloured characters; no window, no sound. A period
+  is fixed when compiled (a game cannot speed up). A random number's two ends are written as
+  numbers. A condition about other records (`if any rock ...`) looks into one other collection
+  and cannot be mixed with `or`. A record that belongs to another cannot appear by itself yet.
 - **No network.** No server yet.
 - Calculations work on whole numbers only (no text, no decimals), and cannot read a collection.
-- Rules are re-applied in full after every change: each rule costs one pass over its collection.
+- Rules look only at the record a command added or changed when every rule in the program
+  reads and changes one record. As soon as one rule reads a single value, an owner or another
+  collection, all rules are re-applied in full after every change, as before.
 - No summaries of a calculation (`total of price times stock`), no grouping
   (`average salary per city`), no loops written by the programmer.
-- A change applies to the records a condition selects; there is no "do this, then that"
-  within one capability, and capabilities cannot call each other.
+- A change applies to the records a condition selects. Something that happens by itself can
+  be several steps (`..., and then ...`); a named capability still cannot, and capabilities
+  cannot call each other.
 - Remembering is a growing command log, never compacted. Nothing else touches files or the network.
 - Rankings with ties are broken by storage order unless insertion order is declared.
-- Non-unique lookups scan. Sorted and top-N output sorts everything on every call.
+- A condition that fixes a unique property goes through the index (`the player with a given
+  name`); every other condition scans, including "the orders of a given customer". Sorted and
+  top-N output sorts everything on every call.
 - The planner decides from declared capabilities, not from measured workload.
 
 ## How this differs from the conversation it came from
@@ -393,13 +427,14 @@ Its `build-04` test now fails on purpose: it asserts the old buggy behaviour.
 ## Where it can go next
 
 Done so far: definitions, spelling tolerance, rankings, remembering, text tests, relationships,
-single values, values that depend on a condition, standing rules, time, keys and a board.
+single values, values that depend on a condition, standing rules, time, keys and a board,
+colour, chance, records that appear, conditions about another collection, steps, playing again.
 The stress experiments show the same thing from eight directions: people fall back to
 arithmetic tricks when the language cannot *say* something. So, in order:
 
-1. **What a snake game still needs.** Chance (`a random number between 1 and 30`), rules that
-   add and remove records (`every tick, add a segment at the head`), conditions over another
-   collection (`when any segment is at the head`), several steps in one sentence.
+1. **An index on linking properties**, so "the orders of a given customer" and removing a
+   customer's orders stop looking at every order. The rows on both sides move, so this needs
+   care; it is the one scan left that grows with someone else's data.
 2. **Faces.** The program stays the same and one sentence says how it meets the world:
    `Serve this on the web.` turns every capability into an endpoint; a window instead of
    terminal characters is another face.
@@ -411,9 +446,11 @@ arithmetic tricks when the language cannot *say* something. So, in order:
    `repeat until nothing changes`.
 6. **More kinds of value.** Decimals and money, dates, yes/no, "may be missing"; properties
    defined by a calculation (`A line's cost is its price times its quantity.`).
-7. **Better structures.** An index on linking properties, an ordered index for ranges and
-   top-N, tombstones so ordered removal stops being O(n).
-8. **Rules that only look where something changed**, instead of a full pass each time.
+7. **Better structures.** An ordered index for ranges and top-N, tombstones so ordered
+   removal stops being O(n).
+8. **Rules that follow what they read.** Rules that read one record already look only where
+   something changed; a rule that reads a single value or an owner should look again only when
+   that changes.
 9. **A model that turns loose speech into Intent text**, with `check` showing the reading
    before anything is compiled.
 
@@ -432,5 +469,5 @@ intentc/llvm.py         Intent IR + plan -> LLVM IR
 intentc/play.py         playing in a terminal with the reference interpreter
 tests/                  phrasings, questions, planner, spelling, definitions, apps, native-vs-reference
 bench/bench.py          the table above
-examples/               customers, questions, leaderboard, todo, shop, store, calculator, arcade, dodge
+examples/               customers, questions, leaderboard, todo, shop, store, calculator, arcade, dodge, snake
 ```

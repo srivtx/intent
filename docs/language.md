@@ -208,6 +208,56 @@ The game ends when the lives are under 1.
 ```
 While the game is over, time and keys do nothing.
 
+**Colour.** A drawing can have one: red, green, yellow, blue, magenta (or purple, pink), cyan,
+white, grey.
+```
+Draw each rock at its x and y as a red "#".
+Draw a green "@" at the column and the row.
+Draw "*" in yellow at the food x and the food y.
+```
+Colour is shown while playing in a terminal. The `screen` command stays plain text.
+
+**Chance.** Both ends can come up:
+```
+When space is pressed, the column becomes a random number between 1 and 30.
+Every second, the wind increases by a random number from -1 to 1.
+```
+The program keeps one number and each draw moves it on by a fixed step, so the same start gives
+the same draws. `seed 7` sets the start. Chance cannot be used in a standing rule, in what is
+drawn, or in when the game ends: those are looked at again and again. Draw the number at one
+moment and keep it in a single value.
+
+**Records that appear.** In a sentence that happens by itself, `add` makes a record; every
+property needs a value, from numbers, text, single values and chance:
+```
+Every second, add a rock whose x is a random number between 1 and 30 and whose y is 1.
+When space is pressed, add a shot with x the column and y 11.
+Every second, if the score is over 10, add a rock whose x is the column and whose y is 1.
+```
+If a unique property would clash, the new record is passed over (or replaces the old one, if
+the program says `Replace duplicates.`). Removing already works the same way:
+`Every second, remove the rocks whose y is over 12.`
+
+**A condition about other records.** A sentence about one thing can depend on another:
+```
+Every 100 milliseconds, if any rock has an x equal to the column and a y equal to the row, the lives decrease by 1.
+When space is pressed, if no shot has a y over 10, add a shot with x the column and y 11.
+Whenever any rock has a y over 12, the alarm becomes "low".
+```
+`any` and `no` are the two forms. A sentence that goes on to speak about those same records
+(`if any rock's y is over 12, its y becomes 1`) is about each of them, as before.
+
+**Several steps.** `and then` puts steps in order within one moment:
+```
+When space is pressed, add a shot with x the column and y 11, and then the score decreases by 1.
+```
+It is the same as writing two sentences with the same beginning. A condition in front of
+several steps is a question (does it go with all of them?), so give each step its own.
+
+**Playing again.** `restart` puts everything back as it was at the start (chance keeps going,
+so the next game is a new one). In a terminal, a game that is over stays on show: enter plays
+again, `q` stops.
+
 Run the compiled program in a terminal and it is played: the real clock and the real keyboard
 drive it, and `q`, `Esc` or `Ctrl-C` stops. Over a pipe it takes commands instead, and time,
 keys and the board are three more commands, so a game can be scripted and tested exactly:
@@ -215,7 +265,11 @@ keys and the board are three more commands, so a game can be scripted and tested
 wait 450          let 450 milliseconds pass
 press left        as if the left key was pressed
 screen            print the board
+seed 7            where chance starts (only if the program uses chance)
+restart           back to the start (only if the game can end)
 ```
+With a journal file, a game played by hand is written down as these same commands, including
+the seed the clock gave it, so it can be replayed exactly.
 None of the words used here is reserved: `the high score` and `each ticket has a key` are
 still ordinary names.
 
@@ -252,8 +306,8 @@ Answers: records print as comma-separated values; `none` when nothing matches a 
 
 ## Not yet
 
-Decimals, dates and yes/no values; text in calculations; chance (`a random number`); things
-that appear while a game runs (`every second, add a rock`); colours and windows; a network;
+Decimals, dates and yes/no values; text in calculations; a random number between two values
+that are not written as numbers; a game that speeds up; windows and sound; a network;
 properties defined by a calculation; summaries per owner or per group
-(`members with more than 3 visits`); capabilities made of several steps; mixing `and` with
+(`members with more than 3 visits`); named capabilities made of several steps; mixing `and` with
 `or`; commas inside text. See the [README](../README.md#what-this-version-cannot-do).
