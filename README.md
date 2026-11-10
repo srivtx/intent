@@ -128,6 +128,39 @@ What flexibility does *not* mean: it will not act on a sentence it only half und
 `Show the first 5 customers.` on a collection with no declared order is a question
 ("first in what order?"), not a guess.
 
+## Describing things in one breath
+
+All of these declare the same collection; none needs a separate "is a collection" line:
+
+```
+Customers is a collection where each customer has a name, an age and an email.
+Customers is a collection with a name, an age and an email.
+Customers have a name, an age and an email.
+Each customer has a name, an age and an email.
+```
+
+**One value or several** is read from how you say it:
+
+| you write | it means |
+|---|---|
+| `a phone` | one value |
+| `phones`, `several phones`, `a list of phones`, `one or more phones` | several per customer |
+| `phones (text)` | one value (a type says it is a single thing) |
+| `points`, `units`, `cents`, `likes` ... | one number: these plurals are counts |
+
+A bare plural is an assumption, so it is reported: *reading "phones" as several values per
+contact, because it is plural*. Several values are stored as records that belong to their
+owner and go when it goes, so everything else works on them unchanged:
+
+```
+Add a phone to a given contact.
+Show the phones of a given contact.
+How many phones does a given contact have?
+Show the phones whose contact's city is a given city.
+```
+
+`Each customer has orders.`, when Orders is already a collection, links the two instead.
+
 ## Collections that belong to each other
 
 ```
@@ -217,7 +250,7 @@ dicts). It is the definition of meaning. The tests build native programs and fee
 the same random command streams — unordered and ordered collections, text and numeric keys,
 reject and replace, with and without indexes, including malformed input and 64-bit overflow
 — and require identical output (as a multiset where order is not part of the meaning).
-100 tests pass, including the example apps and three-collection relationship programs run
+113 tests pass, including the example apps and three-collection relationship programs run
 against the reference on random commands.
 
 This shows the backend agrees with the reference. It does not show the reference agrees
