@@ -83,6 +83,72 @@ accepts them as commands, any number of times in any order. That is what gives t
 a real decision to make about representation: it minimises the per-call cost of the
 capabilities you declared and builds nothing you did not ask for.
 
+## How flexible is it?
+
+**Different words, different order.** These all compile to `remove customer where age < 18`:
+
+- Remove the customers whose age is under 18.
+- Customers whose age is under 18: remove them.
+- If the age is under 18, delete the customer.
+- Wipe out every customer with an age below 18.
+
+**Spelling slips.** `Shwo teh customres sroted by aeg.` compiles, and says what it did:
+
+```
+note: read "Shwo" as "show"
+note: read "customres" as "customers"   (and three more)
+```
+
+A misspelled word is accepted only when exactly one known word that close makes the *whole
+sentence* readable. If two corrections would give different meanings (`coxt` when the
+program has both `cost` and `coat`), it asks. A word that is not close to anything
+(`positive`) is still an error. Names in declarations are never "corrected".
+
+**Teach it your own words.** The vocabulary is not fixed; a program extends it:
+
+```
+"older than" means age over.
+An adult is a customer whose age is at least 18.
+A senior is an adult older than 64.
+An open task is a task whose done is 0.
+"oldest" means with the largest age.
+
+Show the names of seniors.          ->  list name of customer where age >= 18 and age > 64
+Show the 3 oldest adults.           ->  ... where age >= 18 sorted by age descending, first 3
+```
+
+A taught word is substituted before the sentence is read, so it behaves exactly like its
+meaning, typos in it are caught the same way, and a word can never be given a second meaning.
+
+**Rankings, ranges, percentages.** `Show the top 3 players by score.`,
+`the customer with the lowest age`, `whose age is between 18 and 30`,
+`Increase every salary by 10 percent.`, `Remove all customers.`
+
+What flexibility does *not* mean: it will not act on a sentence it only half understood.
+`Show the first 5 customers.` on a collection with no declared order is a question
+("first in what order?"), not a guess.
+
+## Small programs written in it
+
+| file | what it is |
+|---|---|
+| [examples/leaderboard.intent](examples/leaderboard.intent) | game leaderboard: join, award points, podium, champions |
+| [examples/todo.intent](examples/todo.intent) | to-do list: open / finished / urgent tasks, what to do next |
+| [examples/shop.intent](examples/shop.intent) | shop stock: sell, restock, sale, what is running low |
+
+```bash
+./intent build examples/leaderboard.intent -o build/leaderboard
+```
+
+```bash
+./build/leaderboard scores.log
+```
+
+Then type `help`, `join ana,900,3`, `award 150,ana`, `podium`. Every compiled program has
+`help`. **Give it a file name and it remembers between runs**: each command that can change
+data is appended to that file and replayed (silently) on the next start. Because the language
+is deterministic, replaying the commands rebuilds exactly the same data.
+
 ## Many phrasings, one meaning
 
 All of these compile to the identical IR `update customer: age = age * 2` (tested):
@@ -127,7 +193,7 @@ dicts). It is the definition of meaning. The tests build native programs and fee
 the same random command streams — unordered and ordered collections, text and numeric keys,
 reject and replace, with and without indexes, including malformed input and 64-bit overflow
 — and require identical output (as a multiset where order is not part of the meaning).
-37 tests pass.
+71 tests pass, including the three example apps run against the reference on random commands.
 
 This shows the backend agrees with the reference. It does not show the reference agrees
 with what you meant; that is what `check` is for — read the right-hand column.
@@ -140,15 +206,19 @@ with what you meant; that is what `check` is for — read the right-hand column.
 - Conditions are a flat list of `and` or of `or`; no grouping.
 - No constraints other than uniqueness; a unique property cannot be changed in bulk.
 - Division only by a fixed non-zero number.
-- The vocabulary is fixed. `older than 30` is an unknown word, because nothing tells the
-  compiler that "older" is about age.
-- Non-unique lookups scan. Sorted output sorts on every call.
+- No text operations (`starts with`, `contains`), no summaries of a calculation
+  (`total of price times stock`), no grouping (`average salary per city`).
+- A change applies to the records a condition selects; there is no "do this, then that"
+  within one capability, and capabilities cannot call each other.
+- Remembering is a growing command log, never compacted. Nothing else touches files or the network.
+- Rankings with ties are broken by storage order unless insertion order is declared.
+- Non-unique lookups scan. Sorted and top-N output sorts everything on every call.
 - The planner decides from declared capabilities, not from measured workload.
 
 ## How this differs from the conversation it came from
 
-The source discussion is `intent_language_research_conversation.txt`. Where this build
-departs from it:
+Intent started from a long spoken research conversation about an "intent-driven" language.
+Where this build departs from that discussion:
 
 - The conversation leaned toward an AI front end for fluid phrasing. This shows a lexicon
   plus the never-drop rule gets real fluidity deterministically. AI becomes an optional
@@ -164,20 +234,23 @@ departs from it:
   capabilities with source-line reasons, straight to LLVM. That is a combination claim,
   not a claim that any single piece is new.
 
-## Next steps, in the order I would do them
+## Where it can go next
 
-1. **Definitions as the extension mechanism.** `An adult is a customer whose age is at
-   least 18.` and `"older than" means age over.` This grows the vocabulary from inside the
-   program and is the cheapest large gain in fluidity.
+Done since the first version: definitions, spelling tolerance, rankings, remembering.
+What would open the most new programs, in order:
+
+1. **Relationships.** `Each order belongs to a customer.` Joins and foreign indexes are where
+   representation choice gets much richer, and where real applications start.
 2. **Constraints that follow the data.** `Age is never negative.` checked on every add and
-   update, then the conversation's change experiment: tighten a constraint and report
-   exactly which capabilities are affected.
-3. **Relationships.** `Each order belongs to a customer.` This is where representation
-   choice gets much richer (joins, foreign indexes).
-4. **Better structures.** An ordered index for range and sorted queries, tombstones so
-   ordered removal stops being O(n), and counters so the choice can follow real workload.
-5. **AI as a writer.** A model turns loose speech into Intent text; `check` shows the
-   reading for confirmation before anything is compiled.
+   change; then report exactly which capabilities a tightened constraint affects.
+3. **More kinds of value.** Decimals and money, dates, yes/no, "may be missing", text
+   operations.
+4. **Multi-step capabilities.** `To check out: decrease the stock, then add an order.`
+5. **Grouping.** `The average salary for each city.`
+6. **Better structures.** An ordered index for ranges and top-N, tombstones so ordered
+   removal stops being O(n), counters so the choice follows the real workload.
+7. **Other front doors.** The same capabilities served over HTTP; a model that turns loose
+   speech into Intent text, with `check` showing the reading before anything is compiled.
 
 ## Layout
 
@@ -191,7 +264,7 @@ intentc/check.py        type inference and open decisions
 intentc/plan.py         representation discovery, with reasons
 intentc/interp.py       reference interpreter (the meaning)
 intentc/llvm.py         Intent IR + plan -> LLVM IR
-tests/                  phrasings, questions, planner, native-vs-reference
+tests/                  phrasings, questions, planner, spelling, definitions, apps, native-vs-reference
 bench/bench.py          the table above
-examples/               customers.intent, questions.intent
+examples/               customers, questions, leaderboard, todo, shop
 ```
