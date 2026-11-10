@@ -1,0 +1,41 @@
+# =============================================================================
+# BUILD 03 (FAILED ATTEMPT): Relational Joins, Constraints & Atomic Checkout
+# =============================================================================
+
+Wallets is a collection.
+Each wallet has a wallet_id (text), a balance (number) and a frozen (number).
+No two wallets share the same wallet_id.
+If a wallet already exists, reject it.
+
+Products is a collection.
+Each product has a sku (text), a price (number) and a stock (number).
+No two products share the same sku.
+If a product already exists, reject it.
+
+Purchases is a collection.
+Each purchase has a purchase_id (number), a buyer_wallet (text), a item_sku (text) and a total_cost (number).
+No two purchases share the same purchase_id.
+If a purchase already exists, reject it.
+
+# FAILURE 1: Cross-collection sentence (referencing two collections in one sentence)
+# Rejected by parser.py:468: "one sentence can only be about one collection in this version"
+checkout-join: show the purchases and wallets whose wallet_id is buyer_wallet.
+
+# FAILURE 2: Domain invariant constraint ("stock is never under 0")
+# Misread as a task or fails with unknown word "never"
+Products whose stock is never under 0.
+
+# FAILURE 3: Combining an action ("show") and a state change ("decrease") in one capability
+# Rejected by parser.py:937: "is this a change or a query?"
+buy-and-receipt: decrease stock by a given qty and show the product for products whose sku is a given sku.
+
+# FAILURE 4: Bulk update of a unique property (purchase_id)
+# Rejected by check.py:157: "changing 'purchase_id' in bulk is not supported yet because it is unique"
+renumber-purchases: increase purchase_id by 1000 for every purchase.
+
+# FAILURE 5: Teaching a phrase with "is" instead of "whose ... is" or "equal to"
+# Because "is" is tokenized as ('IS', None) rather than ('CMP', 'eq'), parser.py:942
+# fails to split a bare condition without "whose" when the comparison uses "is"!
+"frozen_acct" means frozen is 1.
+show-frozen: show the wallet_id of wallets frozen_acct.
+

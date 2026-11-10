@@ -1,0 +1,43 @@
+error: one sentence can only be about one collection in this version
+  --> gemini-build/build-03-relational-join-and-transactions/attempt_failed.intent:22
+   |
+22 | checkout-join: show the purchases and wallets whose wallet_id is buyer_wallet.
+   |                         ^^^^^^^^^^^^^^^^^^^^^
+
+error: I don't know the word "never"
+  --> gemini-build/build-03-relational-join-and-transactions/attempt_failed.intent:26
+   |
+26 | Products whose stock is never under 0.
+   |                         ^^^^^ not a concept I know, and not a name this program declared
+   = did you mean "every"? I never drop a word I don't understand, because it might change the meaning.
+
+question: is this a change or a query?
+  --> gemini-build/build-03-relational-join-and-transactions/attempt_failed.intent:30
+   |
+30 | buy-and-receipt: decrease stock by a given qty and show the product for products whose sku is a given sku.
+   |                                                    ^^^^ "show" asks for something, but the rest changes something
+   = say them in two sentences
+
+error: changing "purchase_id" in bulk is not supported yet because it is unique
+  --> gemini-build/build-03-relational-join-and-transactions/attempt_failed.intent:34
+   |
+34 | renumber-purchases: increase purchase_id by 1000 for every purchase.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ line 17 says so; a bulk change could create duplicates
+
+not compiled: 1 question to answer, 3 things I could not read
+How I read this program:
+
+   5  Wallets is a collection                                       ->  collection wallet
+   6  Each wallet has a wallet_id (text), a balance (number) and a frozen (number)  ->  wallet has wallet_id: text, balance: int, frozen: int
+   7  No two wallets share the same wallet_id                       ->  wallet: wallet_id unique
+   8  If a wallet already exists, reject it                         ->  wallet: on duplicate, reject
+  10  Products is a collection                                      ->  collection product
+  11  Each product has a sku (text), a price (number) and a stock (number)  ->  product has sku: text, price: int, stock: int
+  12  No two products share the same sku                            ->  product: sku unique
+  13  If a product already exists, reject it                        ->  product: on duplicate, reject
+  15  Purchases is a collection                                     ->  collection purchase
+  16  Each purchase has a purchase_id (number), a buyer_wallet (text), a item_sku (text) and a total_cost (number)  ->  purchase has purchase_id: int, buyer_wallet: text, item_sku: text, total_cost: int
+  17  No two purchases share the same purchase_id                   ->  purchase: purchase_id unique
+  18  If a purchase already exists, reject it                       ->  purchase: on duplicate, reject
+  34  renumber-purchases: increase purchase_id by 1000 for every purchase  ->  update purchase: purchase_id = purchase_id + 1000
+
