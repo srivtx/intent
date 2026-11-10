@@ -6,7 +6,6 @@ board is whatever "screen" prints. The compiled program does exactly the same.
 """
 import os
 import select
-import shutil
 import signal
 import sys
 import termios
@@ -39,8 +38,12 @@ def decode(data):
 def play(m, out=sys.stdout):
     """Returns the exit status: 0, or 1 when the terminal is too small to show the board."""
     names = {KEY_CODES[k]: k for k in m.prog.keys()}
-    need, have = room(m.prog), shutil.get_terminal_size()
-    if have.columns < need[0] or have.lines < need[1]:
+    need = room(m.prog)
+    try:                                # ask the terminal itself; COLUMNS and LINES may say something else
+        have = os.get_terminal_size(out.fileno())
+    except (OSError, ValueError):
+        have = None
+    if have and have.columns > 0 and have.lines > 0 and (have.columns < need[0] or have.lines < need[1]):
         print(TOO_SMALL % (need + (have.columns, have.lines)))
         return 1
     fd = sys.stdin.fileno()
