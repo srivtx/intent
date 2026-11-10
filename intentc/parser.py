@@ -1257,25 +1257,30 @@ class Parser:
         """"Draw each rock at its x and y as "#"."  "Draw "@" at the column and the row."."""
         hint = 'e.g. Draw each rock at its x and y as "#".'
         looks = [i for i, t in enumerate(toks) if t.kind in ('str', 'bad')]
-        if len(looks) != 1:
-            raise self.p('error', toks, 'what should it look like?' if not looks else
-                         'one thing is drawn as one character', hint=hint)
-        g = looks[0]
-        glyph = toks[g].text if toks[g].kind == 'str' else toks[g].raw
-        if len(glyph) != 1 or not 33 <= ord(glyph) <= 126:
-            raise self.p('error', toks[g], 'one thing is drawn as one plain character', hint=hint)
+        own = None if looks else self.own_glyph(toks)
+        if own:                                     # as its glyph: each record says what it looks like
+            a, g, glyph = own
+        else:
+            if len(looks) != 1:
+                raise self.p('error', toks, 'what should it look like?' if not looks else
+                             'one thing is drawn as one character', hint=hint)
+            g = a = looks[0]
+            glyph = toks[g].text if toks[g].kind == 'str' else toks[g].raw
+            if len(glyph) != 1 or not 33 <= ord(glyph) <= 126:
+                raise self.p('error', toks[g], 'one thing is drawn as one plain character', hint=hint)
+
         def word(i, among):
             return 0 <= i < len(toks) and toks[i].kind == 'word' and toks[i].text in among
 
         def colour_at(seq, i):
             return 0 <= i < len(seq) and seq[i].kind == 'word' and seq[i].text in COLOURS and self.free(seq[i].text)
-        colour, a = None, g
+        colour = None
         if colour_at(toks, a - 1):                  # as a red "#"
             a -= 1
             colour = toks[a].text
-        if a > 1 and word(a - 1, ('a', 'an', 'the')):
+        if a > 1 and word(a - 1, ('a', 'an', 'the')) and not own:
             a -= 1
-        if a > 1 and word(a - 1, ('as', 'with', 'like', 'using')):
+        if a > 1 and word(a - 1, ('as', 'with', 'like', 'using')) and not own:
             a -= 1
         rest = toks[1:a] + toks[g + 1:]
         ins = [i for i, t in enumerate(rest) if t.kind == 'word' and t.text == 'in' and colour_at(rest, i + 1)]
@@ -1284,7 +1289,15 @@ class Parser:
                 raise self.p('error', rest[ins[-1]:ins[-1] + 2], 'one thing is drawn in one colour')
             colour = rest[ins[0] + 1].text
             rest = rest[:ins[0]] + rest[ins[0] + 2:]
-        inked = f' in {colour}' if colour else ''
+        if colour is None:                          # in its colour: each record says its own
+            for i, t in enumerate(rest):
+                if t.kind == 'word' and t.text == 'in':
+                    found = self.text_named(rest, i + 1, 'colour')
+                    if found:
+                        colour = found[1]
+                        rest = rest[:i] + rest[found[0] + 1:]
+                        break
+        inked = f' in {fmt_glyph(colour)[1:-1] if isinstance(colour, str) else fmt_glyph(colour)}' if colour else ''
         at = next((i for i, t in enumerate(rest) if t.kind == 'word' and t.text == 'at' and
                    not (i + 1 < len(rest) and rest[i + 1].text in ('least', 'most'))), None)
         if at is None:
@@ -1304,10 +1317,11 @@ class Parser:
         xy = (self.whole_expr(place[:sep]), self.whole_expr(place[sep + 1:]))
         what = self.content_of(rest[:at])
         cutoff = next((i for i, c in enumerate(what) if c.kind in ('WHERE', 'HAS')), len(what))
+        sorting = any(c.kind in ('SORTBY', 'DIR') for c in what[:cutoff])     # "sorted by depth": the order drawn in
         for c in what[:cutoff]:
             if c.kind == 'UNK':
                 raise self.unknown_word(c)
-            if c.kind not in ('COLL', 'QUANT', 'GEN'):
+            if c.kind not in ('COLL', 'QUANT', 'GEN') and not (sorting and c.kind in ('SORTBY', 'DIR', 'BY', 'FIELD')):
                 raise self.leftover([c])
         subject = what + who + cond
         used = [c for c in place if c.kind == 'FIELD']
@@ -1315,11 +1329,47 @@ class Parser:
             subject = [CT('COLL', self.scope(used).name, used[0].toks)] + subject
         if not subject:
             T = Task(f'draw {len(self.prog.draws) + 1}', 'draw', None, toks[0].line, self.sent_text(toks), True)
+            if isinstance(glyph, tuple) and glyph[0] != 'value' or isinstance(colour, tuple) and colour[0] != 'value':
+                raise self.p('error', toks, f'which {glyph[1].replace("_", " ")}?', 'there is no record here to have one',
+                             'e.g. Draw each rock as its look at its x and y.')
             T.at, T.glyph, T.colour = xy, glyph, colour
             self.prog.draws.append(T)
-            return f'draw "{glyph}"{inked} at ({fmt_expr(xy[0])}, {fmt_expr(xy[1])})'
+            return f'draw {fmt_glyph(glyph)}{inked} at ({fmt_expr(xy[0])}, {fmt_expr(xy[1])})'
         self.trigger = ('draw', xy, glyph, colour)
         return self.task([CT('ACT', 'show', [toks[0]])] + subject)
+
+    def own_glyph(self, toks):
+        """"as its look", "as the player look": the text whose first character is drawn.
+
+        Returns (where the phrase starts, where it ends, ('field' | 'value', name)), or None."""
+        for i, t in enumerate(toks):
+            if t.kind != 'word' or (t.text != 'as' and i):
+                continue                # "Draw the mark at 1 and 1": a text value can be what is drawn, too
+            found = self.text_named(toks, i + 1, 'look', fields=bool(i))
+            if found and (i or (found[0] + 1 < len(toks) and toks[found[0] + 1].kind == 'word' and
+                                toks[found[0] + 1].text == 'at')):
+                return max(i, 1), found[0], found[1]
+        return None
+
+    def text_named(self, toks, j, what, fields=True):
+        """A property or single value named from toks[j] on ("its look", "the shade"): (last index, (kind, name))."""
+        while j < len(toks) and toks[j].kind == 'word' and toks[j].text in ('its', 'their', 'the', 'his', 'her'):
+            j += 1
+        for L in range(min(3, len(toks) - j), 0, -1):
+            seg = toks[j:j + L]
+            if not all(x.kind == 'word' for x in seg):
+                continue
+            key = '_'.join([x.text for x in seg[:-1]] + [singular(seg[-1].text)])
+            raw = '_'.join(x.text for x in seg)
+            if fields and key in self.prog.field_names():
+                return j + L - 1, ('field', key)
+            for name in (key, raw):
+                if name in self.state.fields:
+                    if self.state.fields[name].type != 'text':
+                        raise self.p('error', seg, f'"{name.replace("_", " ")}" is not text',
+                                     f'a {what} is given as text' + (', the name of a colour' if what == 'colour' else ''))
+                    return j + L - 1, ('value', name)
+        return None
 
     def decl_seed(self, toks, words):
         """A record that is there from the start: "Start with a rock at x 5, y 1 and speed 2"."""
@@ -2591,18 +2641,30 @@ class Parser:
                 return 'the game is over when ' + fmt_cond(T.where) + \
                     ('' if T.coll == STATE else f', for any {T.coll}')
             if on[0] == 'draw':
-                if not plain:
+                if T.kind != 'list' or T.limit is not None:
                     raise self.p('error', self.cur, 'I can\'t tell what should be drawn',
                                  hint='e.g. Draw each rock at its x and y as "#".')
                 for e in (x for side in on[1] for x in walk_expr(side)):
                     if e[0] == 'field' and e[1] not in coll.fields:
                         raise self.p('error', self.cur, f'{coll.label} has no property "{e[1]}"', self.could_be(coll))
+                glyph = on[2]
+                for own, what in ((glyph, 'what is drawn is the first character of a text'),
+                                  (on[3], 'a colour is given by its name, as text')):
+                    if isinstance(own, tuple) and own[0] == 'field':
+                        f = coll.fields.get(own[1])
+                        if f is None:
+                            raise self.p('error', self.cur, f'{coll.label} has no property "{own[1]}"', self.could_be(coll))
+                        if f.type == 'int':
+                            raise self.p('error', self.cur, f'"{f.name.replace("_", " ")}" is a number', what)
+                        f.type = 'text'
                 T.kind, T.name, T.named, T.fields = 'draw', f'draw {len(self.prog.draws) + 1}', True, None
-                T.at, T.glyph, T.colour = on[1], on[2], on[3]
+                T.at, T.glyph, T.colour = on[1], glyph, on[3]
                 self.prog.draws.append(T)
                 w = f' where {fmt_cond(T.where)}' if T.where else ''
-                return f'draw "{T.glyph}"{" in " + T.colour if T.colour else ""} at ({fmt_expr(T.at[0])}, {fmt_expr(T.at[1])})' + \
-                    ('' if T.coll == STATE else f' for each {T.coll}') + w
+                o = f', {"highest" if T.order[1] else "lowest"} {T.order[0]} first' if T.order else ''
+                inked = ' in ' + (T.colour if isinstance(T.colour, str) else fmt_glyph(T.colour)) if T.colour else ''
+                return f'draw {fmt_glyph(T.glyph)}{inked} at ({fmt_expr(T.at[0])}, {fmt_expr(T.at[1])})' + \
+                    ('' if T.coll == STATE else f' for each {T.coll}') + w + o
             if T.kind not in ('update', 'remove_where'):
                 raise self.p('error', self.cur, 'what should change?',
                              'something that happens by itself has to change or remove something',
