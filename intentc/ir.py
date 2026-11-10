@@ -35,6 +35,7 @@ class Field:
     on_removed: str = None      # what happens to these records when that one is removed: cascade | restrict
     on_removed_line: int = 0
     init: object = None         # a single value's starting value
+    start_line: int = 0         # the line that gave a single value its starting value, 0 if none did
     dec: bool = False           # a number with two decimal places, kept in hundredths (type stays 'int')
 
 

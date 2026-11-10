@@ -1385,6 +1385,11 @@ class Parser:
         kinds = [c.kind for c in rest]
         if k == 0 and kinds[:2] == ['VALUE', 'STARTS'] and len(rest) == 3 and rest[2].kind in ('NUM', 'STR', 'DEC'):
             f = self.state.fields[rest[0].val]
+            if f.start_line:
+                raise self.p('error', rest[2], f'"{f.name}" already starts at '
+                             f'{fmt_dec(f.init) if f.dec else fmt_expr(("num" if f.type == "int" else "str", f.init))}',
+                             f'line {f.start_line} says so', 'a value starts once; give a new value its own name')
+            f.start_line = self.cur[0].line
             if rest[2].kind == 'DEC' and f.type == 'int':
                 f.dec, f.init = True, rest[2].val
                 return f'value {f.name} starts at {fmt_dec(f.init)}'
@@ -1405,17 +1410,21 @@ class Parser:
         words = content[:k]
         name = '_'.join(c.toks[0].text for c in words)
         known = list(self.state.fields) + list(self.prog.field_names()) + list(self.prog.collections)
-        for c in words:             # "The scroe is 5." is a slip for the score, not a new value
+        first = rest[-1] if rest[-1].kind in lit else None
+        for c in words:             # "The scroe starts at 5." is a slip for the score, not a new value
             w = singular(c.toks[0].text)
             if any(ch.isdigit() for ch in w):
                 continue            # "fill1", "fill2": a number in a name is put there on purpose
-            if len(w) > 3 and any(w != n and edit_distance(w, n) <= (1 if len(n) < 8 else 2) for n in known):
+            near = [n for n in known if len(w) > 3 and w != n and edit_distance(w, n) <= (1 if len(n) < 8 else 2)]
+            # A slip for a single value would declare it a second time, unless it has no start yet and this gives
+            # one: "The cosy starts at 1000. The cosp starts at 0." declares two values, not one twice.
+            near = [n for n in near if n not in self.state.fields or (first is not None and not self.state.fields[n].start_line)]
+            if near:
                 raise self.unknown_word(c)
         self.taken(tuple(c.toks[0].text for c in words), words)
         typ = rest[1].val if rest[1].kind == 'TYPE' else None
         dec = typ == 'dec'
         typ = 'int' if dec else typ
-        first = rest[-1] if rest[-1].kind in lit else None
         if first is not None:
             given = 'text' if first.kind == 'STR' else 'int'
             if typ and typ != given:
@@ -1423,6 +1432,7 @@ class Parser:
             typ, dec = given, dec or first.kind == 'DEC'
         f = Field(name, typ, line=self.cur[0].line)
         f.dec = dec
+        f.start_line = f.line if first is not None else 0
         f.init = first.val if first is not None else (0 if typ == 'int' else '')
         if dec and first is not None and first.kind == 'NUM':
             f.init *= 100
