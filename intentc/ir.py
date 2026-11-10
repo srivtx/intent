@@ -20,6 +20,7 @@ Conditions are tuples:
     ('any', coll, cond) | ('none', coll, cond)   cond holds for some / for no record of another collection
 """
 import json
+import math
 from dataclasses import dataclass, field as _f
 
 
@@ -204,6 +205,8 @@ def fmt_expr(e, top=True):
         return fmt_dec(e[1])
     if k == 'cents':
         return fmt_expr(e[1], top)
+    if k == 'fn':
+        return f'{e[1][1:] if e[1] in ("dsqrt", "dround", "dtrunc") else e[1]}({fmt_expr(e[2])})'
     if k == 'agg':
         what = f'{e[2]}s' if e[1] == 'count' else f'{e[3]} of {e[2]}s'
         return f'{e[1]}({what}{" where " + fmt_cond(e[4]) if e[4] else ""})'
@@ -255,11 +258,59 @@ def canon(t):
     raise ValueError(t.kind)
 
 
+# sin of 0, 1, ... 90 degrees in millionths. Written out so that every machine, and the compiled program,
+# agree on every digit; between whole degrees the value is interpolated in a straight line.
+SINE = [0, 17452, 34899, 52336, 69756, 87156, 104528, 121869, 139173, 156434, 173648, 190809, 207912, 224951, 241922, 258819, 275637, 292372, 309017, 325568, 342020, 358368, 374607, 390731, 406737, 422618, 438371, 453990, 469472, 484810, 500000, 515038, 529919, 544639, 559193, 573576, 587785, 601815, 615661, 629320, 642788, 656059, 669131, 681998, 694658, 707107, 719340, 731354, 743145, 754710, 766044, 777146, 788011, 798636, 809017, 819152, 829038, 838671, 848048, 857167, 866025, 874620, 882948, 891007, 898794, 906308, 913545, 920505, 927184, 933580, 939693, 945519, 951057, 956305, 961262, 965926, 970296, 974370, 978148, 981627, 984808, 987688, 990268, 992546, 994522, 996195, 997564, 998630, 999391, 999848, 1000000]
+
+
+def sine(a):
+    """The sine of a hundredths of a degree, in hundredths, rounded to the nearest (half away from zero)."""
+    a %= 36000
+    q, r = divmod(a, 9000)
+    if q % 2:
+        r = 9000 - r
+    k, f = divmod(r, 100)
+    s = SINE[k] * 100 + (SINE[min(k + 1, 90)] - SINE[k]) * f      # in hundred-millionths, never negative
+    s = (s + 500000) // 1000000
+    return -s if q >= 2 else s
+
+
+def root(n):
+    """The whole square root of n, rounded down (0 below 0, which a program is never allowed to reach)."""
+    return math.isqrt(n) if n > 0 else 0
+
+
+def droot(n):
+    """The square root of a decimal kept in hundredths, in hundredths, rounded to the nearest."""
+    if n <= 0:
+        return 0
+    m = n * 100
+    s = math.isqrt(m)
+    return s + 1 if m - s * s > s else s
+
+
+FNNAME = {'sqrt': 'the square root of', 'dsqrt': 'the square root of', 'sin': 'the sine of', 'cos': 'the cosine of',
+          'abs': 'the absolute value of', 'round': 'the nearest whole number to', 'dround': 'the nearest whole number to',
+          'trunc': 'the whole part of', 'dtrunc': 'the whole part of'}
+
+
+def fmt_glyph(g):
+    return f'"{g}"' if isinstance(g, str) else ('its ' if g[0] == 'field' else 'the ') + g[1]
+
+
+def draw_char(text):
+    """What a text draws on the board: its first character, if that is a plain one (! to ~); else nothing."""
+    b = text.encode()[:1]
+    return chr(b[0]) if b and 33 <= b[0] <= 126 else None
+
+
 def walk_expr(e):
     """Every value inside e, including those inside the condition of an "if"."""
     yield e
     if e[0] == 'cents':
         yield from walk_expr(e[1])
+    elif e[0] == 'fn':
+        yield from walk_expr(e[2])
     elif e[0] == 'bin':
         yield from walk_expr(e[2])
         yield from walk_expr(e[3])
