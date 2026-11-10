@@ -15,6 +15,8 @@ and for the flexibility added after the first version:
  12. Time, keys, a board, and playing in a terminal                (TestLive)
  13. Colour, chance, records that appear, hits, steps, restarting  (TestLive, from test_colour_phrasings on)
  14. One record is found through the index; rules look only where needed (TestLive.test_one_record_*)
+ 15. Counting and matching across collections, word order, numbered names (TestAcross)
+ 16. The same commands over the network, and a window                  (TestNetwork)
 """
 import os
 import random
@@ -30,7 +32,7 @@ sys.path.insert(0, ROOT)
 from intentc.check import check                 # noqa: E402
 from intentc.cli import build                   # noqa: E402
 from intentc.interp import Machine              # noqa: E402
-from intentc.ir import canon                    # noqa: E402
+from intentc.ir import canon, fmt_cond          # noqa: E402
 from intentc.parser import parse                # noqa: E402
 from intentc.plan import make_plan              # noqa: E402
 
@@ -1899,6 +1901,388 @@ class TestLive(TestNativeAgainstReference):
         self.assertEqual(meaning('Show the skus whose stock is under 5 and whose status is "live".', base),
                          'list all of sku where stock < 5 and status == "live"')
         self.assertEqual(meaning('Show the menus whose bonus is over 2.', base), 'list all of menu where bonus > 2')
+
+
+FIELD = ('The board is 12 wide and 8 high.\n'
+         'The hurt starts at 0. The clear starts at 0. The gap starts at 0.\n'
+         'Shots have an x (number) and a y (number).\n'
+         'Aliens have an x (number), a y (number) and a hit (number).\n'
+         'Cells have an x (number) and a y (number).\n'
+         'Bombs have an x (number) and a y (number).\n')
+
+BATTLE = FIELD + '''The fill1 starts at 0. The fill2 starts at 0.
+At the start there is an alien whose x is 3, whose y is 2 and whose hit is 0.
+At the start there is an alien whose x is 5, whose y is 2 and whose hit is 0.
+At the start there is an alien whose x is 7, whose y is 4 and whose hit is 0.
+At the start there is a cell whose x is 1 and whose y is 8.
+At the start there is a cell whose x is 2 and whose y is 8.
+At the start there is a cell whose x is 3 and whose y is 8.
+At the start there is a cell whose x is 3 and whose y is 7.
+At the start there is a cell whose x is 3 and whose y is 6.
+Draw each alien as a green "A" at its x and y.
+Draw each shot as a yellow "|" at its x and y.
+Draw each cell as a blue "#" at its x and y.
+When space is pressed, add a shot whose x is 3 and whose y is 8.
+When a is pressed, add a shot whose x is 7 and whose y is 6 if the number of shots is under 3.
+When b is pressed, add a cell whose x is the number of cells plus 1 and whose y is 5.
+Every 100 milliseconds, decrease the y of the shots by 1.
+Every 100 milliseconds, set the hit of the aliens to 1 if any shot has an x equal to the alien's x and a y equal to its y.
+Every 100 milliseconds, remove the shots that have the same x and y as an alien.
+Every 100 milliseconds, if the hurt is 0, remove the aliens whose hit is 1.
+Every 100 milliseconds, remove the shots whose y is under 1.
+Every 100 milliseconds, set the fill1 to the number of cells whose y is 8.
+Every 100 milliseconds, set the fill2 to the total of the x of the cells.
+Every 100 milliseconds, set the gap to the largest y of the cells where the number of cells with the same y is 3.
+When d is pressed, remove the cells if the number of cells with the same y is 3.
+When e is pressed, increase the y of the cells whose y is under the gap by 1 if the gap is over 0.
+When f is pressed, increase the x of the cells by 1 if the number of cells with the same y is over 1.
+When g is pressed, remove the cells whose x is the x of any alien.
+Show the fill1, the fill2 and the gap above the board.
+The game is over when the number of aliens is 0.
+'''
+
+
+class TestAcross(TestNativeAgainstReference):
+    script = TestLive.script
+
+    def events(self, text, base=FIELD):
+        prog, diags, _ = understand(text, base)
+        self.assertEqual([d.msg for d in diags], [], text)
+        return [canon(t) for t in prog.events]
+
+    def test_a_condition_in_front_and_one_behind(self):
+        for a, b in [('Every second, if the hurt is 1, remove the bombs whose y is at least 7.',
+                      'Every second, remove the bombs whose y is at least 7 if the hurt is 1.'),
+                     ('Every second, increase the y of the cells whose y is under 1 by 1 if the clear is 1.',
+                      "Every second, increase each cell's y by 1 if its y is under 1 and the clear is 1."),
+                     ('Every second, if the clear is 1, increase the y of the cells whose y is under 1 by 1.',
+                      'Every second, increase the y of the cells whose y is under 1 by 1 if the clear is 1.')]:
+            with self.subTest(a):
+                first, second = self.events(a)[0], self.events(b)[0]
+                self.assertEqual(first.split(' where ')[0], second.split(' where ')[0])
+                self.assertEqual(sorted(first.split(' where ')[1].split(' and ')),
+                                 sorted(second.split(' where ')[1].split(' and ')))
+
+    def test_names_with_a_number_in_them(self):
+        prog, diags, _ = understand('The fill1 starts at 0.\nThe fill2 starts at 0.\nThe fill10 starts at 3.\n'
+                                    'Every second, increase the fill2 by the fill1.', FIELD)
+        self.assertEqual(diags, [])
+        self.assertEqual(canon(prog.events[0]), 'set fill2 = fill2 + fill1')
+        prog, diags, _ = understand('The hurtt starts at 5.', FIELD)     # a slip is still a slip, not a new value
+        self.assertEqual(diags, [])
+        self.assertNotIn('hurtt', prog.collections['(values)'].fields)
+        self.assertEqual(prog.collections['(values)'].fields['hurt'].init, 5)
+
+    def test_counting_phrasings(self):
+        for text in ['Every second, set the clear to 1 if the number of cells whose y is 3 is 8.',
+                     'Every second, set the clear to 1 if the count of cells whose y is 3 is 8.',
+                     'Every second, set the clear to 1 if the number of cells with a y of 3 is 8.',
+                     'Every second, if the number of cells whose y is 3 is 8, set the clear to 1.',
+                     'Every second, the clear becomes 1 if the count of cells where the y is 3 equals 8.']:
+            with self.subTest(text):
+                self.assertEqual(self.events(text), ['set clear = 1 where count(cells where y == 3) == 8'])
+        self.assertEqual(self.events('Every second, set the gap to the number of cells.'), ['set gap = count(cells)'])
+        self.assertEqual(self.events('Every second, set the gap to the total of the x of the cells whose y is over 2.'),
+                         ['set gap = sum(x of cells where y > 2)'])
+        self.assertEqual(self.events('Every second, set the gap to the largest y of the cells.'),
+                         ['set gap = max(y of cells)'])
+        self.assertEqual(self.events('Every second, increase the hurt by the number of aliens whose hit is 1.'),
+                         ['set hurt = hurt + count(aliens where hit == 1)'])
+        self.assertEqual(self.events('Every second, remove the cells if the number of cells with the same y is 8.'),
+                         ['remove cell where count(cells where y == its y) == 8'])
+        self.assertEqual(self.events('Every second, set the gap to the largest y of the cells where the number of '
+                                     'cells with the same y is 10.'),
+                         ['set gap = max(y of cells where count(cells where y == its y) == 10)'])
+        self.assertEqual(self.events('When space is pressed, add a shot whose x is 1 and whose y is 1 if the number '
+                                     'of shots is under 3.'), ['new shot: x = 1, y = 1 where count(shots) < 3'])
+        prog, diags, _ = understand('The game is over when the number of aliens is 0.', FIELD)
+        self.assertEqual(diags, [])
+        self.assertEqual(fmt_cond(prog.ends[0].where), 'count(aliens) == 0')
+        # asking for a count is still a command, and a ranking is still a ranking
+        self.assertEqual(meaning('How many cells have a y of 3?', FIELD), 'count() of cell where y == 3')
+        self.assertEqual(meaning('Show the cell with the largest y.', FIELD),
+                         'list all of cell sorted by y descending, first 1')
+
+    def test_matching_phrasings(self):
+        both = 'remove alien where any shot has (x == its x and y == its y)'
+        for text in ["Every second, remove the aliens if any shot has an x equal to an alien's x and a y equal to its y.",
+                     'Every second, remove the aliens if any shot has an x equal to its x and a y equal to its y.',
+                     'Every second, remove the aliens that have the same x and y as a shot.',
+                     'Every second, remove each alien that is at the same x and y as a shot.',
+                     'Every second, remove the aliens if any shot has the same x and y.',
+                     'Every second, if any shot has the same x and y as the alien, remove the aliens.']:
+            with self.subTest(text):
+                self.assertEqual(self.events(text), [both])
+        self.assertEqual(self.events('Every second, remove the aliens whose x is the x of any shot.'),
+                         ['remove alien where any shot has x == its x'])
+        self.assertEqual(self.events('Every second, remove the bombs that do not have the same x as an alien.'),
+                         ['remove bomb where no alien has x == its x'])
+        self.assertEqual(self.events('Every second, decrease the y of the aliens whose y is over the y of any bomb by 1.'),
+                         ['update alien: y = y - 1 where any bomb has y < its y'])
+        self.assertEqual(self.events('Every second, set the hit of the aliens to 1 if any shot has the same x and y.'),
+                         ['update alien: hit = 1 where any shot has (x == its x and y == its y)'])
+        self.assertEqual(self.events('Every second, if the hurt is 1 and no bomb has a y over 3, set the clear to 2.'),
+                         ['set clear = 2 where (no bomb has y > 3) and hurt == 1'])
+        # a sentence that is about those very records keeps its old meaning
+        self.assertEqual(self.events('Every second, remove the bombs if any bomb has a y over 7.'),
+                         ['remove bomb where y > 7'])
+
+    def test_what_is_asked_about_other_records(self):
+        for text, msg in [('Every second, set the hurt to 1 if any shot has an x equal to its y.', 'whose y is this?'),
+                          ("Every second, remove the aliens if any shot has an x equal to the bomb's x.",
+                           'this sentence is about Aliens, not about a bomb'),
+                          ('Every second, remove the aliens if any shot has the same hit.',
+                           'Shots has no property "hit"'),
+                          ('Every second, set the y of the cells to the number of cells whose y is over its y.',
+                           'this works out the new "y" from the "y" of the other cells while changing them'),
+                          ('When space is pressed, add a shot whose x is 1 and whose y is 1 if any alien has an x '
+                           'equal to its y.', 'whose y is this?'),
+                          ('Every second, set the hurt to the number of cells whose colour is 3.',
+                           'I don\'t know the word "colour"')]:
+            with self.subTest(text):
+                _, diags, _ = understand(text, FIELD)
+                self.assertEqual([d.msg for d in diags], [msg])
+        # the same value may be read from the other records as long as it is not the one being changed
+        self.assertEqual(self.events('Every second, set the y of the cells to the number of cells whose x is over its x.'),
+                         ['update cell: y = count(cells where x > its x)'])
+
+    def test_the_plan_says_what_looking_costs(self):
+        prog, diags, p = understand('', BATTLE)
+        self.assertEqual(diags, [])
+        plan = make_plan(prog)
+        hit = next(t for t in prog.events if 'hit = 1' in canon(t))
+        self.assertEqual(plan.tasks[hit.name][0], 'O(n x m)')
+        self.assertIn('for each one, a pass over the shots', plan.tasks[hit.name][1])
+        fill = next(t for t in prog.events if canon(t).startswith('set fill1'))
+        self.assertEqual(plan.tasks[fill.name][0], 'O(1)')
+        self.assertIn('a pass over the cells', plan.tasks[fill.name][1])
+
+    def test_counting_and_matching_natively(self):
+        for seed in range(5):
+            rng = random.Random(seed)
+            cmds = []
+            for _ in range(250):
+                cmds.append(rng.choice(['wait 100'] * 5 + ['press space', 'press a', 'press b', 'press b', 'press d',
+                                                           'press e', 'press f', 'press g', 'screen', 'picture',
+                                                           'wait 300', 'restart']))
+            self.script(f'battle{seed}', BATTLE, cmds + ['screen'])
+
+    def test_which_records_change_is_decided_first(self):
+        # the native program keeps records in another order after a removal; the answer must not depend on it
+        text = ('Stones is a collection. Each stone has a name (text), a row (number) and a mark (number).\n'
+                'Names are unique. Reject duplicates.\n'
+                'Put: add a stone.\nDrop: remove a stone by name.\nRoll: show the stones sorted by name.\n'
+                'Clear: remove the stones if the number of stones with the same row is 3.\n'
+                'Tag: set the mark of the stones to 1 if the number of stones whose mark is 0 is over 2.\n'
+                'Pairs: increase the mark of the stones by 10 if the number of stones with the same row is over 1.\n'
+                'Crowd: show the number of stones.\n')
+        cmds = [f'put s{i},{i % 4},0' for i in range(14)] + ['drop s1', 'drop s6', 'roll', 'tag', 'roll', 'pairs', 'roll',
+                                                             'clear', 'roll', 'drop s0', 'put s20,2,0', 'put s21,2,0',
+                                                             'clear', 'roll', 'tag', 'pairs', 'roll', 'crowd']
+        self.script('stones', text, cmds)
+        prog, _, _ = understand('', text)
+        m = Machine(prog)
+        for c in ['put a,1,0', 'put b,1,0', 'put c,1,0', 'put d,2,0', 'clear']:
+            m.run(c)
+        self.assertEqual(m.run('roll'), ['d,2,0'])               # all three went: none saw the others already gone
+        for c in ['put e,2,0', 'put f,2,0', 'tag']:
+            m.run(c)
+        self.assertEqual(m.run('roll'), ['d,2,1', 'e,2,1', 'f,2,1'])     # the third was tagged too
+
+    def test_a_game_with_no_single_values(self):
+        text = ('The board is 6 wide and 3 tall.\nAliens have an x (number) and a y (number).\n'
+                'At the start there is an alien whose x is 2 and whose y is 2.\n'
+                'Draw each alien as "A" at its x and y.\n'
+                'When space is pressed, remove the aliens whose x is 2.\n'
+                'The game is over when the number of aliens is 0.\n')
+        _, out = self.script('novalues', text, ['screen', 'press space', 'picture', 'press space', 'restart', 'picture'])
+        self.assertEqual(out[5:15], ['+------+', '|      |', '|      |', '|      |', '+------+', '~',
+                                     '......', '......', '......', 'the game is over'])
+        self.assertEqual(out[15], 'the game is over')
+        self.assertEqual(out[-4:], ['~', '......', '......', '......'])
+
+    def shooter(self):
+        with open(os.path.join(ROOT, 'examples', 'shooter.intent')) as fh:
+            return fh.read()
+
+    def test_shooter_natively(self):
+        for seed in range(3):
+            rng = random.Random(seed)
+            cmds = ['screen']
+            for _ in range(500):
+                cmds.append(rng.choice(['press space'] * 3 + ['press left'] * 2 + ['press right'] * 2 +
+                                       ['wait 60', 'wait 120', 'wait 400', 'wait 37', 'picture']))
+            self.script(f'shooter{seed}', self.shooter(), cmds + ['screen'])
+
+    def test_shooter_can_be_won(self):
+        prog, diags, _ = understand('', self.shooter())
+        self.assertEqual(diags, [])
+        m = Machine(prog)
+        for _ in range(2000):                   # stand under the lowest alien there is and keep firing
+            if m.over():
+                break
+            target = max(m.data['alien'], key=lambda a: a['y'])
+            col = m.data['(values)'][0]['column']
+            m.run('press left' if target['x'] < col else 'press right' if target['x'] > col else 'press space')
+            m.run('wait 60')
+        self.assertTrue(m.over())
+        self.assertEqual(m.data['alien'], [])
+        self.assertEqual(m.data['(values)'][0]['score'], 9)
+
+    def test_picture(self):
+        _, out = self.script('pic', BATTLE, ['press space', 'wait 400', 'picture'])
+        cut = out.index('~')
+        self.assertEqual(out[cut - 10], '+------------+')
+        self.assertEqual(out[cut + 2], '..g.g.......')      # the aliens, in green
+        self.assertEqual(out[cut + 4], '..y...g.....')      # the shot on its way up, and the third alien
+        self.assertEqual(out[cut + 7], '..b.........')
+        self.assertEqual(out[cut + 8], 'bbb.........')
+        self.assertEqual(len(out) - cut, 9)                 # nothing after the colours: the game goes on
+
+
+class TestNetwork(TestNativeAgainstReference):
+    """A served program takes the commands it takes on stdin, and answers each caller."""
+    script = TestLive.script
+
+    def port(self):
+        import socket
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0))
+            return s.getsockname()[1]
+
+    def serving(self, argv):
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, cwd=ROOT)
+        self.addCleanup(p.stdout.close)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        self.assertIn('serving on port', p.stdout.readline())
+        return p
+
+    def raw(self, port, text):
+        import socket
+        with socket.create_connection(('127.0.0.1', port), timeout=10) as s:
+            s.sendall(text.encode())
+            s.shutdown(socket.SHUT_WR)
+            out = b''
+            while True:
+                got = s.recv(65536)
+                if not got:
+                    return out.decode()
+                out += got
+
+    def get(self, port, path):
+        import urllib.request
+        return urllib.request.urlopen(f'http://127.0.0.1:{port}{path}', timeout=10).read().decode()
+
+    def post(self, port, body):
+        import urllib.request
+        req = urllib.request.Request(f'http://127.0.0.1:{port}/', data=body.encode())
+        return urllib.request.urlopen(req, timeout=10).read().decode()
+
+    def customers(self):
+        src, exe = os.path.join(ROOT, 'examples', 'customers.intent'), os.path.join(self.dir, 'netcustomers')
+        self.assertIsNotNone(build(src, exe, quiet=True))
+        return src, exe
+
+    def talk(self, port):
+        """One conversation, the same for either server."""
+        said = [self.post(port, 'add ann,30,a@x\nadd bob,17,b@x\nlist\ncount\n'),
+                self.get(port, '/find-by-email/a%40x'),
+                self.get(port, '/count'),
+                self.raw(port, 'add cy,40,c@x\nadults\ncount\nnonsense\n'),
+                self.get(port, '/list-by-age'),
+                self.post(port, 'remove-by-email b@x\ncount')]
+        page = self.get(port, '/')
+        self.assertTrue(page.startswith('<!doctype html>'))
+        self.assertIn('find-by-email &lt;email>', page)
+        return said
+
+    def test_the_same_answers_from_both_servers(self):
+        src, exe = self.customers()
+        port = self.port()
+        self.serving([exe, 'serve', str(port)])
+        native = self.talk(port)
+        port = self.port()
+        self.serving([sys.executable, '-m', 'intentc.cli', 'serve', src, '--port', str(port)])
+        self.assertEqual(self.talk(port), native)
+        self.assertEqual(native, ['ann,30,a@x\nbob,17,b@x\n2\n', 'ann,30,a@x\n', '2\n',
+                                  'ann\ncy\n3\nerror: unknown command nonsense\n',
+                                  'cy,40,c@x\nann,30,a@x\nbob,17,b@x\n', '2\n'])
+
+    def test_many_callers_at_once(self):
+        import socket
+        _, exe = self.customers()
+        port = self.port()
+        self.serving([exe, 'serve', str(port)])
+        conns = [socket.create_connection(('127.0.0.1', port), timeout=10) for _ in range(20)]
+        for i, c in enumerate(conns):               # half a command each, then the rest: nobody waits for anybody
+            c.sendall(f'add p{i},{20 + i}'.encode())
+        for i, c in enumerate(conns):
+            c.sendall(f',p{i}@x\ncount\n'.encode())
+        counts = sorted(int(c.makefile().readline()) for c in conns)
+        self.assertEqual(counts, list(range(1, 21)))
+        long = ''.join(f'find-by-email p{i % 20}@x\n' for i in range(3000))     # far more than arrives in one piece
+        self.assertEqual(self.raw(port, long), ''.join(f'p{i % 20},{20 + i % 20},p{i % 20}@x\n' for i in range(3000)))
+        for c in conns:
+            c.close()
+
+    def test_a_served_program_remembers(self):
+        _, exe = self.customers()
+        journal = os.path.join(self.dir, 'net.journal')
+        port = self.port()
+        p = self.serving([exe, 'serve', str(port), journal])
+        self.post(port, 'add ann,30,a@x\nadd bob,17,b@x\ncount\n')
+        self.get(port, '/double-age')
+        p.kill()
+        p.wait()
+        with open(journal) as fh:
+            self.assertEqual(fh.read(), 'add ann,30,a@x\nadd bob,17,b@x\ndouble-age\n')
+        port = self.port()
+        self.serving([exe, 'serve', str(port), journal])
+        self.assertEqual(self.get(port, '/list'), 'ann,60,a@x\nbob,34,b@x\n')
+
+    def test_serving_needs_a_port(self):
+        _, exe = self.customers()
+        got = subprocess.run([exe, 'serve'], capture_output=True, text=True, timeout=10)
+        self.assertEqual((got.returncode, got.stdout), (1, 'error: serve needs a port, e.g. "serve 8080"\n'))
+        port = self.port()
+        self.serving([exe, 'serve', str(port)])
+        got = subprocess.run([exe, 'serve', str(port)], capture_output=True, text=True, timeout=10)
+        self.assertEqual((got.returncode, got.stdout), (1, f'error: cannot listen on port {port}\n'))
+
+    def test_a_served_game_lives_in_real_time(self):
+        import time
+        src, exe = os.path.join(ROOT, 'examples', 'snake.intent'), os.path.join(self.dir, 'netsnake')
+        self.assertIsNotNone(build(src, exe, quiet=True))
+        for argv in ([exe, 'serve'], [sys.executable, '-m', 'intentc.cli', 'serve', src, '--port']):
+            with self.subTest(argv[0]):
+                port = self.port()
+                self.serving(argv + [str(port)])
+                page = self.get(port, '/')
+                self.assertIn('<canvas', page)
+                self.assertIn('"board": [30, 14]', page)
+                self.assertIn('"keys": ["left", "right", "up", "down"]', page)
+                first = self.get(port, '/picture')
+                self.assertEqual(first.split('\n')[17], '~')
+                self.post(port, 'press down\n')
+                time.sleep(0.6)
+                later = self.get(port, '/picture')
+                self.assertNotEqual(first, later)               # nobody sent "wait": the clock did
+                head = lambda pic: next(y for y, row in enumerate(pic.split('\n')) if '@' in row)  # noqa: E731
+                self.assertGreater(head(later), head(first))            # and it went the way the key said
+                self.assertIn('y', later.split('~')[1])         # the head is yellow in the picture
+
+    def test_the_page_comes_from_the_program(self):
+        from intentc.web import from_path, page, title_of
+        prog, _, _ = understand('', BATTLE)
+        html = page(prog, title_of('games/space-battle.intent'))
+        self.assertIn('<title>space battle</title>', html)
+        self.assertIn('"board": [12, 8]', html)
+        self.assertIn('"restart": true', html)
+        prog, _, _ = understand('Find a customer by email.\n')
+        self.assertIn('"board": null', page(prog, 'x'))
+        self.assertEqual(from_path('/find-by-name/ann%20lee?x=1'), 'find-by-name ann lee')
+        self.assertEqual(from_path('/count'), 'count')
 
 
 if __name__ == '__main__':

@@ -1,0 +1,50 @@
+# A small shooter. Left and right move the ship, space fires, and at most three shots
+# are in the air at once. Every shot is checked against every alien: that is the two
+# sentences with "the same x and y" below.
+#
+#     ./intent run examples/shooter.intent        play it in a terminal
+#     ./intent window examples/shooter.intent     play it in a window, in colour
+#     ./intent build examples/shooter.intent && examples/shooter serve 8080
+#                                                 the compiled game serves its own window
+
+The board is 28 wide and 14 high.
+The column starts at 14.
+The score starts at 0.
+The drift starts at 1.
+
+Shots have an x and a y.
+Aliens have an x, a y and a hit.
+
+At the start there is an alien whose x is 4, whose y is 2 and whose hit is 0.
+At the start there is an alien whose x is 8, whose y is 2 and whose hit is 0.
+At the start there is an alien whose x is 12, whose y is 2 and whose hit is 0.
+At the start there is an alien whose x is 16, whose y is 2 and whose hit is 0.
+At the start there is an alien whose x is 20, whose y is 2 and whose hit is 0.
+At the start there is an alien whose x is 6, whose y is 4 and whose hit is 0.
+At the start there is an alien whose x is 10, whose y is 4 and whose hit is 0.
+At the start there is an alien whose x is 14, whose y is 4 and whose hit is 0.
+At the start there is an alien whose x is 18, whose y is 4 and whose hit is 0.
+
+When left is pressed, decrease the column by 1 if the column is over 1.
+When right is pressed, increase the column by 1 if the column is under 28.
+When space is pressed, add a shot whose x is the column and whose y is 13 if the number of shots is under 3.
+
+Every 60 milliseconds, decrease the y of the shots by 1.
+Every 60 milliseconds, set the hit of the aliens to 1 if any shot has the same x and y.
+Every 60 milliseconds, remove the shots that have the same x and y as an alien.
+Every 60 milliseconds, increase the score by the number of aliens whose hit is 1.
+Every 60 milliseconds, remove the aliens whose hit is 1.
+Every 60 milliseconds, remove the shots whose y is under 1.
+
+Every 400 milliseconds, increase the x of the aliens by the drift.
+Every 400 milliseconds, set the drift to -1 if any alien has an x over 26.
+Every 400 milliseconds, set the drift to 1 if any alien has an x under 3.
+Every 5 seconds, increase the y of the aliens by 1.
+
+The game is over when the number of aliens is 0.
+The game is over when any alien's y is over 12.
+
+Draw each alien as a green "W" at its x and y.
+Draw each shot as a yellow "|" at its x and y.
+Draw a cyan "A" at the column and 14.
+Show the score above the board.
