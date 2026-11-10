@@ -1217,6 +1217,8 @@ class Gen:
         how = 'swap the last record into the hole' if cp.removal == 'swap' else 'close the gap, keeping order'
         f = self.fn(g(C, 'remove_row'), params='i64 %row', comment=f'{C}: remove one record; {how}')
         p = self.rec(f, c, '%row')
+        for k in cp.orders:             # taken out while its key can still be read
+            f.e(f'call void {g(C, k, "drop")}(i64 %row)')
 
         def retarget(rec, value):
             for k in cp.indexes:
@@ -1234,7 +1236,11 @@ class Gen:
             f.at(move)
             lp = self.rec(f, c, last)
             retarget(lp, f.r('add i64 %row, 1'))
+            for k in cp.orders:         # the last row gets a new number: out, then back in under it
+                f.e(f'call void {g(C, k, "drop")}(i64 {last})')
             f.e(f'call ptr @memmove(ptr {p}, ptr {lp}, i64 {size})')
+            for k in cp.orders:
+                f.e(f'call void {g(C, k, "insert")}(i64 %row)')
             f.br(done)
             f.at(done)
             f.store('i64', last, g(C, 'len'))
@@ -1244,6 +1250,8 @@ class Gen:
             f.e(f'call ptr @memmove(ptr {p}, ptr {nxt}, i64 {nbytes})')
             f.store('i64', last, g(C, 'len'))
             f.e(f'call void {g(C, "reindex")}()')
+            for k in cp.orders:
+                f.e(f'call void {g(C, k, "shift")}(i64 %row)')
         f.e('ret void')
 
     # ------------------------------------------------------------------ tasks
@@ -1320,6 +1328,7 @@ class Gen:
         kept = f.load('i64', j)
         f.store('i64', kept, g(C, 'len'))
         f.e(f'call void {g(C, "reindex")}()')
+        self.stale(f, c)
         return kept
 
     def mark(self, f, differs):
@@ -1363,8 +1372,12 @@ class Gen:
                     f.store('i32', '1', '@dirty')
                     f.store('i64', row, '@touched')
                     rec = self.rec(f, c, row)
+                    for ox in cp.orders:
+                        f.e(f'call void {g(C, ox, "drop")}(i64 {row})')
                     f.e(f'call void {g(C, "free")}(ptr {rec})')
                     self.store_record(f, c, rec, vals)
+                    for ox in cp.orders:
+                        f.e(f'call void {g(C, ox, "insert")}(i64 {row})')
                 else:
                     self.puts(f, f'duplicate {fl.name}')
                 f.e('ret void')
@@ -1377,6 +1390,8 @@ class Gen:
             f.store('i64', n, '@touched')
             for ix in cp.indexes:
                 f.e(f'call void {g(C, ix, "put")}(i64 {n})')
+            for ox in cp.orders:
+                f.e(f'call void {g(C, ox, "insert")}(i64 {n})')
         elif k == 'make':               # a record that appears by itself; a clash is passed over in silence
             go, out = f.lab('go'), f.lab('out')
             f.cbr(self.cond(f, t.where, c, None, vals), go, out)
@@ -1389,8 +1404,12 @@ class Gen:
                 f.at(clash)
                 if c.on_dup == 'replace':
                     rec = self.rec(f, c, row)
+                    for ox in cp.orders:
+                        f.e(f'call void {g(C, ox, "drop")}(i64 {row})')
                     f.e(f'call void {g(C, "free")}(ptr {rec})')
                     self.store_record(f, c, rec, made)
+                    for ox in cp.orders:
+                        f.e(f'call void {g(C, ox, "insert")}(i64 {row})')
                 f.br(out)
                 f.at(ok)
             f.e(f'call void {g(C, "grow")}()')
@@ -1399,6 +1418,8 @@ class Gen:
             f.store('i64', f.r(f'add i64 {n}, 1'), g(C, 'len'))
             for ix in cp.indexes:
                 f.e(f'call void {g(C, ix, "put")}(i64 {n})')
+            for ox in cp.orders:
+                f.e(f'call void {g(C, ox, "insert")}(i64 {n})')
             f.br(out)
             f.at(out)
         elif k in ('find', 'remove_key') and c.fields[t.key].unique:
@@ -1464,12 +1485,27 @@ class Gen:
         elif k == 'update':
             if not rule:
                 f.store('i32', '1', '@dirty')
-
+            moved = [k for k in cp.orders if any(name == k for name, _ in t.assigns)]
             if decides_first(t) and t.name not in self.plan.picks:
+                self.stale(f, c, moved)
                 marks = self.decided(f, t, c, vals)
                 self.rows(f, c, self.update_body(f, t, c, vals, rule, marks))
                 f.e(f'call void @free(ptr {marks})')
+            elif t.name in self.plan.picks and moved:
+                change = self.update_body(f, t, c, vals, rule)
+
+                def body(i, cont):      # the one record: out of the ordered index, changed, back in
+                    for k in moved:
+                        f.e(f'call void {g(C, k, "drop")}(i64 {i})')
+                    back = f.lab('back')
+                    change(i, back)
+                    f.br(back)
+                    f.at(back)
+                    for k in moved:
+                        f.e(f'call void {g(C, k, "insert")}(i64 {i})')
+                self.visit(f, t, c, body, vals)
             else:
+                self.stale(f, c, moved)
                 self.visit(f, t, c, self.update_body(f, t, c, vals, rule), vals)
         elif k == 'list':
             names = t.fields or list(c.fields)
@@ -2542,6 +2578,7 @@ class Gen:
             self.rows(f, c, lambda i, cont, c=c: f.e(f'call void {g(c.name, "free")}(ptr {self.rec(f, c, i)})'))
             f.store('i64', '0', g(c.name, 'len'))
             f.e(f'call void {g(c.name, "reindex")}()')
+            self.stale(f, c)
         for i, t in enumerate(self.prog.timers()):
             f.store('i64', str(t.on[1]), g('left', str(i)))
         f.e('call void @start()')
@@ -2570,6 +2607,8 @@ class Gen:
                 f.store('i64', f.r(f'add i64 {n}, 1'), g(c.name, 'len'))
                 for ix in cp.indexes:
                     f.e(f'call void {g(c.name, ix, "put")}(i64 {n})')
+                for ox in cp.orders:
+                    f.e(f'call void {g(c.name, ox, "insert")}(i64 {n})')
 
             def count(k, counted, s=s, c=c, one=one):
                 if k == len(s.ranges):      # every combination, the first range outermost
