@@ -1,0 +1,190 @@
+Traders  —  handle: text (unique), cash_cent: number, margin_limit: number, realized_pnl: number, risk_score: number, tier: number, frozen: number
+  order: not part of the meaning
+
+  storage: one growable array of trader records, 56 bytes each
+  index on handle: open-addressing hash table from the property to the row number
+      because line 22: handle is unique, so every add must look for an existing handle
+      because line 71: "lookup-trader" picks one trader by handle on every call
+      because line 72: "drop-trader" picks one trader by handle on every call
+  removal swaps in the last row: O(1), but changes the stored order
+      because line 72: "drop-trader" removes one trader
+      because line 20: nothing says the order matters
+
+Assets  —  ticker: text (unique), mark_price: number, prev_close: number, volatility_bp: number, volume: number, high_watermark: number, halted: number
+  order: not part of the meaning
+
+  storage: one growable array of asset records, 56 bytes each
+  index on ticker: open-addressing hash table from the property to the row number
+      because line 27: ticker is unique, so every add must look for an existing ticker
+      because line 92: "quote-asset" picks one asset by ticker on every call
+      because line 93: "delist-asset" picks one asset by ticker on every call
+  removal swaps in the last row: O(1), but changes the stored order
+      because line 93: "delist-asset" removes one asset
+      because line 25: nothing says the order matters
+
+Orders  —  order_id: number (unique), buyer_or_seller: text, symbol: text, side: number, limit_price: number, qty: number, notional: number, priority_rank: number, status: number
+  order: not part of the meaning
+
+  storage: one growable array of order records, 72 bytes each
+  index on order_id: open-addressing hash table from the property to the row number
+      because line 32: order_id is unique, so every add must look for an existing order_id
+      because line 110: "inspect-order" picks one order by order_id on every call
+      because line 111: "cancel-order" picks one order by order_id on every call
+  removal swaps in the last row: O(1), but changes the stored order
+      because line 111: "cancel-order" removes one order
+      because line 30: nothing says the order matters
+
+Positions  —  pos_key: text (unique), holder: text, asset_sym: text, unit: number, entry_price: number, current_price: number, unrealized_pnl: number, leverage_bp: number, margin_used: number, liquidated: number
+  order: not part of the meaning
+
+  storage: one growable array of position records, 80 bytes each
+  index on pos_key: open-addressing hash table from the property to the row number
+      because line 37: pos_key is unique, so every add must look for an existing pos_key
+      because line 131: "inspect-position" picks one position by pos_key on every call
+      because line 132: "close-position" picks one position by pos_key on every call
+  removal swaps in the last row: O(1), but changes the stored order
+      because line 132: "close-position" removes one position
+      because line 35: nothing says the order matters
+
+Audits  —  seq_no: number (unique), category: text, actor: text, delta_cent: number, severity: number, epoch: number
+  order: insertion order is kept
+
+  storage: one growable array of audit records, 48 bytes each
+  index on seq_no: open-addressing hash table from the property to the row number
+      because line 42: seq_no is unique, so every add must look for an existing seq_no
+      because line 150: "find-audit" picks one audit by seq_no on every call
+      because line 151: "redact-audit" picks one audit by seq_no on every call
+  removal closes the gap: later rows move up one place, O(n)
+      because line 44: insertion order is part of the meaning
+      because line 151: "redact-audit" removes one audit
+
+Commands the compiled program accepts (one per line on stdin):
+
+  register-trader <handle>,<cash_cent>,<margin_limit>,<realized_pnl>,<risk_score>,<tier>,<frozen>                                               O(1) expected  probe the index for a clash, then append
+                                                                                                                                                line 70: register-trader: add a trader
+  lookup-trader <handle>                                                                                                                        O(1) expected  one index probe
+                                                                                                                                                line 71: lookup-trader: find a trader by handle
+  drop-trader <handle>                                                                                                                          O(1) expected  index probe, swap the last row into the hole
+                                                                                                                                                line 72: drop-trader: remove a trader by handle
+  deposit-cash <amount>,<handle>                                                                                                                O(n)           one pass, changed in place
+                                                                                                                                                line 74: deposit-cash: increase cash_cents by a given amount for traders whose handle is a given handle
+  withdraw-cash <amount>,<handle>                                                                                                               O(n)           one pass, changed in place
+                                                                                                                                                line 75: withdraw-cash: decrease cash_cents by a given amount for traders whose handle is a given handle
+  book-pnl <delta>,<handle>                                                                                                                     O(n)           one pass, changed in place
+                                                                                                                                                line 76: book-pnl: for every trader whose handle is a given handle, increase cash_cents by a given delta, then increase realized_pnl by a given delta
+  recompute-trader-risk                                                                                                                         O(n)           one pass, changed in place
+                                                                                                                                                line 77: recompute-trader-risk: for every active trader, set risk_score to (risk_score * 90) / 100 + 50
+  freeze-risky-traders                                                                                                                          O(n)           one pass, changed in place
+                                                                                                                                                line 78: freeze-risky-traders: for every risky trader, set frozen to 1
+  unfreeze-trader <handle>                                                                                                                      O(n)           one pass, changed in place
+                                                                                                                                                line 79: unfreeze-trader: set frozen to 0 for traders whose handle is a given handle
+  promote-whales                                                                                                                                O(n)           one pass, changed in place
+                                                                                                                                                line 80: promote-whales: for every active trader whale, increase tier by 1 and increase margin_limit by 25 percent
+  top-traders                                                                                                                                   O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                                                                line 82: top-traders: show the top 5 traders by cash_cents
+  whales                                                                                                                                        O(n log n)     collect matching row numbers, sort them, print
+                                                                                                                                                line 83: whales: show the handle, cash_cents and tier of active traders whale sorted by cash_cents descending
+  frozen-traders                                                                                                                                O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                                                line 84: frozen-traders: show the handle and risk_score of traders whose frozen is 1
+  total-exchange-cash                                                                                                                           O(n)           one pass, constant extra memory
+                                                                                                                                                line 85: total-exchange-cash: what is the total cash_cents of traders
+  average-trader-risk                                                                                                                           O(n)           one pass, constant extra memory
+                                                                                                                                                line 86: average-trader-risk: what is the average risk_score of active traders
+  active-trader-count                                                                                                                           O(n)           one pass, constant extra memory
+                                                                                                                                                line 87: active-trader-count: how many active traders are there
+  upsert-asset <ticker>,<mark_price>,<prev_close>,<volatility_bp>,<volume>,<high_watermark>,<halted>                                            O(1) expected  probe the index for a clash, then append
+                                                                                                                                                line 91: upsert-asset: add an asset
+  quote-asset <ticker>                                                                                                                          O(1) expected  one index probe
+                                                                                                                                                line 92: quote-asset: find an asset by ticker
+  delist-asset <ticker>                                                                                                                         O(1) expected  index probe, swap the last row into the hole
+                                                                                                                                                line 93: delist-asset: remove an asset by ticker
+  tick-asset-price <new_price>,<trade_qty>,<ticker>                                                                                             O(n)           one pass, changed in place
+                                                                                                                                                line 96: tick-asset-price: for every asset whose ticker is a given ticker and halted is 0, set mark_price to a given new_price, then increase volume by a given trade_qty, then set volatility_bps to (volatility_bps * 80) / 100 + 20
+  update-high-watermarks                                                                                                                        O(n)           one pass, changed in place
+                                                                                                                                                line 97: update-high-watermarks: for every asset whose mark_price is over high_watermark, set high_watermark to mark_price
+  trigger-circuit-breakers                                                                                                                      O(n)           one pass, changed in place
+                                                                                                                                                line 98: trigger-circuit-breakers: for every asset whose volatility_bps is at least 5000, set halted to 1
+  reset-circuit-breakers                                                                                                                        O(n)           one pass, changed in place
+                                                                                                                                                line 99: reset-circuit-breakers: for every asset whose halted is 1, set halted to 0 and halve volatility_bps
+  market-crash-shock                                                                                                                            O(n)           one pass, changed in place
+                                                                                                                                                line 100: market-crash-shock: for every asset whose halted is 0, decrease mark_price by 15 percent and increase volatility_bps by 1500
+  most-volatile-assets                                                                                                                          O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                                                                line 102: most-volatile-assets: show the top 5 assets by volatility_bps
+  halted-assets                                                                                                                                 O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                                                line 103: halted-assets: show the ticker, mark_price and volatility_bps of assets whose halted is 1
+  total-market-volume                                                                                                                           O(n)           one pass, constant extra memory
+                                                                                                                                                line 104: total-market-volume: what is the total volume of assets
+  submit-order <order_id>,<buyer_or_seller>,<symbol>,<side>,<limit_price>,<qty>,<notional>,<priority_rank>,<status>                             O(1) expected  probe the index for a clash, then append
+                                                                                                                                                line 108: submit-order: add an order
+  inspect-order <order_id>                                                                                                                      O(1) expected  one index probe
+                                                                                                                                                line 110: inspect-order: find an order using order_id
+  cancel-order <order_id>                                                                                                                       O(1) expected  index probe, swap the last row into the hole
+                                                                                                                                                line 111: cancel-order: remove an order using order_id
+  stamp-order-metrics                                                                                                                           O(n)           one pass, changed in place
+                                                                                                                                                line 114: stamp-order-metrics: for every open order, set notional to limit_price * qty, then set priority_rank to limit_price * side * 1000 + qty
+  mark-order-filled <order_id>                                                                                                                  O(n)           one pass, changed in place
+                                                                                                                                                line 115: mark-order-filled: for every open order whose order_id is a given order_id, set status to 2 and set qty to 0
+  cancel-trader-orders <buyer_or_seller>                                                                                                        O(n)           one pass keeping the rows that stay, then rebuild the index
+                                                                                                                                                line 116: cancel-trader-orders: remove orders whose buyer_or_seller is a given buyer_or_seller and status is 1
+  purge-closed-orders                                                                                                                           O(n)           one pass keeping the rows that stay, then rebuild the index
+                                                                                                                                                line 117: purge-closed-orders: keep orders whose status is 1
+  best-bids                                                                                                                                     O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                                                                line 119: best-bids: show the top 5 bid orders by limit_price
+  best-asks                                                                                                                                     O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                                                                line 120: best-asks: show the bottom 5 ask orders by limit_price
+  symbol-bids <symbol>                                                                                                                          O(n log n)     collect matching row numbers, sort them, print
+                                                                                                                                                line 121: symbol-bids: show the order_id, buyer_or_seller, limit_price and qty of bid orders whose symbol is a given symbol sorted by limit_price descending
+  symbol-asks <symbol>                                                                                                                          O(n log n)     collect matching row numbers, sort them, print
+                                                                                                                                                line 122: symbol-asks: show the order_id, buyer_or_seller, limit_price and qty of ask orders whose symbol is a given symbol sorted by limit_price ascending
+  largest-open-orders                                                                                                                           O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                                                                line 123: largest-open-orders: show the top 5 open orders by notional
+  open-bid-volume                                                                                                                               O(n)           one pass, constant extra memory
+                                                                                                                                                line 124: open-bid-volume: what is the total qty of bid orders
+  open-ask-volume                                                                                                                               O(n)           one pass, constant extra memory
+                                                                                                                                                line 125: open-ask-volume: what is the total qty of ask orders
+  open-order-count                                                                                                                              O(n)           one pass, constant extra memory
+                                                                                                                                                line 126: open-order-count: how many open orders are there
+  open-position <pos_key>,<holder>,<asset_sym>,<unit>,<entry_price>,<current_price>,<unrealized_pnl>,<leverage_bp>,<margin_used>,<liquidated>   O(1) expected  probe the index for a clash, then append
+                                                                                                                                                line 130: open-position: add a position
+  inspect-position <pos_key>                                                                                                                    O(1) expected  one index probe
+                                                                                                                                                line 131: inspect-position: find a position by pos_key
+  close-position <pos_key>                                                                                                                      O(1) expected  index probe, swap the last row into the hole
+                                                                                                                                                line 132: close-position: remove a position by pos_key
+  mark-to-market <new_mark>,<asset_sym>                                                                                                         O(n)           one pass, changed in place
+                                                                                                                                                line 135: mark-to-market: for every open position whose asset_sym is a given asset_sym, set current_price to a given new_mark, then set unrealized_pnl to units * (current_price - entry_price), then set margin_used to (units * current_price * leverage_bps) / 10000
+  apply-funding-rate                                                                                                                            O(n)           one pass, changed in place
+                                                                                                                                                line 137: apply-funding-rate: for every open position, decrease unrealized_pnl by (margin_used * 5) / 1000
+  liquidate-insolvent                                                                                                                           O(n)           one pass, changed in place
+                                                                                                                                                line 138: liquidate-insolvent: for every losing position whose unrealized_pnl is under -500000, set liquidated to 1 and set units to 0 and set margin_used to 0
+  biggest-winners                                                                                                                               O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                                                                line 140: biggest-winners: show the top 5 profitable positions by unrealized_pnl
+  biggest-losers                                                                                                                                O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                                                                line 141: biggest-losers: show the bottom 5 losing positions by unrealized_pnl
+  liquidated-positions                                                                                                                          O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                                                line 142: liquidated-positions: show the pos_key, holder, asset_sym and unrealized_pnl of positions whose liquidated is 1
+  total-unrealized-pnl                                                                                                                          O(n)           one pass, constant extra memory
+                                                                                                                                                line 143: total-unrealized-pnl: what is the total unrealized_pnl of open positions
+  total-margin-used                                                                                                                             O(n)           one pass, constant extra memory
+                                                                                                                                                line 144: total-margin-used: what is the total margin_used of open positions
+  worst-drawdown                                                                                                                                O(n)           one pass, constant extra memory
+                                                                                                                                                line 145: worst-drawdown: what is the lowest unrealized_pnl of open positions
+  log-audit <seq_no>,<category>,<actor>,<delta_cent>,<severity>,<epoch>                                                                         O(1) expected  probe the index for a clash, then append
+                                                                                                                                                line 149: log-audit: add an audit
+  find-audit <seq_no>                                                                                                                           O(1) expected  one index probe
+                                                                                                                                                line 150: find-audit: find an audit by seq_no
+  redact-audit <seq_no>                                                                                                                         O(n)           index probe, then close the gap
+                                                                                                                                                line 151: redact-audit: remove an audit by seq_no
+  recent-first-audits                                                                                                                           O(n)           one pass, printing only the first 5 that match
+                                                                                                                                                line 153: recent-first-audits: show the first 5 audits
+  critical-audits                                                                                                                               O(n)           one pass; filter and output fused, nothing copied
+                                                                                                                                                line 154: critical-audits: show the seq_no, category, actor and delta_cents of critical audits
+  audit-count                                                                                                                                   O(n)           one pass, constant extra memory
+                                                                                                                                                line 155: audit-count: how many audits are there
+  calc-taker-fee <notional_cents>,<fee_bps>                                                                                                     O(1)           straight-line arithmetic
+                                                                                                                                                line 159: calc-taker-fee: take notional_cents and fee_bps and return (notional_cents * fee_bps) / 10000
+  calc-2-x-liq-price <entry_cents>                                                                                                              O(1)           straight-line arithmetic
+                                                                                                                                                line 160: calc-2x-liq-price: take entry_cents and return entry_cents - entry_cents / 2
+  calc-5-x-liq-price <entry_cents>                                                                                                              O(1)           straight-line arithmetic
+                                                                                                                                                line 161: calc-5x-liq-price: take entry_cents and return entry_cents - entry_cents / 5
+  calc-10-x-liq-price <entry_cents>                                                                                                             O(1)           straight-line arithmetic
+                                                                                                                                                line 162: calc-10x-liq-price: take entry_cents and return entry_cents - entry_cents / 10

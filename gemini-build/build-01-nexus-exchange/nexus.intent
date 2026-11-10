@@ -1,0 +1,162 @@
+# =============================================================================
+# BUILD 01 (WORKING): NEXUS Multi-Collection Financial Exchange & Risk Engine
+# =============================================================================
+# All 5 collections (Traders, Assets, Orders, Positions, Audits) compiled into
+# a single native binary via LLVM IR.
+#
+# Fixes applied where our first attempt was wrong:
+#   1. Use "using order_id" instead of "by order_id" after "order" so the
+#      2-word lexicon phrase "order by" (SORTBY) does not swallow "order".
+#   2. Name the collection in duplicate policies ("If an order already exists,
+#      reject it.") once more than one collection exists in the file.
+#   3. Name foreign-key fields "buyer_or_seller" / "holder" instead of "trader"
+#      so FIELD normalization does not shadow the Traders collection.
+#   4. Express liquidation and fee math using fixed-point basis points (/ 10000)
+#      instead of dividing by a runtime variable.
+# =============================================================================
+
+# ---- 1. Collections & Schema ------------------------------------------------
+
+Traders is a collection.
+Each trader has a handle (text), cash_cents (number), margin_limit (number), realized_pnl (number), risk_score (number), tier (number) and frozen (number).
+No two traders share the same handle.
+If a trader already exists, reject it.
+
+Assets is a collection.
+Each asset has a ticker (text), mark_price (number), prev_close (number), volatility_bps (number), volume (number), high_watermark (number) and halted (number).
+No two assets share the same ticker.
+If an asset already exists, replace it.
+
+Orders is a collection.
+Each order has an order_id (number), a buyer_or_seller (text), a symbol (text), a side (number), a limit_price (number), a qty (number), a notional (number), a priority_rank (number) and a status (number).
+No two orders share the same order_id.
+If an order already exists, reject it.
+
+Positions is a collection.
+Each position has a pos_key (text), a holder (text), an asset_sym (text), units (number), entry_price (number), current_price (number), unrealized_pnl (number), leverage_bps (number), margin_used (number) and liquidated (number).
+No two positions share the same pos_key.
+If a position already exists, replace it.
+
+Audits is a collection.
+Each audit has a seq_no (number), a category (text), an actor (text), a delta_cents (number), a severity (number) and an epoch (number).
+No two audits share the same seq_no.
+If an audit already exists, reject it.
+Keep audits in the order they were added.
+
+# ---- 2. Taught Domain Vocabulary --------------------------------------------
+
+"solvent" means frozen is 0 and risk_score under 8000.
+"overleveraged" means risk_score at least 8000.
+"underwater" means unrealized_pnl under 0.
+"in the money" means unrealized_pnl over 0.
+"whale" means cash_cents at least 100000000.
+
+An active trader is a trader whose frozen is 0.
+A vip trader is an active trader whose tier is at least 3.
+A risky trader is an active trader overleveraged.
+
+An open order is an order whose status is 1.
+A bid order is an open order whose side is 1.
+An ask order is an open order whose side is -1.
+
+An open position is a position whose liquidated is 0.
+A profitable position is an open position in the money.
+A losing position is an open position underwater.
+
+A critical audit is an audit whose severity is at least 3.
+
+# ---- 3. Trader Capabilities -------------------------------------------------
+
+register-trader: add a trader.
+lookup-trader: find a trader by handle.
+drop-trader: remove a trader by handle.
+
+deposit-cash: increase cash_cents by a given amount for traders whose handle is a given handle.
+withdraw-cash: decrease cash_cents by a given amount for traders whose handle is a given handle.
+book-pnl: for every trader whose handle is a given handle, increase cash_cents by a given delta, then increase realized_pnl by a given delta.
+recompute-trader-risk: for every active trader, set risk_score to (risk_score * 90) / 100 + 50.
+freeze-risky-traders: for every risky trader, set frozen to 1.
+unfreeze-trader: set frozen to 0 for traders whose handle is a given handle.
+promote-whales: for every active trader whale, increase tier by 1 and increase margin_limit by 25 percent.
+
+top-traders: show the top 5 traders by cash_cents.
+whales: show the handle, cash_cents and tier of active traders whale sorted by cash_cents descending.
+frozen-traders: show the handle and risk_score of traders whose frozen is 1.
+total-exchange-cash: what is the total cash_cents of traders?
+average-trader-risk: what is the average risk_score of active traders?
+active-trader-count: how many active traders are there?
+
+# ---- 4. Asset & Market Feed Capabilities ------------------------------------
+
+upsert-asset: add an asset.
+quote-asset: find an asset by ticker.
+delist-asset: remove an asset by ticker.
+
+# Sequential in-place update: updates mark_price, volume, and volatility_bps in one fused pass
+tick-asset-price: for every asset whose ticker is a given ticker and halted is 0, set mark_price to a given new_price, then increase volume by a given trade_qty, then set volatility_bps to (volatility_bps * 80) / 100 + 20.
+update-high-watermarks: for every asset whose mark_price is over high_watermark, set high_watermark to mark_price.
+trigger-circuit-breakers: for every asset whose volatility_bps is at least 5000, set halted to 1.
+reset-circuit-breakers: for every asset whose halted is 1, set halted to 0 and halve volatility_bps.
+market-crash-shock: for every asset whose halted is 0, decrease mark_price by 15 percent and increase volatility_bps by 1500.
+
+most-volatile-assets: show the top 5 assets by volatility_bps.
+halted-assets: show the ticker, mark_price and volatility_bps of assets whose halted is 1.
+total-market-volume: what is the total volume of assets?
+
+# ---- 5. Order Book Capabilities ---------------------------------------------
+
+submit-order: add an order.
+# Note: "using" instead of "by" avoids the 2-word lexicon phrase "order by" (SORTBY)
+inspect-order: find an order using order_id.
+cancel-order: remove an order using order_id.
+
+# Sequential assignment computes notional = limit_price * qty and priority_rank in place
+stamp-order-metrics: for every open order, set notional to limit_price * qty, then set priority_rank to limit_price * side * 1000 + qty.
+mark-order-filled: for every open order whose order_id is a given order_id, set status to 2 and set qty to 0.
+cancel-trader-orders: remove orders whose buyer_or_seller is a given buyer_or_seller and status is 1.
+purge-closed-orders: keep orders whose status is 1.
+
+best-bids: show the top 5 bid orders by limit_price.
+best-asks: show the bottom 5 ask orders by limit_price.
+symbol-bids: show the order_id, buyer_or_seller, limit_price and qty of bid orders whose symbol is a given symbol sorted by limit_price descending.
+symbol-asks: show the order_id, buyer_or_seller, limit_price and qty of ask orders whose symbol is a given symbol sorted by limit_price ascending.
+largest-open-orders: show the top 5 open orders by notional.
+open-bid-volume: what is the total qty of bid orders?
+open-ask-volume: what is the total qty of ask orders?
+open-order-count: how many open orders are there?
+
+# ---- 6. Position & Margin Risk Capabilities ---------------------------------
+
+open-position: add a position.
+inspect-position: find a position by pos_key.
+close-position: remove a position by pos_key.
+
+# Multi-step sequential mark-to-market valuation and basis-points margin calculation in one pass
+mark-to-market: for every open position whose asset_sym is a given asset_sym, set current_price to a given new_mark, then set unrealized_pnl to units * (current_price - entry_price), then set margin_used to (units * current_price * leverage_bps) / 10000.
+
+apply-funding-rate: for every open position, decrease unrealized_pnl by (margin_used * 5) / 1000.
+liquidate-insolvent: for every losing position whose unrealized_pnl is under -500000, set liquidated to 1 and set units to 0 and set margin_used to 0.
+
+biggest-winners: show the top 5 profitable positions by unrealized_pnl.
+biggest-losers: show the bottom 5 losing positions by unrealized_pnl.
+liquidated-positions: show the pos_key, holder, asset_sym and unrealized_pnl of positions whose liquidated is 1.
+total-unrealized-pnl: what is the total unrealized_pnl of open positions?
+total-margin-used: what is the total margin_used of open positions?
+worst-drawdown: what is the lowest unrealized_pnl of open positions?
+
+# ---- 7. Ordered Compliance Audit Log Capabilities ---------------------------
+
+log-audit: add an audit.
+find-audit: find an audit by seq_no.
+redact-audit: remove an audit by seq_no.
+
+recent-first-audits: show the first 5 audits.
+critical-audits: show the seq_no, category, actor and delta_cents of critical audits.
+audit-count: how many audits are there?
+
+# ---- 8. Pure Arithmetic Pricer & Fee Calculators ----------------------------
+
+calc-taker-fee: take notional_cents and fee_bps and return (notional_cents * fee_bps) / 10000.
+calc-2x-liq-price: take entry_cents and return entry_cents - entry_cents / 2.
+calc-5x-liq-price: take entry_cents and return entry_cents - entry_cents / 5.
+calc-10x-liq-price: take entry_cents and return entry_cents - entry_cents / 10.
