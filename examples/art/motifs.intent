@@ -1,0 +1,18 @@
+# Textile motifs, computed: one rule, repeated, in three colourways.
+#   ./intent svg examples/art/motifs.intent --after "wait 100" --style blocks
+# Symmetry is the absolute value of a distance from a tile's middle; repetition is "modulo".
+# The distance across plus the distance down makes diamonds; which tile a cell is in picks its colours.
+
+The board is 60 wide and 36 high.
+The background is floral white.
+Cells have an x (number), a y (number), an across (number), a down (number), a ring (number), a tile (number), a look (text) and a hue (text).
+At the start there is a cell for every x from 0 to 59 and every y from 0 to 35, whose across is 0, whose down is 0, whose ring is 0, whose tile is 0, whose look is " " and whose hue is "black".
+
+Every 100 milliseconds, set the across of each cell to the absolute value of (its x modulo 12 minus 6).
+Every 100 milliseconds, set the down of each cell to the absolute value of (its y modulo 12 minus 6).
+Every 100 milliseconds, set the ring of each cell to its across plus its down.
+Every 100 milliseconds, set the tile of each cell to (its x divided by 12 plus its y divided by 12) modulo 3.
+Every 100 milliseconds, set the look of each cell to "#" if its ring modulo 3 is 0 and its ring is under 7, otherwise "#" if its across is 0 and its ring is under 3, otherwise " ".
+Every 100 milliseconds, set the hue of each cell to "gold" if its ring is under 3, otherwise "dark slate gray" if its ring is 6, otherwise "tomato" if its tile is 0, otherwise "teal" if its tile is 1, otherwise "steel blue".
+
+Draw each cell as its look in its hue at its x plus 1 and its y plus 1.

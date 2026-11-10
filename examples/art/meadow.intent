@@ -1,0 +1,38 @@
+# A meadow of pixel sprites on paper: pictures drawn by hand, placed by numbers.
+#   ./intent svg examples/art/meadow.intent --style blocks
+# A picture is written as rows of characters; its legend says which colour each one stands for.
+# The tulips stand where a grid of spots says, and the small flowers fill in between.
+
+The board is 48 wide and 36 high.
+The background is light yellow.
+
+A tulip looks like this, where r is crimson, p is hot pink and g is forest green:
+    r.r.r
+    rrprr
+    rrrrr
+    .rrr.
+    g.g.g
+    .ggg.
+    ..g..
+
+A daisy looks like this, where w is white and y is gold:
+    .w.
+    wyw
+    .w.
+
+A bird looks like this, where w is white, o is dark orange, k is black and p is pink:
+    ..ww...
+    .wkwoo.
+    ..www..
+    .pwwww.
+    .wwwwwww
+    ..wwwww.
+    ...o.o..
+
+Spots have an x (number) and a y (number).
+At the start there is a spot for every x from 0 to 4 and every y from 0 to 2.
+
+Draw each spot as a daisy at its x times 10 plus 7 and its y times 11 plus 9.
+Draw each spot as a tulip at its x times 10 plus 2 and its y times 11 plus 3.
+Draw a bird at 38 and 27.
+Write "spring, in sentences" at 3 and 35 in dark olive green.
