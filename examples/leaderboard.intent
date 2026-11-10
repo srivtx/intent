@@ -1,0 +1,30 @@
+# A game leaderboard. Build it, then give it a file name and it remembers between runs:
+#   ./intent build examples/leaderboard.intent -o build/leaderboard
+#   ./build/leaderboard scores.log
+
+Players is a collection.
+Each player has a name, a score (number) and a level (number).
+No two players share the same name.
+If a player already exists, replace it.
+
+"ahead of" means score over.
+"beginner" means with a level under 5.
+A champion is a player whose score is at least 1000.
+
+join: add a player.
+Look up a player by name.
+kick: remove a player by name.
+
+award: increase the score by a given amount for the player whose name is a given name.
+level-up: add 1 to the level of players whose name is a given name.
+bonus: increase every score by 10 percent.
+
+podium: show the top 3 players by score.
+leader: show the name of the player with the highest score.
+champions: show the names of the champions.
+rivals: show the names of players ahead of a given score.
+newcomers: show the beginner players sorted by name.
+
+How many players are there?
+What is the average score?
+new-season: set the score to 0.
