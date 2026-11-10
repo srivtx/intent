@@ -113,10 +113,64 @@ Show the ticket and the member's name of visits sorted by ticket.
 Show the visits whose member's age is under 18.
 ```
 
-**Plain calculations**
+**Plain calculations** — nothing stored; numbers in, a number out
 ```
 double: take a number n and return n times 2.
+Sum: take a number a and a number b and return a plus b.
+Area: take a width and a height and return width times height.
 ```
+
+**Values that depend on a condition**
+```
+Bigger: take a and b and return a if a is over b, otherwise b.
+Sign: take n and return 1 if n is over 0, otherwise -1 if n is under 0, otherwise 0.
+Grade: set the grade to "pass" if the score is at least 50, otherwise "fail".
+```
+`otherwise`, `else` and `or else` mean the same. Half a decision (`return a if a is over b.`)
+is a question: *and what if not?*
+
+Dividing by something that might be zero is also a question, and the answer is a sentence:
+```
+Share: take a and b and return a divided by b if b is not 0, otherwise 0.
+```
+
+## Single values
+
+Not everything is a collection. A program can keep single values:
+```
+The score is a number.                   starts at 0 (reported as a note)
+The best starts at 0.
+The lives start at 3.
+The mood is text that starts at "calm".
+The limit is 100.
+```
+They are shown and changed with the same sentences as properties, and any other sentence can
+use them:
+```
+Hit: increase the score by a given amount.
+Restart: set the score to 0, set the lives to 3.
+Status: show the score, the best and the lives.
+Rivals: show the names of players whose points are over the best.
+```
+Single values are remembered between runs exactly like records.
+
+## Standing rules
+
+A capability runs when someone calls it. A rule is never called: it is applied after every
+change, and again until nothing moves, so rules may build on each other in any order.
+```
+When the score is over the best, the best becomes the score.
+Whenever a player's points are at least 100, their rank becomes "gold".
+As soon as a player's points are under 0, remove them.
+The level is always 3 if the score is at least 50, otherwise 2 if the score is at least 10, otherwise 1.
+```
+A sentence is a rule when it starts with `when`, `whenever`, `as soon as`, `every time`, or
+says `always`, and has no name. Give it a name (`Promote: when ...`) and it is an ordinary
+capability again.
+
+The compiler refuses a rule that could never come to rest (`When the lives are under 3,
+increase the lives by 1.`) and a rule that waits for `a given` value. Two rules that undo each
+other are caught when the program runs: `error: the rules keep changing each other`.
 
 ## What happens when it does not understand
 
@@ -147,7 +201,7 @@ Answers: records print as comma-separated values; `none` when nothing matches a 
 
 ## Not yet
 
-Decimals, dates and yes/no values; values that depend on a condition ("... if ..., otherwise
-..."); properties defined by a calculation; summaries per owner or per group
+Decimals, dates and yes/no values; text in calculations; time ("every second"), a screen,
+keys or a network; properties defined by a calculation; summaries per owner or per group
 (`members with more than 3 visits`); capabilities made of several steps; mixing `and` with
 `or`; commas inside text. See the [README](../README.md#what-this-version-cannot-do).
