@@ -82,9 +82,31 @@ class Task:
     dec: bool = False                               # calc: the result is a decimal number
     pdec: set = _f(default_factory=set)          # the parameters that are decimal numbers
     ranges: list = _f(default_factory=list)      # seed: [(property, lowest, highest)], a record for each combination
+    spell: bool = False                             # draw: the whole text, one character a cell, rightward ("Write")
 
 
 STATE = '(values)'              # the hidden one-record collection that holds the program's single values
+
+
+@dataclass
+class Figure:
+    """A picture drawn by hand: rows of characters, and the colour some of them stand for."""
+    name: str
+    rows: list                  # strings, top row first
+    legend: dict                # character -> colour name or "#rrggbb"; None: that character draws nothing
+    line: int = 0
+
+    def cells(self):
+        """[(across, down, character drawn, colour or None)], counted from 0 at the top left."""
+        out = []
+        for j, row in enumerate(self.rows):
+            for i, ch in enumerate(row):
+                if ch in self.legend:
+                    if self.legend[ch] is not None:
+                        out.append((i, j, '#', self.legend[ch]))
+                elif ch not in ' .':
+                    out.append((i, j, ch, None))
+        return out
 
 
 @dataclass
@@ -98,6 +120,8 @@ class Program:
     seeds: list = _f(default_factory=list)       # records that are there from the start
     board: tuple = None                             # (width, height) in characters
     board_line: int = 0
+    figures: dict = _f(default_factory=dict)     # name -> Figure
+    background: str = None                          # the colour where nothing is drawn, in a picture
     above: list = _f(default_factory=list)       # single values shown over the board
     below: list = _f(default_factory=list)
 
@@ -296,8 +320,14 @@ FNNAME = {'sqrt': 'the square root of', 'dsqrt': 'the square root of', 'sin': 't
           'trunc': 'the whole part of', 'dtrunc': 'the whole part of'}
 
 
+def inked(prog):
+    """Is anything on the board drawn in a colour?"""
+    return any(d.colour or (isinstance(d.glyph, tuple) and d.glyph[0] == 'figure' and
+                            any(prog.figures[d.glyph[1]].legend.values())) for d in prog.draws)
+
+
 def fmt_glyph(g):
-    return f'"{g}"' if isinstance(g, str) else ('its ' if g[0] == 'field' else 'the ') + g[1]
+    return f'"{g}"' if isinstance(g, str) else {'field': 'its ', 'value': 'the ', 'figure': 'a '}[g[0]] + g[1]
 
 
 def draw_char(text):
@@ -325,7 +355,7 @@ def walk_expr(e):
 def task_exprs(t):
     """Every value a task computes or compares, at any depth."""
     tops = [e for _, e in t.assigns] + ([t.expr] if t.expr else []) + list(t.at or ()) + \
-        [x for x in (t.glyph, t.colour) if isinstance(x, tuple)]
+        [x for x in (t.glyph, t.colour) if isinstance(x, tuple) and x[0] != 'figure']
     return [e for top in tops for e in walk_expr(top)] + list(walk_cond_exprs(t.where))
 
 
