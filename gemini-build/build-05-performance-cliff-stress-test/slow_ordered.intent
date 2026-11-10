@@ -1,0 +1,14 @@
+# Slow Ordered Collection: Identical to fast_unordered.intent PLUS ONE SENTENCE
+# ("Keep items in the order they were added.")
+# Causes remove-item to memmove AND free+calloc+rehash the entire hash table on EVERY delete!
+Items is a collection.
+Each item has a key (text), a code (number) and a val (number).
+Keys are unique.
+If an item already exists, replace it.
+Keep items in the order they were added.
+
+add-item: add an item.
+find-item: find an item by key.
+remove-item: remove an item by key.
+count-items: how many items are there?
+total-val: what is the total val of items?

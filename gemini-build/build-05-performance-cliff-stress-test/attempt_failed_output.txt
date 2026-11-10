@@ -1,0 +1,32 @@
+note: this program describes information but nothing to do with it yet
+ --> gemini-build/build-05-performance-cliff-stress-test/attempt_failed.intent:5
+  |
+5 | Items is a collection.
+  | ^^^^^^^^^^^^^^^^^^^^^^
+
+error: I can't read what comes before ":" as a name
+  --> gemini-build/build-05-performance-cliff-stress-test/attempt_failed.intent:11
+   |
+11 | run-stage-one-two-three-four-five: for every item, double val.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: I can't read this as a property name
+  --> gemini-build/build-05-performance-cliff-stress-test/attempt_failed.intent:14
+   |
+14 | Each item has a very long property name (number).
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: a new phrase is one to five words
+  --> gemini-build/build-05-performance-cliff-stress-test/attempt_failed.intent:17
+   |
+17 | "in the very high value tier" means val over 1000.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+not compiled: 3 things I could not read
+How I read this program:
+
+   5  Items is a collection                            ->  collection item
+   6  Each item has a key (number) and a val (number)  ->  item has key: int, val: int
+   7  Keys are unique                                  ->  item: key unique
+   8  Reject duplicates                                ->  item: on duplicate, reject
+

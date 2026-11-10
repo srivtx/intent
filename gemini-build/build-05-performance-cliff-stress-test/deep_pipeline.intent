@@ -1,0 +1,15 @@
+# Deep Sequential Pipeline & 64-Bit Boundary Torture Specification
+States is a collection.
+Each state has an id (number), a x (number), a r1 (number), a r2 (number), a r3 (number), a r4 (number), a r5 (number), a r6 (number), a r7 (number), a r8 (number) and a checksum (number).
+Ids are unique.
+If a state already exists, replace it.
+
+add-state: add a state.
+find-state: find a state by id.
+
+# 16 sequential in-place register assignments in a SINGLE English sentence!
+run-pipeline: for every state, set r1 to x * 3 + 7, then set r2 to r1 * 2 - x, then set r3 to r2 + r1 / 3, then set r4 to r3 * 5 - r2, then set r5 to r4 / 2 + r3, then set r6 to r5 - r1 * 4, then set r7 to r6 * 3 + r4, then set r8 to r7 / 5 - r5, then increase r1 by 10 percent, then decrease r2 by 15 percent, then double r3, then triple r4, then quadruple r5, then halve r6, then set x to (r7 + r8) / -1, then set checksum to r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + x.
+
+negate-x: for every state, set x to x / -1.
+halve-x: for every state, set x to x / 2.
+bump-ten-pct: for every state, increase x by 10 percent.

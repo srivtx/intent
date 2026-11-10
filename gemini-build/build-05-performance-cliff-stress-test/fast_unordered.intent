@@ -1,0 +1,11 @@
+# Fast Unordered Collection: O(1) hash probe + O(1) swap-last removal
+Items is a collection.
+Each item has a key (text), a code (number) and a val (number).
+Keys are unique.
+If an item already exists, replace it.
+
+add-item: add an item.
+find-item: find an item by key.
+remove-item: remove an item by key.
+count-items: how many items are there?
+total-val: what is the total val of items?

@@ -1,0 +1,17 @@
+# =============================================================================
+# BUILD 05 (FAILED ATTEMPT): Compiler Limits Hit Under Stress
+# =============================================================================
+
+Items is a collection.
+Each item has a key (number) and a val (number).
+Keys are unique.
+Reject duplicates.
+
+# FAILURE 1: Capability name with >6 words before ':' is rejected by parser.py:858
+run-stage-one-two-three-four-five: for every item, double val.
+
+# FAILURE 2: Defining a property name with >3 words is rejected by parser.py:555
+Each item has a very long property name (number).
+
+# FAILURE 3: Teaching a phrase with >5 words is rejected by parser.py:342
+"in the very high value tier" means val over 1000.
