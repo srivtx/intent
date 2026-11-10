@@ -1,0 +1,28 @@
+note: this program describes information but nothing to do with it yet
+ --> gemini-build/build-08-server-pipe-deadlock-and-rpc/attempt_failed.intent:5
+  |
+5 | Sessions is a collection.
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: I don't know the word "listen"
+  --> gemini-build/build-08-server-pipe-deadlock-and-rpc/attempt_failed.intent:11
+   |
+11 | listen on port 8080 and serve sessions over http.
+   | ^^^^^^ not a concept I know, and not a name this program declared
+   = did you mean "list"? I never drop a word I don't understand, because it might change the meaning.
+
+question: is this a change or a query?
+  --> gemini-build/build-08-server-pipe-deadlock-and-rpc/attempt_failed.intent:15
+   |
+15 | touch-and-get: increase hits by 1 and show the session for sessions whose token is a given token.
+   |                                       ^^^^ "show" asks for something, but the rest changes something
+   = say them in two sentences
+
+not compiled: 1 question to answer, 1 thing I could not read
+How I read this program:
+
+   5  Sessions is a collection                                      ->  collection session
+   6  Each session has a token (text), a user_id (text) and a hits (number)  ->  session has token: text, user_id: text, hit: int
+   7  No two sessions share the same token                          ->  session: token unique
+   8  If a session already exists, replace it                       ->  session: on duplicate, replace
+

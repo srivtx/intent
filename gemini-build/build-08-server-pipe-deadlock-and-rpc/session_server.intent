@@ -1,0 +1,28 @@
+# =============================================================================
+# BUILD 08 (WORKING): Stateful Auth Session & Rate-Limit Server Engine
+# =============================================================================
+# Compiled to a native binary (`session_server`) that acts as a persistent
+# command-stream daemon with Write-Ahead Log (WAL) crash recovery.
+# =============================================================================
+
+Sessions is a collection.
+Each session has a token (text), a username (text), a role_level (number), a req_count (number), a quota_limit (number), a expires_at (number) and a revoked (number).
+No two sessions share the same token.
+If a session already exists, replace it.
+
+An active session is a session whose revoked is 0.
+An over_quota session is an active session whose req_count is at least quota_limit.
+
+create-session: add a session.
+lookup-session: find a session by token.
+destroy-session: remove a session by token.
+
+# Rate-limiting & session lifecycle capabilities
+record-hit: for every active session whose token is a given token, increase req_count by 1.
+enforce-quotas: for every over_quota session, set revoked to 1.
+expire-sessions: for every active session whose expires_at is under a given now_epoch, set revoked to 1.
+purge-revoked: keep sessions whose revoked is 0.
+
+active-session-count: how many active sessions are there?
+revoked-session-count: how many sessions whose revoked is 1 are there?
+top-consumers: show the top 5 active sessions by req_count.

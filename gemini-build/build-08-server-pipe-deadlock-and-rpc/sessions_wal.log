@@ -1,0 +1,4 @@
+create-session tok_1,alice,3,0,5,2000,0
+create-session tok_2,bob,1,4,5,2000,0
+record-hit tok_2
+enforce-quotas

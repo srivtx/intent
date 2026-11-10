@@ -1,0 +1,15 @@
+# =============================================================================
+# BUILD 08 (FAILED ATTEMPT): Native HTTP/TCP Socket Server in Pure Intent
+# =============================================================================
+
+Sessions is a collection.
+Each session has a token (text), a user_id (text) and a hits (number).
+No two sessions share the same token.
+If a session already exists, replace it.
+
+# FAILURE 1: No networking / HTTP / socket concepts in lexicon.py
+listen on port 8080 and serve sessions over http.
+
+# FAILURE 2: Cannot chain "increment hits AND return the updated session" in one command
+# ("is this a change or a query?" in parser.py:937)
+touch-and-get: increase hits by 1 and show the session for sessions whose token is a given token.

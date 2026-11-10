@@ -1,0 +1,34 @@
+Sessions  —  token: text (unique), username: text, role_level: number, req_count: number, quota_limit: number, expires_at: number, revoked: number
+  order: not part of the meaning
+
+  storage: one growable array of session records, 56 bytes each
+  index on token: open-addressing hash table from the property to the row number
+      because line 10: token is unique, so every add must look for an existing token
+      because line 17: "lookup-session" picks one session by token on every call
+      because line 18: "destroy-session" picks one session by token on every call
+  removal swaps in the last row: O(1), but changes the stored order
+      because line 18: "destroy-session" removes one session
+      because line 8: nothing says the order matters
+
+Commands the compiled program accepts (one per line on stdin):
+
+  create-session <token>,<username>,<role_level>,<req_count>,<quota_limit>,<expires_at>,<revoked>   O(1) expected  probe the index for a clash, then append
+                                                                                                    line 16: create-session: add a session
+  lookup-session <token>                                                                            O(1) expected  one index probe
+                                                                                                    line 17: lookup-session: find a session by token
+  destroy-session <token>                                                                           O(1) expected  index probe, swap the last row into the hole
+                                                                                                    line 18: destroy-session: remove a session by token
+  record-hit <token>                                                                                O(n)           one pass, changed in place
+                                                                                                    line 21: record-hit: for every active session whose token is a given token, increase req_count by 1
+  enforce-quotas                                                                                    O(n)           one pass, changed in place
+                                                                                                    line 22: enforce-quotas: for every over_quota session, set revoked to 1
+  expire-sessions <now_epoch>                                                                       O(n)           one pass, changed in place
+                                                                                                    line 23: expire-sessions: for every active session whose expires_at is under a given now_epoch, set revoked to 1
+  purge-revoked                                                                                     O(n)           one pass keeping the rows that stay, then rebuild the index
+                                                                                                    line 24: purge-revoked: keep sessions whose revoked is 0
+  active-session-count                                                                              O(n)           one pass, constant extra memory
+                                                                                                    line 26: active-session-count: how many active sessions are there
+  revoked-session-count                                                                             O(n)           one pass, constant extra memory
+                                                                                                    line 27: revoked-session-count: how many sessions whose revoked is 1 are there
+  top-consumers                                                                                     O(n log n)     collect matching row numbers, sort them, print the first 5
+                                                                                                    line 28: top-consumers: show the top 5 active sessions by req_count
