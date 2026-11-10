@@ -1,0 +1,33 @@
+# The scorekeeping half of a small game: single values, players, and rules that apply
+# by themselves. Nobody calls the rules; after every change they are applied until
+# nothing moves.
+#   ./intent build examples/arcade.intent -o build/arcade
+#   build/arcade save.log        (the file makes it remember between runs)
+
+The score is a number.
+The best starts at 0.
+The level starts at 1.
+The lives start at 3.
+The mood is text that starts at "calm".
+
+Players is a collection where each player has a unique name, points and a rank (text).
+Reject duplicates.
+
+Join: add a player.
+Hit: increase the score by a given amount.
+Miss: decrease the lives by 1.
+Restart: set the score to 0, set the lives to 3.
+Status: show the score, the best, the level and the lives.
+Show the mood.
+Award: increase the points of the player with a given name by a given amount.
+Leaders: show the top 3 players by points.
+Rivals: show the names of players whose points are over the best.
+
+# Standing rules.
+When the score is over the best, the best becomes the score.
+The level is always 3 if the score is at least 50, otherwise 2 if the score is at least 10, otherwise 1.
+When the lives are under 1, the mood becomes "game over".
+When the lives are at least 1 and the level is 3, the mood becomes "excited".
+When the lives are at least 1 and the level is under 3, the mood becomes "calm".
+Whenever a player's points are at least 100, their rank becomes "gold".
+As soon as a player's points are under 0, remove them.

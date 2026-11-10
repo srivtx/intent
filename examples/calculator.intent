@@ -1,0 +1,18 @@
+# A calculator. Nothing is stored: every capability takes numbers and gives one back.
+#   ./intent build examples/calculator.intent -o build/calculator
+#   echo "share 7,2" | build/calculator
+
+Sum: take a number a and a number b and return a plus b.
+Difference: take a and b and return a minus b.
+Product: take two numbers a and b and return a times b.
+Area: take a width and a height and return width times height.
+
+# Dividing by zero has no answer, so the program has to say what it wants instead.
+Share: take a and b and return a divided by b if b is not 0, otherwise 0.
+Remainder: take a and b and return a modulo b if b is not 0, otherwise 0.
+
+# A value can depend on a condition, and conditions can follow one another.
+Bigger: take a and b and return a if a is over b, otherwise b.
+Sign: take n and return 1 if n is over 0, otherwise -1 if n is under 0, otherwise 0.
+Clamp: take n and return 0 if n is under 0, otherwise 100 if n is over 100, otherwise n.
+Fee: take an amount and return amount times 2 divided by 100 if amount is over 1000, otherwise 20.
