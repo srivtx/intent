@@ -1,0 +1,64 @@
+Wallets  —  wallet_id: text (unique), balance: number, reserved: number, tx_count: number
+  order: not part of the meaning
+
+  storage: one growable array of wallet records, 32 bytes each
+  index on wallet_id: open-addressing hash table from the property to the row number
+      because line 12: wallet_id is unique, so every add must look for an existing wallet_id
+      because line 33: "find-wallet" picks one wallet by wallet_id on every call
+
+Products  —  sku: text (unique), unit_price: number, stock: number, sold: number
+  order: not part of the meaning
+
+  storage: one growable array of product records, 32 bytes each
+  index on sku: open-addressing hash table from the property to the row number
+      because line 17: sku is unique, so every add must look for an existing sku
+      because line 46: "find-product" picks one product by sku on every call
+
+Transfers  —  tx_id: number (unique), from_wallet: text, target_sku: text, qty: number, amount: number, state: number
+  order: insertion order is kept
+
+  storage: one growable array of transfer records, 48 bytes each
+  index on tx_id: open-addressing hash table from the property to the row number
+      because line 22: tx_id is unique, so every add must look for an existing tx_id
+      because line 56: "find-transfer" picks one transfer by tx_id on every call
+
+Commands the compiled program accepts (one per line on stdin):
+
+  create-wallet <wallet_id>,<balance>,<reserved>,<tx_count>                  O(1) expected  probe the index for a clash, then append
+                                                                             line 32: create-wallet: add a wallet
+  find-wallet <wallet_id>                                                    O(1) expected  one index probe
+                                                                             line 33: find-wallet: find a wallet by wallet_id
+  hold-funds <amount>,<wallet_id>                                            O(n)           one pass, changed in place
+                                                                             line 36: hold-funds: for every wallet whose wallet_id is a given wallet_id and balance is at least a given amount, decrease balance by a given amount, then increase reserved by a given amount
+  capture-funds <amount>,<wallet_id>                                         O(n)           one pass, changed in place
+                                                                             line 37: capture-funds: for every wallet whose wallet_id is a given wallet_id and reserved is at least a given amount, decrease reserved by a given amount, then increase tx_count by 1
+  release-funds <amount>,<wallet_id>                                         O(n)           one pass, changed in place
+                                                                             line 38: release-funds: for every wallet whose wallet_id is a given wallet_id and reserved is at least a given amount, decrease reserved by a given amount, then increase balance by a given amount
+  total-wallet-balance                                                       O(n)           one pass, constant extra memory
+                                                                             line 40: total-wallet-balance: what is the total balance of wallets
+  total-wallet-reserved                                                      O(n)           one pass, constant extra memory
+                                                                             line 41: total-wallet-reserved: what is the total reserved of wallets
+  add-product <sku>,<unit_price>,<stock>,<sold>                              O(1) expected  probe the index for a clash, then append
+                                                                             line 45: add-product: add a product
+  find-product <sku>                                                         O(1) expected  one index probe
+                                                                             line 46: find-product: find a product by sku
+  allocate-stock <qty>,<sku>                                                 O(n)           one pass, changed in place
+                                                                             line 49: allocate-stock: for every product whose sku is a given sku and stock is at least a given qty, decrease stock by a given qty, then increase sold by a given qty
+  restock-product <qty>,<sku>                                                O(n)           one pass, changed in place
+                                                                             line 50: restock-product: for every product whose sku is a given sku, increase stock by a given qty
+  low-stock-products                                                         O(n)           one pass; filter and output fused, nothing copied
+                                                                             line 51: low-stock-products: show the sku and stock of products whose stock is under 5
+  stage-transfer <tx_id>,<from_wallet>,<target_sku>,<qty>,<amount>,<state>   O(1) expected  probe the index for a clash, then append
+                                                                             line 55: stage-transfer: add a transfer
+  find-transfer <tx_id>                                                      O(1) expected  one index probe
+                                                                             line 56: find-transfer: find a transfer by tx_id
+  commit-transfer <tx_id>                                                    O(n)           one pass, changed in place
+                                                                             line 57: commit-transfer: for every pending transfer whose tx_id is a given tx_id, set state to 1
+  abort-transfer <tx_id>                                                     O(n)           one pass, changed in place
+                                                                             line 58: abort-transfer: for every pending transfer whose tx_id is a given tx_id, set state to 2
+  committed-transfers                                                        O(n)           one pass; filter and output fused, nothing copied
+                                                                             line 60: committed-transfers: show the tx_id, from_wallet, target_sku, qty and amount of committed transfers
+  aborted-transfers                                                          O(n)           one pass; filter and output fused, nothing copied
+                                                                             line 61: aborted-transfers: show the tx_id, from_wallet, target_sku, qty and amount of aborted transfers
+  committed-revenue                                                          O(n)           one pass, constant extra memory
+                                                                             line 62: committed-revenue: what is the total amount of committed transfers

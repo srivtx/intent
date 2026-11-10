@@ -1,0 +1,62 @@
+# =============================================================================
+# BUILD 03 (WORKING): 3-Collection Two-Phase Inventory & Double-Entry Ledger
+# =============================================================================
+# Since Intent v0.1 does not have multi-collection transactions or check
+# constraints, we encode guarded transitions using WHERE predicates ("whose
+# balance is at least a given amount") and explicit state flags on Transfers
+# (status: 0 = pending, 1 = committed, 2 = aborted).
+# =============================================================================
+
+Wallets is a collection.
+Each wallet has a wallet_id (text), a balance (number), a reserved (number) and a tx_count (number).
+No two wallets share the same wallet_id.
+If a wallet already exists, reject it.
+
+Products is a collection.
+Each product has a sku (text), a unit_price (number), a stock (number) and a sold (number).
+No two products share the same sku.
+If a product already exists, replace it.
+
+Transfers is a collection.
+Each transfer has a tx_id (number), a from_wallet (text), a target_sku (text), a qty (number), a amount (number) and a state (number).
+No two transfers share the same tx_id.
+If a transfer already exists, reject it.
+Keep transfers in the order they were added.
+
+A pending transfer is a transfer whose state is 0.
+A committed transfer is a transfer whose state is 1.
+An aborted transfer is a transfer whose state is 2.
+
+# ---- Wallet Capabilities (with non-negative balance guard in WHERE) ---------
+
+create-wallet: add a wallet.
+find-wallet: find a wallet by wallet_id.
+
+# Guarded hold: only reserves funds if balance >= amount!
+hold-funds: for every wallet whose wallet_id is a given wallet_id and balance is at least a given amount, decrease balance by a given amount, then increase reserved by a given amount.
+capture-funds: for every wallet whose wallet_id is a given wallet_id and reserved is at least a given amount, decrease reserved by a given amount, then increase tx_count by 1.
+release-funds: for every wallet whose wallet_id is a given wallet_id and reserved is at least a given amount, decrease reserved by a given amount, then increase balance by a given amount.
+
+total-wallet-balance: what is the total balance of wallets?
+total-wallet-reserved: what is the total reserved of wallets?
+
+# ---- Product Inventory Capabilities (with non-negative stock guard) ---------
+
+add-product: add a product.
+find-product: find a product by sku.
+
+# Guarded stock deduction: only decrements stock if stock >= qty!
+allocate-stock: for every product whose sku is a given sku and stock is at least a given qty, decrease stock by a given qty, then increase sold by a given qty.
+restock-product: for every product whose sku is a given sku, increase stock by a given qty.
+low-stock-products: show the sku and stock of products whose stock is under 5.
+
+# ---- Transfer State Machine Capabilities ------------------------------------
+
+stage-transfer: add a transfer.
+find-transfer: find a transfer by tx_id.
+commit-transfer: for every pending transfer whose tx_id is a given tx_id, set state to 1.
+abort-transfer: for every pending transfer whose tx_id is a given tx_id, set state to 2.
+
+committed-transfers: show the tx_id, from_wallet, target_sku, qty and amount of committed transfers.
+aborted-transfers: show the tx_id, from_wallet, target_sku, qty and amount of aborted transfers.
+committed-revenue: what is the total amount of committed transfers?
