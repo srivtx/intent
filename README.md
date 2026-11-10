@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Intent — say what you mean, get a program" width="640">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" alt="intent." width="260">
+  </picture>
 </p>
 
 <p align="center">
