@@ -1,7 +1,8 @@
 """Intent IR: the canonical meaning of a program. Everything downstream reads only this.
 
 Expressions are tuples:
-    ('num', n) | ('str', s) | ('field', name) | ('param', name) | ('bin', op, a, b)   op in mul add sub div
+    ('num', n) | ('str', s) | ('field', name) | ('param', name) | ('bin', op, a, b)   op in mul add sub div rem
+    ('pfield', ref, name)   a property of the record this one belongs to (ref is the linking property)
 Conditions are tuples:
     ('cmp', op, a, b)   op in gt ge lt le eq ne
     ('and', a, b) | ('or', a, b)
@@ -18,6 +19,9 @@ class Field:
     line: int = 0
     how: str = 'declared'       # declared | inferred | assumed
     unique_line: int = 0
+    ref: str = None             # the collection this property points into ("each order belongs to a customer")
+    on_removed: str = None      # what happens to these records when that one is removed: cascade | restrict
+    on_removed_line: int = 0
 
 
 @dataclass
@@ -63,6 +67,15 @@ class Program:
 
     def field_names(self):
         return {f for c in self.collections.values() for f in c.fields}
+
+    def children_of(self, name):
+        """[(collection, linking property)] for every collection whose records belong to `name`."""
+        return [(c, f) for c in self.collections.values() for f in c.fields.values() if f.ref == name]
+
+    def key_of(self, name):
+        """The one unique property that identifies a record of `name`, or None."""
+        u = self.collections[name].unique_fields()
+        return u[0] if len(u) == 1 else None
 
 
 @dataclass
@@ -110,6 +123,8 @@ def fmt_expr(e, top=True):
         return e[1]
     if k == 'param':
         return f'<{e[1]}>'
+    if k == 'pfield':
+        return f'{e[1]}.{e[2]}'
     s = f'{fmt_expr(e[2], False)} {OPSYM[e[1]]} {fmt_expr(e[3], False)}'
     return s if top else f'({s})'
 
