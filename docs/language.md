@@ -219,6 +219,10 @@ screen            print the board
 None of the words used here is reserved: `the high score` and `each ticket has a key` are
 still ordinary names.
 
+While playing, the program uses a screen of its own and gives the terminal back exactly as it
+was, however it stops; the last board stays visible. A terminal too small for the board is
+refused with the size it needs.
+
 ## What happens when it does not understand
 
 - **An unknown word stops compilation** and is pointed at. Nothing is skipped.

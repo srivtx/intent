@@ -3,6 +3,27 @@
 Intent is experimental. Until 1.0, any version may change what a sentence means; `./intent check`
 always shows the current reading.
 
+## 0.5.1 — 2026-11-10
+
+Hardening of 0.5.0. No new sentences.
+
+### Fixed
+- **Stray words are no longer ignored** in the new sentences. `The board is draw 30 wide and
+  12 high`, `the left key key is pressed`, `Draw score "@" at ...` and `Start with a rock at
+  x is is 4` all compiled before; each is now pointed at.
+- **Two comparisons side by side are a question** (`whose y is over under 3`: *"over" or
+  "under"?*). The second used to win silently, in every kind of sentence.
+- A stray word between `where` and `each ... has` in a collection's description, or inside
+  `The total starts at 15`, is now reported.
+- `screen` crashed the reference interpreter when the program had a board but no single values.
+
+### Changed
+- Playing uses a screen of its own with line wrap off, and puts the terminal's settings back
+  exactly as they were (not to defaults) on `q`, `Esc`, `Ctrl-C`, a hang-up or a request to
+  stop. The last board stays visible afterwards.
+- A terminal too small for the board is refused, with the size it needs.
+- An arrow key whose bytes arrive apart is still an arrow key, not `Esc`.
+
 ## 0.5.0 — 2026-11-10
 
 ### Added

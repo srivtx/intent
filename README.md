@@ -7,7 +7,7 @@
 
 <p align="center">
   <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-f59e0b">
-  <img alt="version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-6366f1">
+  <img alt="version 0.5.1" src="https://img.shields.io/badge/version-0.5.1-6366f1">
   <a href="https://github.com/srivtx/intent/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/srivtx/intent/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
   <img alt="backend: LLVM IR" src="https://img.shields.io/badge/backend-LLVM%20IR-262d3a">
@@ -331,9 +331,10 @@ dicts). It is the definition of meaning. The tests build native programs and fee
 the same random command streams — unordered and ordered collections, text and numeric keys,
 reject and replace, with and without indexes, including malformed input and 64-bit overflow
 — and require identical output (as a multiset where order is not part of the meaning).
-155 tests pass, including the example apps, three-collection relationship programs and a
-game, run against the reference on random commands; the game is also played through a real
-terminal.
+160 tests pass, including the example apps, three-collection relationship programs and a
+game, run against the reference on random commands. The game is also played through a real
+terminal (keys, signals, a window that is too small), and randomly mangled copies of it must
+end in a diagnosis or a program, never a crash.
 
 This shows the backend agrees with the reference. It does not show the reference agrees
 with what you meant; that is what `check` is for — read the right-hand column.
