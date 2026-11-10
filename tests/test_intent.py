@@ -2057,10 +2057,13 @@ class TestAcross(TestNativeAgainstReference):
                                     'Every second, increase the fill2 by the fill1.', FIELD)
         self.assertEqual(diags, [])
         self.assertEqual(canon(prog.events[0]), 'set fill2 = fill2 + fill1')
-        prog, diags, _ = understand('The hurtt starts at 5.', FIELD)     # a slip is still a slip, not a new value
-        self.assertEqual(diags, [])
-        self.assertNotIn('hurtt', prog.collections['(values)'].fields)
-        self.assertEqual(prog.collections['(values)'].fields['hurt'].init, 5)
+        # hurt already starts at 0, so this cannot be a slip for it (it would start twice): it is a new value,
+        # and since nothing uses it, a note points at it
+        prog, diags, p = parse(FIELD + 'The hurtt starts at 5.')
+        diags += check(prog, p.src)
+        self.assertEqual([d.level for d in diags if d.level != 'note'], [])
+        self.assertEqual(prog.collections['(values)'].fields['hurt'].init, 0)
+        self.assertIn('"hurtt" is never used', [d.msg for d in diags])
 
     def test_counting_phrasings(self):
         for text in ['Every second, set the clear to 1 if the number of cells whose y is 3 is 8.',
@@ -2372,6 +2375,36 @@ class TestNetwork(TestNativeAgainstReference):
         self.assertIn('"board": null', page(prog, 'x'))
         self.assertEqual(from_path('/find-by-name/ann%20lee?x=1'), 'find-by-name ann lee')
         self.assertEqual(from_path('/count'), 'count')
+
+
+class TestCrowdedNames(unittest.TestCase):
+    """Programs with many short names, like the trig values of a 3D scene: no name may silently become another."""
+
+    def values(self, text):
+        prog, diags, _ = understand(text, '')
+        return diags, {f.name: f.init for f in prog.collections[STATE].fields.values()}
+
+    def test_near_names_that_each_start_are_separate_values(self):
+        self.assertEqual(self.values('The cosy starts at 1000. The cosp starts at 900. The cosr starts at 800.'),
+                         ([], {'cosy': 1000, 'cosp': 900, 'cosr': 800}))
+
+    def test_a_slip_still_gives_a_declared_value_its_start(self):
+        self.assertEqual(self.values('The score is a number. The scroe starts at 5.'), ([], {'score': 5}))
+
+    def test_a_value_starts_once(self):
+        level, _, d = problem('The score starts at 1.\nThe score starts at 2.\n', '')
+        self.assertEqual((level, d.msg, d.line), ('error', '"score" already starts at 1', 2))
+
+    def test_a_property_cannot_take_a_single_values_name(self):
+        level, where, d = problem('The sy starts at 500.\nPoints is a collection.\n'
+                                  'Each point has an x (number).\nEach point has an sy (number).\n', '')
+        self.assertEqual((level, where, d.msg), ('error', 'sy', '"sy" is already a single value'))
+
+    def test_whole_number_division_is_noted_once(self):
+        prog, diags, p = parse(BASE + 'Halve: set the age to the age divided by 2.\n'
+                                      'Third: set the salary to the salary divided by 3.\n')
+        notes = [d for d in diags + check(prog, p.src) if 'drops the remainder' in d.msg]
+        self.assertEqual(len(notes), 1)
 
 
 if __name__ == '__main__':
