@@ -80,7 +80,7 @@ def cmd_explain(a):
         return 1
     for c in prog.collections.values():
         cp = plan.colls[c.name]
-        props = ', '.join(f'{f.name}: {"number" if f.type == "int" else "text"}' +
+        props = ', '.join(f'{f.name}: {"decimal" if f.dec else "number" if f.type == "int" else "text"}' +
                           (' (unique)' if f.unique else '') +
                           ('' if f.how == 'declared' else f' [{f.how}]') for f in c.fields.values())
         print(f'{c.label}  —  {props}')
