@@ -431,8 +431,41 @@ def rewrite_links(text, src_dir):
 
 
 def md(text, src_dir='.'):
-    return markdown.markdown(rewrite_links(text, src_dir), extensions=['fenced_code', 'tables', 'toc'],
-                             extension_configs={'toc': {'permalink': False}})
+    """Markdown as HTML, with its code highlighted and its tables able to scroll; and its headings."""
+    conv = markdown.Markdown(extensions=['fenced_code', 'tables', 'toc'], extension_configs={'toc': {'permalink': False}})
+    out = conv.convert(rewrite_links(text, src_dir))
+
+    def code(m):
+        lang = m.group(1) or ''
+        raw = html.unescape(m.group(2))
+        kind = 'shell' if lang in ('bash', 'sh', 'shell', 'console') else 'intent' if lang in ('', 'intent', 'text') else None
+        return f'<pre><code>{highlight(raw, kind) if kind else m.group(2)}</code></pre>'
+    out = re.sub(r'<pre><code(?: class="language-([\w-]+)")?>(.*?)</code></pre>', code, out, flags=re.S)
+    out = out.replace('<table>', '<div class="tbl"><table>').replace('</table>', '</table></div>')
+    return out, conv.toc_tokens
+
+
+def toc_items(tokens, depth):
+    out = []
+    for t in tokens:
+        if t['level'] == 1:                     # the page's own title: its sections are what the reader needs
+            out += toc_items(t['children'], depth)
+            continue
+        kids = toc_items(t['children'], depth - 1) if depth > 1 else []
+        out.append(f'<li><a href="#{t["id"]}">{t["name"]}</a>' + (f'<ol>{"".join(kids)}</ol>' if kids else '') + '</li>')
+    return out
+
+
+def doc(content, tokens, depth=2, label='On this page'):
+    """A reading page: the text, with a table of contents that follows along beside it (folded on a phone)."""
+    toc = f'<ol>{"".join(toc_items(tokens, depth))}</ol>'
+    short = f'<ol>{"".join(toc_items(tokens, 1))}</ol>'
+    mobile = f'<details class="mtoc"><summary>{label}</summary>{short}</details>'
+    end = content.find('</h1>')
+    if end >= 0:
+        content = content[:end + 5] + mobile + content[end + 5:]
+    return (f'<div class="doc"><aside aria-label="{label}"><h2>{label}</h2>{toc}</aside>'
+            f'<article class="prose">{content}</article></div>')
 
 
 def first_example():
@@ -556,16 +589,21 @@ Every 50 milliseconds, set the look of each dot to "@" if the absolute value of
 def guide():
     with open(os.path.join(ROOT, 'docs', 'language.md')) as fh:
         text = fh.read()
+    content, tokens = md(text, 'docs')
     return page('guide/', 'Language guide', 'How to write Intent programs: describing information, teaching words, '
-                'capabilities, decimals and money, single values, standing rules, time, keys and a board, and serving '
-                'a program over the network.', md(text, 'docs'), 'TechArticle')
+                'capabilities, decimals and money, single values, standing rules, time, keys and a board, pictures, '
+                'and steering how a program is built.', doc(content, tokens), 'TechArticle')
 
 
 def changelog():
     with open(os.path.join(ROOT, 'CHANGELOG.md')) as fh:
         text = fh.read()
+    content, tokens = md(text)
+    # "0.8.1 — 2026-11-11": the version as a tag, the date beside it
+    content = re.sub(r'(<h2 id="[^"]*">)([\d.]+) — (\d{4}-\d\d-\d\d)</h2>',
+                     r'\1<span class="ver">\2</span><time datetime="\3">\3</time></h2>', content)
     return page('changelog/', 'Changelog', f'What changed in each version of Intent, up to {__version__}.',
-                md(text), 'TechArticle')
+                doc(content, tokens, depth=1, label='Versions'), 'TechArticle')
 
 
 EXAMPLE_TEXT = {
