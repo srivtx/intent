@@ -16,9 +16,18 @@ since hash indexes: an ordered index, chosen from what the program asks.
   `at least`), an ordering (`sorted by age`) or the top or bottom few (`the top 5 ... by age`),
   the planner can keep a balanced tree (a treap over the row numbers) sorted by that property.
   Ranges are found in O(log n) and read in order without sorting; adding or removing one record
-  costs O(log n). It is only kept when the reads it serves outnumber the changes that would force
-  a rebuild, and `./intent explain` gives the reasons either way. 450 times faster than scanning
-  and sorting at 80,000 records (`bench/ordered.py`); `--no-order` builds without it, to compare.
+  costs O(log n). It is only kept when it is cheaper (see the next entry), and `./intent explain`
+  gives the reasons either way. 500 times faster than scanning and sorting at 80,000 records
+  (`bench/ordered.py`); `--no-order` builds without it, to compare.
+- **Planning for the workload.** Whether to keep an ordered index, and which commands read
+  through it, is now an estimate in measured costs (`bench/calibrate.py`): scanning, sorting,
+  walking and rebuilding, weighed by how often each command comes and how many records its range
+  holds. `--workload sample.txt` measures that on real commands through the reference interpreter;
+  `Expect about 1,000,000 customers.` says how many records to plan for. `explain` shows both
+  estimates. One program planned from two samples is faster on each sample's own workload
+  (`bench/workload.py`).
+- A stale ordered index is rebuilt with one sort and one pass (it was n insertions), and walking
+  it no longer allocates: each index keeps a stack as deep as it can get.
 - **Maths.** `the square root of`, `the sine of`, `the cosine of` (degrees),
   `the absolute value of`, `the nearest whole number to`, `the whole part of`. Worked out in
   whole numbers (a sine table written into the compiler), so native code and the reference agree
