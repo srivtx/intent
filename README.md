@@ -482,21 +482,44 @@ without sorting, and the 5 oldest are the last 5 in the tree. Adding or removing
 it in or takes it out of the tree in O(log n). The tree is a treap whose nodes are the row numbers
 themselves, so it needs no memory of its own beyond two children and a priority per row.
 
-The planner only keeps the tree when it pays: a change that moves many records at once (`For every
-customer, double their age.`, `Remove the customers whose ...`) leaves it to be rebuilt at the next
-read, so if such changes are as common as the reads it would serve, there is no tree and `explain`
-says so. The tree only narrows which records are looked at; each one is still tested against the
-whole condition, so the answer is the one a pass over every record would give.
+The tree only narrows which records are looked at; each one is still tested against the whole
+condition, so the answer is the one a pass over every record would give.
 
 Seconds for n adds, then n/10 rounds of a narrow range, a count, the 5 oldest, a find and a removal
 (`python3 bench/ordered.py`; all three builds print the same lines):
 
 | records | planner's choice | `--no-order` (hash index only) | `--no-index` |
 |---:|---:|---:|---:|
-| 10,000 | 0.029 | 1.270 | 1.595 |
-| 20,000 | 0.057 | 5.354 | 6.229 |
-| 40,000 | 0.098 | 22.280 | 25.473 |
-| 80,000 | 0.213 | 96.721 | 107.003 |
+| 10,000 | 0.031 | 1.566 | 2.096 |
+| 20,000 | 0.072 | 6.694 | 8.099 |
+| 40,000 | 0.161 | 28.275 | 34.147 |
+| 80,000 | 0.241 | 123.558 | 155.030 |
+
+### Planned for the workload, with measured costs
+
+Whether the tree pays depends on how the program is used. A change to many records at once
+(`increase the age of customers by 1`) leaves it to be rebuilt, one sort of every record, at the
+next read. A wide range is cheaper to scan than to walk. So the planner estimates both ways, in
+steps of a plain pass over the records, and keeps the tree only where it is cheaper:
+
+- what it costs to scan, sort, walk the tree, step down it, keep it up to date and rebuild it,
+  measured on native builds (`python3 bench/calibrate.py`): one sort comparison costs about 21
+  steps of a pass, one record reached along the tree about 4, a rebuild about 25 per n log n;
+- how often each command comes, how big the collection is and how many records each range holds:
+  from a sample of real commands (`--workload sample.txt`, run through the reference interpreter
+  first), or else every command equally often and the size the program states
+  (`Expect about 1,000,000 customers.`), or 100,000.
+
+It decides for each command on its own: the 10 oldest walk the tree while a count of everyone
+over 20 still scans. One program, planned from two small samples, then run on the full workload of
+each kind (`python3 bench/workload.py`, seconds):
+
+| workload | planned for reads (keeps the tree) | planned for churn (no tree) |
+|---|---:|---:|
+| 19 reads to each change of every age | **2.82** | 17.25 |
+| a change of every age before each read | 9.44 | **7.82** |
+
+Each plan wins on the workload it was made for, and `explain` says why with the numbers.
 
 ## Is the generated code right?
 
@@ -637,5 +660,7 @@ intentc/web.py          serving over the network with the reference interpreter,
 tests/                  phrasings, questions, planner, spelling, definitions, apps, native-vs-reference
 bench/bench.py          the table above
 bench/ordered.py        the ordered index against scanning and sorting
+bench/workload.py       one program planned for two workloads
+bench/calibrate.py      the step costs the planner's cost model uses
 examples/               customers, questions, leaderboard, todo, shop, store, calculator, arcade, dodge, snake, shooter
 ```
