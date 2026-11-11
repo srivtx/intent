@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-f59e0b">
-  <img alt="version 0.8.1" src="https://img.shields.io/badge/version-0.8.1-6366f1">
+  <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-dd5a2b">
+  <img alt="version 0.8.1" src="https://img.shields.io/badge/version-0.8.1-2a5fc4">
   <a href="https://github.com/srivtx/intent/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/srivtx/intent/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
   <img alt="backend: LLVM IR" src="https://img.shields.io/badge/backend-LLVM%20IR-262d3a">
