@@ -40,7 +40,7 @@ TODAY = datetime.date.today().isoformat()
 
 NAV = (('', 'Home'), ('guide/', 'Guide'), ('gallery/', 'Gallery'), ('examples/', 'Examples'), ('changelog/', 'Changelog'))
 FONTS = ('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600'
-         '&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap')
+         '&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&display=swap')
 def page(path, title, desc, body, kind='WebPage', extra_ld=None, wide=False):
     url = SITE + path
     ld = [{
@@ -146,9 +146,8 @@ pre::-webkit-scrollbar,nav::-webkit-scrollbar,.tbl::-webkit-scrollbar,dialog::-w
 /* masthead */
 .masthead{position:sticky;top:0;z-index:5;background:var(--paper);border-bottom:1px solid var(--rule)}
 .bar{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:56px}
-.brand{color:var(--ink);background:none;font:800 24px/1 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
-  letter-spacing:-1.2px}
-.brand span{color:#f59e0b}
+.brand{color:var(--ink);background:none;font:700 28px/1 var(--serif);font-variation-settings:"opsz" 60;letter-spacing:-.02em}
+.brand span{color:var(--orange)}
 .masthead nav{display:flex;gap:22px;overflow-x:auto;font:400 14px/1 var(--mono)}
 .masthead nav a{color:var(--ink2);padding:6px 0;white-space:nowrap;background:none;border-bottom:1.5px solid transparent;transition:color .15s,border-color .15s}
 .masthead nav a:hover{color:var(--ink);border-color:var(--rule)}
@@ -335,7 +334,7 @@ dialog.sheet::backdrop{background:rgba(16,20,28,.55)}
 /* colophon */
 .colophon{margin-top:110px;border-top:1px solid var(--rule);padding:28px 0 44px;font-size:15.5px;color:var(--ink2)}
 .colophon p{margin:0 0 8px;max-width:760px}
-.colophon .brand{font-size:17px;letter-spacing:-.7px}
+.colophon .brand{font-size:18px}
 .colophon a:not(.brand){font-family:var(--mono);font-size:13.5px}
 .colophon .set{color:var(--ink3);font-size:14.5px;margin-top:14px}
 '''
@@ -843,7 +842,7 @@ def main():
     write('sitemap.xml', f'<?xml version="1.0" encoding="UTF-8"?>\n'
                          f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{urls}</urlset>\n')
     write('site.webmanifest', json.dumps({'name': NAME, 'short_name': NAME, 'start_url': SITE, 'display': 'browser',
-                                          'background_color': '#0b0f17', 'theme_color': '#0b0f17',
+                                          'background_color': '#f6f4ee', 'theme_color': '#f6f4ee',
                                           'icons': [{'src': SITE + 'icon.svg', 'sizes': 'any', 'type': 'image/svg+xml'}]},
                                          indent=1))
     with open(os.path.join(ROOT, 'README.md')) as fh:
