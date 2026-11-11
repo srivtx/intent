@@ -195,21 +195,11 @@ td code{white-space:nowrap}
 .btn.main{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 
 /* home */
-.hero{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:48px;align-items:center;padding:24px 0 8px}
+.hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:56px;align-items:center;padding:40px 0 16px}
 .hero h1{margin-top:28px}
 .hero h1 em{font-style:italic;color:var(--accent)}
-.badges{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0 0;padding:0;list-style:none;min-width:0}
-.badges li{font-size:13px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:4px 10px;background:var(--surface)}
-.badges li::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok);margin-right:7px;vertical-align:middle}
-.chose{padding:6px 0 4px}
-.chose div{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;padding:10px 16px;border-top:1px solid var(--line);font-size:14px}
-.chose div:first-child{border-top:0}
-.chose b{font-weight:650}
-.chose span{color:var(--dim);grid-column:2}
-.chose .ic{grid-column:1;grid-row:1/span 3}
-.chose em{font-style:normal;font:12px/1.4 var(--mono);color:var(--faint);grid-column:2}
-.chose .ic{width:30px;height:30px;border-radius:8px;background:var(--soft);color:var(--accent);
-  display:grid;place-items:center;font:700 13px/1 var(--mono)}
+.built{margin:0;padding:12px 18px 14px;border-top:1px solid var(--line);font-size:14.5px;color:var(--dim);background:var(--sunk)}
+.built b{font-weight:600;color:var(--fg);border-bottom:1px dotted var(--faint);cursor:help}
 @media (max-width:900px){.hero{grid-template-columns:minmax(0,1fr);gap:8px}}
 .feats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);
   border-radius:16px;overflow:hidden;margin:28px 0}
@@ -484,30 +474,26 @@ Show the customers sorted by age, largest first.'''
 
 
 def chosen():
-    """What the planner really builds for the first example, said briefly, with the line that caused it."""
+    """What the planner really builds for the first example, in a few words each; the reason is in the title."""
     from intentc.check import check
     from intentc.parser import parse
     from intentc.plan import make_plan
     prog, diags, p = parse(first_example())
     diags += check(prog, p.src)
     plan = make_plan(prog)
-    rows = []
-    marks = {'storage': '[]', 'index on': '#', 'ordered index on': '⌥', 'removal': '↯'}
-    names = {'storage': 'A growable array', 'removal swaps in the last row': 'Removal swaps in the last row'}
+    parts = []
     for title, detail, why in plan.colls['customer'].decisions:
-        if title.startswith('no '):
-            continue
-        mark = next((v for k, v in marks.items() if title.startswith(k)), '•')
-        if title.startswith('ordered index on'):
-            name, say = f'A balanced tree on {title.split()[-1]}', 'ranges and orderings without sorting'
+        if title == 'storage':
+            name = 'an array'
         elif title.startswith('index on'):
-            name, say = f'A hash index on {title.split()[-1]}', 'one probe finds a customer'
+            name = f'a hash index on {title.split()[-1]}'
+        elif title.startswith('ordered index on'):
+            name = f'a tree on {title.split()[-1]}'
         else:
-            name, say = names.get(title, title.capitalize()), detail.split(',')[0].split(';')[0]
-        because = f'line {why[0][0]}: {why[0][1]}' if why else 'every program starts here'
-        rows.append(f'<div><span class="ic" aria-hidden="true">{html.escape(mark)}</span><b>{html.escape(name)}</b>'
-                    f'<span>{html.escape(say)}</span><em>{html.escape(because)}</em></div>')
-    return ''.join(rows)
+            continue                # the finer points are for ./intent explain
+        reason = f'line {why[0][0]}: {why[0][1]}' if why else detail
+        parts.append(f'<b title="{html.escape(reason)}">{html.escape(name)}</b>')
+    return ', '.join(parts[:-1]) + ' and ' + parts[-1] if len(parts) > 1 else ''.join(parts)
 
 
 FAQ = [
@@ -566,18 +552,14 @@ Alice,20,alice@x.com'''
 <section class="hero">
 <div>
 <h1>Write what you <em>mean</em>.<br>Get native code.</h1>
-<p class="lede">Intent is an experimental programming language in plain English. You describe what information exists
-and what should be possible with it. A deterministic compiler works out the data structures and algorithms and emits
-<strong>LLVM IR</strong> for a native program.</p>
-<div class="cta"><a class="btn main" href="{REPO}">Get it on GitHub</a><a class="btn" href="{SITE}guide/">Read the guide</a>
-<a class="btn" href="{SITE}gallery/">See the gallery</a></div>
-<ul class="badges"><li>No AI in the compiler</li><li>LLVM IR, then clang</li><li>Version {__version__}</li></ul>
+<p class="lede">Describe what information exists and what should be possible with it, in plain English. A
+deterministic compiler, with no AI inside, chooses the data structures and algorithms and emits LLVM IR for a native
+program.</p>
+<div class="cta"><a class="btn main" href="{REPO}">Get it on GitHub</a><a class="btn" href="{SITE}guide/">Read the guide</a></div>
 </div>
-<div>
-{window('customers.intent', first_example())}
-<div class="win"><div class="title"><i></i><i></i><i></i><b>./intent explain customers.intent</b></div>
-<div class="chose">{chosen()}</div></div>
-</div>
+<div class="win"><div class="title"><i></i><i></i><i></i><b>customers.intent</b></div>
+<pre><code>{highlight(first_example())}</code></pre>
+<p class="built">The compiler built {chosen()}. Nothing above asked for them.</p></div>
 </section>
 
 <div class="feats">{cards}</div>
