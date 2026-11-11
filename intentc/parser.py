@@ -652,6 +652,8 @@ class Parser:
                 known = known or self.vocabulary()
                 if w not in known:
                     raise self.unknown_word(CT('UNK', w, [toks[i]]))
+        if words[0] == 'expect' or words[:2] == ['we', 'expect']:
+            return self.decl_expect(toks)
         if words[0] in DRAW_WORDS and self.free(words[0]):
             return self.decl_draw(toks)
         if words[0] == 'write' and self.free('write'):        # "Write "Hello" at 3 and 2.": a text, one cell each
@@ -1972,6 +1974,43 @@ class Parser:
             coll.fields[c.val].unique = True
             coll.fields[c.val].unique_line = c.toks[0].line
         return f'{coll.name}: ' + ', '.join(c.val for c in fs) + ' unique'
+
+    def decl_expect(self, toks):
+        """'Expect about 1,000,000 customers.': how many records the planner should plan for.
+
+        It changes no meaning, only which data structures are worth their upkeep.
+        """
+        i = 2 if toks[0].text == 'we' else 1
+        while i < len(toks) and toks[i].kind == 'word' and toks[i].text in ('about', 'around', 'roughly', 'nearly',
+                                                                             'up', 'to', 'at', 'most', 'some'):
+            i += 1
+        if i >= len(toks) or toks[i].kind != 'num':
+            raise self.p('error', toks[:i + 1], 'expect how many?', hint='e.g. "Expect about 1,000,000 customers."')
+        j, digits = i + 1, toks[i].text
+        while j + 1 < len(toks) and toks[j].kind == 'sym' and toks[j].text == ',' and toks[j + 1].kind == 'num' \
+                and len(toks[j + 1].text) == 3 and toks[j].start == toks[j - 1].end:
+            digits += toks[j + 1].text      # "1,000,000": the commas group digits
+            j += 2
+        if '.' in digits:
+            raise self.p('error', toks[i:j], 'a whole number of records, please')
+        n = int(digits)
+        scale = {'thousand': 1000, 'million': 1000000, 'billion': 1000000000}
+        if j < len(toks) and toks[j].kind == 'word' and toks[j].text in scale:
+            n *= scale[toks[j].text]
+            j += 1
+        rest = toks[j:]
+        name = singular(rest[0].text) if len(rest) == 1 and rest[0].kind == 'word' else None
+        if name not in self.prog.collections:
+            raise self.p('error', rest or toks, 'expect how many of what?',
+                         hint='name a collection, e.g. "Expect about 1,000,000 customers."')
+        coll = self.prog.collections[name]
+        if coll.expect is not None:
+            raise self.p('error', toks, f'how many {coll.label.lower()} to expect was already said on line '
+                         f'{coll.expect_line}')
+        if n < 1:
+            raise self.p('error', toks[i:j], 'expect at least one')
+        coll.expect, coll.expect_line = n, toks[0].line
+        return f'{coll.name}: plan for about {n:,}'
 
     def decl_order(self, content):
         unk = [c for c in content if c.kind == 'UNK']

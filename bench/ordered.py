@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Does the ordered index pay for itself? The workload from the critique, built two ways.
 
-  planner   - what the planner chooses: a hash index on email and a balanced tree on age
+  planner   - what the planner chooses, given a small sample of the same kind of commands
+              (--workload): a hash index on email and a balanced tree on age
   no tree   - built with --no-order: the hash index stays, every range or ordered read scans and sorts
   no index  - built with --no-index: finds and removals scan too
 
@@ -41,7 +42,7 @@ def workload(n, rng):
         lo = rng.randrange(span)
         cmds += [f'in-range {lo},{lo + 20}', f'count {span - 50}', 'oldest', f'find-by-email {e}',
                  f'remove-by-email {e}']
-    return '\n'.join(cmds) + '\n'
+    return cmds
 
 
 def main():
@@ -52,12 +53,12 @@ def main():
         with open(src, 'w') as fh:
             fh.write(PROGRAM)
         exes[name] = src[:-7]
-        assert build(src, exes[name], no_index=no_index, quiet=True)
+        assert build(src, exes[name], no_index=no_index, quiet=True, workload=workload(2000, random.Random(0)))
         subprocess.run([exes[name]], input='count 0\n', capture_output=True, text=True)    # warm up
     print(f'{"records":>8}  ' + '  '.join(f'{k:>10}' for k in exes) + '   (seconds; n adds, n/10 rounds of '
           'range + count + top 5 + find + remove)')
     for n in (10000, 20000, 40000, 80000):
-        data = workload(n, random.Random(n))
+        data = '\n'.join(workload(n, random.Random(n))) + '\n'
         row, outs = [], set()
         for exe in exes.values():
             t0 = time.perf_counter()

@@ -964,10 +964,11 @@ class Gen:
         rebuilds it.
         """
         C, K, KT = c.name, fl.name, LL[fl.type]
-        L, R, P = g(C, K, 'left'), g(C, K, 'right'), g(C, K, 'prio')
+        L, R, P, S = g(C, K, 'left'), g(C, K, 'right'), g(C, K, 'prio'), g(C, K, 'stack')
         ROOT, FRESH, OCAP, SEED = g(C, K, 'root'), g(C, K, 'fresh'), g(C, K, 'ocap'), g(C, K, 'seed')
         self.globals += [f'{L} = internal global ptr null', f'{R} = internal global ptr null',
-                         f'{P} = internal global ptr null', f'{ROOT} = internal global i64 -1',
+                         f'{P} = internal global ptr null', f'{S} = internal global ptr null',
+                         f'{ROOT} = internal global i64 -1',
                          f'{FRESH} = internal global i1 true', f'{OCAP} = internal global i64 0',
                          f'{SEED} = internal global i64 0']
 
@@ -1059,25 +1060,35 @@ class Gen:
         put(f, R, '%t', f.r(f'call i64 {g(C, K, "del")}(i64 {get(f, R, "%t")}, i64 %x)'))
         f.e('ret i64 %t')
 
-        f = self.fn(g(C, K, 'insert'), params='i64 %x', comment=f'{C}.{K} order: a row was added at x')
-        out, go, grow, fits = f.lab('out'), f.lab('go'), f.lab('grow'), f.lab('fits')
-        f.cbr(f.load('i1', FRESH), go, out)
-        f.at(out)
-        f.e('ret void')
-        f.at(go)
+        f = self.fn(g(C, K, 'room'), comment=f'{C}.{K} order: children, priorities and a walking stack '
+                                                'for every row there is room for')
+        grow, fits = f.lab('grow'), f.lab('fits')
         cap = f.load('i64', g(C, 'cap'))
         f.cbr(f.r(f'icmp slt i64 {f.load("i64", OCAP)}, {cap}'), grow, fits)
         f.at(grow)
-        for arr in (L, R, P):
+        for arr in (L, R, P, S):
             f.store('ptr', f.r(f'call ptr @realloc(ptr {f.load("ptr", arr)}, i64 {f.r(f"shl i64 {cap}, 3")})'), arr)
         f.store('i64', cap, OCAP)
         f.br(fits)
         f.at(fits)
+        f.e('ret void')
+
+        f = self.fn(g(C, K, 'rank'), params='i64 %x', comment=f'{C}.{K} order: give row x the next priority')
         z = f.r(f'add i64 {f.load("i64", SEED)}, {MIX}')      # splitmix64: a fixed, well-spread sequence
         f.store('i64', z, SEED)
         z = f.r(f'mul i64 {f.r(f"xor i64 {z}, {f.r(f"lshr i64 {z}, 30")}")}, -4658895280553007687')
         z = f.r(f'mul i64 {f.r(f"xor i64 {z}, {f.r(f"lshr i64 {z}, 27")}")}, -7723592293110705685')
         put(f, P, '%x', f.r(f'xor i64 {z}, {f.r(f"lshr i64 {z}, 31")}'))
+        f.e('ret void')
+
+        f = self.fn(g(C, K, 'insert'), params='i64 %x', comment=f'{C}.{K} order: a row was added at x')
+        out, go = f.lab('out'), f.lab('go')
+        f.cbr(f.load('i1', FRESH), go, out)
+        f.at(out)
+        f.e('ret void')
+        f.at(go)
+        f.e(f'call void {g(C, K, "room")}()')
+        f.e(f'call void {g(C, K, "rank")}(i64 %x)')
         f.store('i64', f.r(f'call i64 {g(C, K, "ins")}(i64 {f.load("i64", ROOT)}, i64 %x)'), ROOT)
         f.e('ret void')
 
@@ -1111,15 +1122,67 @@ class Gen:
         f.store('i64', f.r(f'select i1 {f.r(f"icmp sgt i64 {r}, %gone")}, i64 {f.r(f"sub i64 {r}, 1")}, i64 {r}'), ROOT)
         f.e('ret void')
 
-        f = self.fn(g(C, K, 'ready'), comment=f'{C}.{K} order: rebuild it if a change left it stale, O(n log n)')
-        out, go = f.lab('out'), f.lab('go')
+        f = self.fn(g(C, K, 'qcmp'), 'i32', 'ptr %a, ptr %b', f'{C}.{K} order: two row numbers, for qsort')
+        ia, ib = f.load('i64', '%a'), f.load('i64', '%b')
+        f.e(f'ret i32 {f.r(f"select i1 {f.r(f"call i1 {g(C, K, "less")}(i64 {ia}, i64 {ib})")}, i32 -1, i32 1")}')
+
+        f = self.fn(g(C, K, 'ready'),
+                    comment=f'{C}.{K} order: if a change left it stale, rebuild it: one sort, then one pass')
+        out, go, empty, build = f.lab('out'), f.lab('go'), f.lab('empty'), f.lab('build')
         f.cbr(f.load('i1', FRESH), out, go)
         f.at(out)
         f.e('ret void')
         f.at(go)
-        f.store('i64', '-1', ROOT)
         f.store('i1', 'true', FRESH)
-        self.rows(f, c, lambda i, cont: f.e(f'call void {g(C, K, "insert")}(i64 {i})'))
+        f.store('i64', '-1', ROOT)
+        n = f.load('i64', g(C, 'len'))
+        f.cbr(f.r(f'icmp eq i64 {n}, 0'), empty, build)
+        f.at(empty)
+        f.e('ret void')
+        f.at(build)
+        f.e(f'call void {g(C, K, "room")}()')
+        order = f.r(f'call ptr @malloc(i64 {f.r(f"shl i64 {n}, 3")})')
+        stack = f.r(f'call ptr @malloc(i64 {f.r(f"shl i64 {n}, 3")})')
+        self.rows(f, c, lambda i, cont: f.store('i64', i, f.r(f'getelementptr i64, ptr {order}, i64 {i}')), count=n)
+        f.e(f'call void @qsort(ptr {order}, i64 {n}, i64 8, ptr {g(C, K, "qcmp")})')
+        sp = f.var('i64', '0')
+
+        def place(j, cont):
+            # the rows in order, each with a priority: a node takes as its left subtree the run of
+            # lower-priority nodes just before it, and becomes the right child of the one above
+            x = f.load('i64', f.r(f'getelementptr i64, ptr {order}, i64 {j}'))
+            f.e(f'call void {g(C, K, "rank")}(i64 {x})')
+            put(f, R, x, '-1')
+            last = f.var('i64', '-1')
+            head, pop, placed = f.lab('head'), f.lab('pop'), f.lab('placed')
+            look = f.lab('look')
+            f.br(head)
+            f.at(head)
+            spv = f.load('i64', sp)
+            f.cbr(f.r(f'icmp sgt i64 {spv}, 0'), look, placed)
+            f.at(look)
+            top = f.r(f'sub i64 {spv}, 1')
+            y = f.load('i64', f.r(f'getelementptr i64, ptr {stack}, i64 {top}'))
+            f.cbr(f.r(f'icmp slt i64 {get(f, P, y)}, {get(f, P, x)}'), pop, placed)
+            f.at(pop)
+            f.store('i64', y, last)
+            f.store('i64', top, sp)
+            f.br(head)
+            f.at(placed)
+            put(f, L, x, f.load('i64', last))
+            spv = f.load('i64', sp)
+            under, push = f.lab('under'), f.lab('push')
+            f.cbr(f.r(f'icmp sgt i64 {spv}, 0'), under, push)
+            f.at(under)
+            put(f, R, f.load('i64', f.r(f'getelementptr i64, ptr {stack}, i64 {f.r(f"sub i64 {spv}, 1")}')), x)
+            f.br(push)
+            f.at(push)
+            f.store('i64', x, f.r(f'getelementptr i64, ptr {stack}, i64 {spv}'))
+            f.store('i64', f.r(f'add i64 {spv}, 1'), sp)
+        self.rows(f, c, place, count=n)
+        f.store('i64', f.load('i64', stack), ROOT)
+        f.e(f'call void @free(ptr {order})')
+        f.e(f'call void @free(ptr {stack})')
         f.e('ret void')
 
     def stale(self, f, c, props=None):
@@ -1152,8 +1215,7 @@ class Gen:
 
         def child(arr, x):
             return f.load('i64', f.r(f'getelementptr i64, ptr {f.load("ptr", arr)}, i64 {x}'))
-        n = f.load('i64', g(C, 'len'))
-        stack = f.r(f'call ptr @malloc(i64 {f.r(f"shl i64 {f.r(f"add i64 {n}, 1")}, 3")})')
+        stack = f.load('ptr', g(C, K, 'stack'))     # deep enough for any path: one entry per row
         sp = f.var('i64', '0')
 
         def push(x):
@@ -1210,7 +1272,6 @@ class Gen:
         f.store('i64', child(near, y), node)
         f.br(down)
         f.at(end)
-        f.e(f'call void @free(ptr {stack})')
 
     def remove_row(self, c, cp, size):
         C = c.name

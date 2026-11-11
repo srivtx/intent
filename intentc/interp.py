@@ -128,6 +128,23 @@ def holds(c, row, args, m=None):
     return holds(c[1], row, args, m) or holds(c[2], row, args, m)
 
 
+def arguments(t, arg):
+    """The command's arguments by name, or the error to print instead."""
+    toks = arg.split(',') if arg else []
+    args = {}
+    for i, p in enumerate(t.params):
+        if i >= len(toks):
+            return f'error: missing {p}'
+        if t.ptypes[p] == 'int':
+            v = parse_dec(toks[i]) if p in t.pdec else parse_num(toks[i])
+            if v is None:
+                return f'error: {p} must be a number' + (' like 12.50' if p in t.pdec else '')
+            args[p] = v
+        else:
+            args[p] = toks[i]
+    return args
+
+
 class Machine:
     def __init__(self, prog):
         self.prog = prog
@@ -342,18 +359,9 @@ class Machine:
             return self.builtin_command(cmd, arg)
         if t is None:
             return [f'error: unknown command {cmd}']
-        toks = arg.split(',') if arg else []
-        args = {}
-        for i, p in enumerate(t.params):
-            if i >= len(toks):
-                return [f'error: missing {p}']
-            if t.ptypes[p] == 'int':
-                v = parse_dec(toks[i]) if p in t.pdec else parse_num(toks[i])
-                if v is None:
-                    return [f'error: {p} must be a number' + (' like 12.50' if p in t.pdec else '')]
-                args[p] = v
-            else:
-                args[p] = toks[i]
+        args = arguments(t, arg)
+        if isinstance(args, str):
+            return [args]
         out = getattr(self, 'do_' + t.kind)(t, args)
         return out + self.settle() if t.kind in MUTATING else out
 
