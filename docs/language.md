@@ -491,6 +491,34 @@ Answers: records print as comma-separated values; `none` when nothing matches a 
 `duplicate email`, `no such member`, `member still has visits` when a rule refuses;
 `error: ...` when the command itself is malformed.
 
+## How it is built, and how to steer that
+
+`./intent explain program.intent` shows how each collection is stored, every index, why, and what
+each command costs. The program never names a data structure; two things change which ones are
+worth their upkeep, and neither changes what the program means:
+
+```
+Expect about 1,000,000 customers.
+```
+
+says how many records to plan for (`about`, `around`, `up to`, `20 thousand`, `2 million` all
+work). Without it the planner assumes 100,000.
+
+```bash
+./intent explain program.intent --workload sample.txt
+```
+
+```bash
+./intent build program.intent --workload sample.txt
+```
+
+plans for a sample of real commands, one per line, exactly as the program reads them. The sample
+is run through the reference interpreter first, to see how often each command comes, how many
+records its ranges hold, and how often a change to many records at once would leave an ordered
+index stale before the next read. Without a sample, every command is taken to come equally often.
+`explain` then shows the estimated cost per 1000 commands with and without each ordered index,
+and what the estimate rests on.
+
 ## On the network, and in a window
 
 ```bash
