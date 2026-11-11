@@ -23,7 +23,7 @@ sys.path.insert(0, ROOT)
 from intentc import __version__  # noqa: E402
 
 OUT = os.path.join(ROOT, '_site')
-SITE = 'https://intent.srivtx.xyz/'
+SITE = os.environ.get('INTENT_SITE', 'https://intent.srivtx.xyz/')     # INTENT_SITE=http://localhost:8017/ to preview
 REPO = 'https://github.com/srivtx/intent'
 NAME = 'Intent'
 TAGLINE = 'Plain English in, native code out'
