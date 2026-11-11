@@ -25,6 +25,7 @@ from intentc import __version__  # noqa: E402
 OUT = os.path.join(ROOT, '_site')
 SITE = os.environ.get('INTENT_SITE', 'https://intent.srivtx.xyz/')     # INTENT_SITE=http://localhost:8017/ to preview
 REPO = 'https://github.com/srivtx/intent'
+AUTHOR = {'@type': 'Person', 'name': 'Sribatsha', 'alternateName': 'svx', 'url': 'https://github.com/srivtx'}
 NAME = 'Intent'
 TAGLINE = 'Plain English in, native code out'
 DESCRIPTION = ('Intent is an experimental programming language where you describe what information exists and '
@@ -40,12 +41,6 @@ TODAY = datetime.date.today().isoformat()
 NAV = (('', 'Home'), ('guide/', 'Guide'), ('gallery/', 'Gallery'), ('examples/', 'Examples'), ('changelog/', 'Changelog'))
 FONTS = ('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600'
          '&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap')
-# The mark: a lower-case i set in pixels, its dot in orange.
-MARK = ('<svg class="mark" viewBox="0 0 5 8" width="14" height="22" aria-hidden="true" shape-rendering="crispEdges">'
-        '<rect x="2" y="0" width="1" height="1" fill="var(--orange)"/><rect x="1" y="2" width="2" height="1" fill="currentColor"/>'
-        '<rect x="2" y="3" width="1" height="4" fill="currentColor"/><rect x="1" y="7" width="3" height="1" fill="currentColor"/></svg>')
-
-
 def page(path, title, desc, body, kind='WebPage', extra_ld=None, wide=False):
     url = SITE + path
     ld = [{
@@ -64,7 +59,7 @@ def page(path, title, desc, body, kind='WebPage', extra_ld=None, wide=False):
 <title>{html.escape(full)}</title>
 <meta name="description" content="{html.escape(desc)}">
 <meta name="keywords" content="{html.escape(KEYWORDS)}">
-<meta name="author" content="srivtx">
+<meta name="author" content="Sribatsha (svx)">
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
 <link rel="canonical" href="{url}">
 <link rel="icon" href="{SITE}icon.svg" type="image/svg+xml">
@@ -96,15 +91,16 @@ def page(path, title, desc, body, kind='WebPage', extra_ld=None, wide=False):
 <body>
 <a class="skip" href="#main">Skip to the content</a>
 <header class="masthead"><div class="wrap bar">
-<a class="brand" href="{SITE}" aria-label="Intent, home">{MARK}<span>intent</span></a>
+<a class="brand" href="{SITE}" aria-label="Intent, home">intent<span>.</span></a>
 <nav aria-label="Site">{nav}<a href="{REPO}">github&#8599;</a></nav>
 </div></header>
 <main id="main" class="wrap{' wide' if wide else ''}">
 {body}
 </main>
 <footer class="colophon"><div class="wrap">
-<p><a class="brand" href="{SITE}">{MARK}<span>intent</span></a> {__version__}, an experimental research prototype.
-A deterministic compiler from plain English to native code, with no AI inside.</p>
+<p><a class="brand" href="{SITE}">intent<span>.</span></a> {__version__}, an experimental research prototype.
+A deterministic compiler from plain English to native code, with no AI inside.
+Made by Sribatsha (svx), <a href="https://github.com/srivtx">@srivtx</a> on GitHub.</p>
 <p>{links} · <a href="{REPO}">source</a> · <a href="{REPO}/releases">releases</a> · <a href="{SITE}llms.txt">llms.txt</a></p>
 <p class="set">Set in Source Serif and IBM Plex Mono. Built from the repository by <code>site/build.py</code>; the
 pictures are drawn at build time by the programs beside them.</p>
@@ -150,8 +146,9 @@ pre::-webkit-scrollbar,nav::-webkit-scrollbar,.tbl::-webkit-scrollbar,dialog::-w
 /* masthead */
 .masthead{position:sticky;top:0;z-index:5;background:var(--paper);border-bottom:1px solid var(--rule)}
 .bar{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:56px}
-.brand{display:inline-flex;align-items:center;gap:8px;color:var(--ink);background:none;font:600 17px/1 var(--mono);letter-spacing:-.02em}
-.brand .mark{color:var(--blue);height:20px;width:auto}
+.brand{color:var(--ink);background:none;font:800 24px/1 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  letter-spacing:-1.2px}
+.brand span{color:#f59e0b}
 .masthead nav{display:flex;gap:22px;overflow-x:auto;font:400 14px/1 var(--mono)}
 .masthead nav a{color:var(--ink2);padding:6px 0;white-space:nowrap;background:none;border-bottom:1.5px solid transparent;transition:color .15s,border-color .15s}
 .masthead nav a:hover{color:var(--ink);border-color:var(--rule)}
@@ -338,9 +335,8 @@ dialog.sheet::backdrop{background:rgba(16,20,28,.55)}
 /* colophon */
 .colophon{margin-top:110px;border-top:1px solid var(--rule);padding:28px 0 44px;font-size:15.5px;color:var(--ink2)}
 .colophon p{margin:0 0 8px;max-width:760px}
-.colophon .brand{font-size:15px;vertical-align:-3px}
-.colophon .brand .mark{height:16px}
-.colophon a{font-family:var(--mono);font-size:13.5px}
+.colophon .brand{font-size:17px;letter-spacing:-.7px}
+.colophon a:not(.brand){font-family:var(--mono);font-size:13.5px}
 .colophon .set{color:var(--ink3);font-size:14.5px;margin-top:14px}
 '''
 
@@ -584,7 +580,7 @@ Alice,20,alice@x.com'''
     body = f'''
 <section class="hero">
 <div>
-<p class="kicker">An experimental programming language · version {__version__}</p>
+<p class="kicker">An experimental programming language by Sribatsha · version {__version__}</p>
 <h1>Write what you <em>mean</em>.<br>Get native code.</h1>
 <p class="abstract"><b>Abstract</b>Describe what information exists and what should be possible with it, in plain
 English. A deterministic compiler, with no AI inside, chooses the data structures and algorithms and emits LLVM IR
@@ -665,7 +661,7 @@ Every 50 milliseconds, set the look of each dot to "@"
     ld = [{'@context': 'https://schema.org', '@type': 'SoftwareSourceCode', 'name': NAME,
            'description': DESCRIPTION, 'codeRepository': REPO, 'programmingLanguage': ['Python', 'LLVM IR'],
            'version': __version__, 'dateModified': TODAY, 'keywords': KEYWORDS,
-           'author': {'@type': 'Person', 'name': 'srivtx', 'url': 'https://github.com/srivtx'}},
+           'author': AUTHOR},
           {'@context': 'https://schema.org', '@type': 'SoftwareApplication', 'name': NAME,
            'applicationCategory': 'DeveloperApplication', 'operatingSystem': 'macOS, Linux',
            'softwareVersion': __version__, 'url': SITE, 'downloadUrl': REPO, 'description': DESCRIPTION,
@@ -780,7 +776,7 @@ background.</p></div>
 <div style="padding-top:80px">{listing('terminal', make, 'shell')}</div>
 </div>'''
     ld = [{'@context': 'https://schema.org', '@type': 'ImageObject', 'name': n.replace('-', ' '), 'description': what,
-           'contentUrl': f'{SITE}gallery/#{n}', 'creator': {'@type': 'Person', 'name': 'srivtx'}}
+           'contentUrl': f'{SITE}gallery/#{n}', 'creator': AUTHOR}
           for n, what, _, _, _, _ in pieces]
     return page('gallery/', 'Gallery: pictures drawn in plain English',
                 'Generative art written as plain English sentences and compiled to native code: halftone suns, '
