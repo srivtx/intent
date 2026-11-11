@@ -469,16 +469,16 @@ def toc_items(tokens, depth):
     return out
 
 
-def doc(content, tokens, depth=2, label='On this page'):
-    """A reading page: the text, with a table of contents that follows along beside it (folded on a phone)."""
+def doc(content, tokens, depth=2, label='On this page', numbered=False):
+    """A reading page: the text, with its contents beside it, following along (folded on a phone)."""
     toc = f'<ol>{"".join(toc_items(tokens, depth))}</ol>'
     short = f'<ol>{"".join(toc_items(tokens, 1))}</ol>'
     mobile = f'<details class="mtoc"><summary>{label}</summary>{short}</details>'
     end = content.find('</h1>')
     if end >= 0:
         content = content[:end + 5] + mobile + content[end + 5:]
-    return (f'<div class="doc"><aside aria-label="{label}"><h2>{label}</h2>{toc}</aside>'
-            f'<article class="prose">{content}</article></div>')
+    return (f'<div class="doc"><aside class="contents{" counted" if numbered else ""}" aria-label="{label}"><h2>{label}</h2>'
+            f'{toc}</aside><article class="prose{" numbered" if numbered else ""}">{content}</article></div>')
 
 
 def first_example():
@@ -682,7 +682,7 @@ def guide():
     content, tokens = md(text, 'docs')
     return page('guide/', 'Language guide', 'How to write Intent programs: describing information, teaching words, '
                 'capabilities, decimals and money, single values, standing rules, time, keys and a board, pictures, '
-                'and steering how a program is built.', doc(content, tokens), 'TechArticle')
+                'and steering how a program is built.', doc(content, tokens, numbered=True), 'TechArticle')
 
 
 def changelog():
@@ -746,39 +746,38 @@ def art():
 
 
 def gallery(pieces):
-    tiles, sheets = [], []
-    for n, what, cmd, code, svg, paper in pieces:
+    plates, sheets = [], []
+    for k, (n, what, cmd, code, svg, paper) in enumerate(pieces, 1):
         title = n.replace('-', ' ')
-        tiles.append(f'''<figure class="tile" id="{n}">
-<button class="frame" style="--paper:{paper}" data-open="sheet-{n}" aria-label="{title}: open the picture and its program">{svg}</button>
-<figcaption><h3>{title}</h3><p>{html.escape(what)}</p>
-<button class="linkbtn" data-open="sheet-{n}">The program →</button></figcaption></figure>''')
+        plates.append(f'''<figure class="plate" id="{n}">
+<button class="frame" style="--paper-of:{paper}" data-open="sheet-{n}" aria-label="{title}: the picture and its program">{svg}</button>
+<figcaption><span class="no"></span><h3>{title}</h3><p>{html.escape(what)}</p>
+<button class="read" data-open="sheet-{n}">Read the program &#8594;</button></figcaption></figure>''')
         sheets.append(f'''<dialog class="sheet" id="sheet-{n}" aria-labelledby="sheet-{n}-t">
-<div class="head"><h2 id="sheet-{n}-t">{title}</h2><button class="x" aria-label="Close">×</button></div>
-<div class="body"><div class="pic" style="--paper:{paper}">{svg}</div>
+<div class="head"><span>Plate {k:02d}</span><h2 id="sheet-{n}-t">{title}</h2><button class="x">close &#215;</button></div>
+<div class="body"><div class="pic" style="--paper-of:{paper}">{svg}</div>
 <div class="code"><pre><code id="code-{n}">{highlight(code)}</code></pre>
-<div class="tools"><button class="copy" data-copy="code-{n}">Copy the program</button>
-<a href="{REPO}/blob/main/examples/art/{n}.intent">{n}.intent on GitHub ↗</a></div>
-<p class="dim" style="font-size:13.5px;margin:12px 0 0">Saved with <code>{html.escape(cmd)}</code></p></div></div>
+<div class="tools"><button class="copy" data-copy="code-{n}">copy the program</button>
+<a href="{REPO}/blob/main/examples/art/{n}.intent">{n}.intent&#8599;</a><code>{html.escape(cmd)}</code></div></div></div>
 </dialog>''')
     make = '''$ ./intent run examples/art/ripple.intent      # play it in a terminal (q stops)
 $ ./intent window examples/art/ripple.intent   # or in a window of its own
 $ ./intent svg examples/art/ripple.intent --after "wait 500" --style dots -o ripple.svg'''
-    body = f'''<p class="eyebrow" style="margin-top:48px">Gallery</p>
-<h1 style="margin-top:0">Pictures drawn in plain English</h1>
-<p class="lede">Each picture is a grid of records. Where every dot sits, what character it is and what colour it has
-all come from a few sentences with sines, square roots and distances. The same programs animate in a terminal;
-these are single frames saved with <code>./intent svg</code>. Open any of them to read the program that draws it.</p>
-<div class="tiles">{''.join(tiles)}</div>
+    body = f'''<section style="padding-top:8px">
+<h1>Plates</h1>
+<p class="abstract">Pictures drawn by Intent programs. Each is a grid of records: where every dot sits, what character
+it is and what colour it has all come from a few sentences with sines, square roots and distances. These are single
+frames saved with <code>./intent svg</code>; the same programs animate in a terminal.</p>
+</section>
+<div class="board graph"><div class="plates">{''.join(plates)}</div></div>
 {''.join(sheets)}
-<div class="split start">
+<div class="two">
 <div><h2>Make your own</h2>
-<p>Styles: <code>glyphs</code> (each cell as its character), <code>dots</code> (a halftone: "." is a small dot,
-"@" a full one) and <code>blocks</code>. The language guide has the
-<a href="{SITE}guide/#pictures">sentences that make pictures</a>: grids from ranges, colours by name or
-<code>#rrggbb</code>, pictures drawn by hand, words and a background.</p></div>
-<div><h2 style="visibility:hidden" aria-hidden="true">&nbsp;</h2>
-<div class="win term"><div class="title"><i></i><i></i><i></i><b>terminal</b></div><pre><code>{highlight(make, 'shell')}</code></pre></div></div>
+<p class="dim">Styles: <code>glyphs</code> (each cell as its character), <code>dots</code> (a halftone: "." is a small
+dot, "@" a full one) and <code>blocks</code>. The guide has the <a href="{SITE}guide/#pictures">sentences that make
+pictures</a>: grids from ranges, colours by name or <code>#rrggbb</code>, pictures drawn by hand, words and a
+background.</p></div>
+<div style="padding-top:80px">{listing('terminal', make, 'shell')}</div>
 </div>'''
     ld = [{'@context': 'https://schema.org', '@type': 'ImageObject', 'name': n.replace('-', ' '), 'description': what,
            'contentUrl': f'{SITE}gallery/#{n}', 'creator': {'@type': 'Person', 'name': 'srivtx'}}
@@ -812,11 +811,11 @@ def examples():
 
 
 def missing():
-    body = f'''<section style="padding:64px 0 24px;max-width:640px">
-<p class="eyebrow">404</p><h1 style="margin-top:0">I don't know that page.</h1>
-<p class="lede">Like the compiler, this site doesn't guess. Try one of these instead:</p>
-<div class="cta"><a class="btn main" href="{SITE}">Home</a><a class="btn" href="{SITE}guide/">The guide</a>
-<a class="btn" href="{SITE}gallery/">The gallery</a></div></section>'''
+    body = f'''<section style="padding:40px 0 24px;max-width:640px">
+<p class="kicker">Error 404</p><h1>No such page.</h1>
+<p class="abstract">Like the compiler, this site does not guess what you meant. These pages do exist:</p>
+<div class="actions"><a class="btn main" href="{SITE}">Home</a><a class="btn" href="{SITE}guide/">Guide</a>
+<a class="btn" href="{SITE}gallery/">Plates</a></div></section>'''
     return page('404', 'Page not found', 'This page does not exist.', body).replace('index, follow', 'noindex')
 
 
