@@ -2715,7 +2715,8 @@ class TestOrderedIndex(TestNativeAgainstReference):
         _, plan = self.plan(ORDERED['crm'])
         cp = plan.colls['customer']
         self.assertEqual((cp.indexes, cp.orders), (['email'], ['age']))
-        self.assertEqual(sorted(plan.walks), ['by-age', 'count', 'in-range', 'oldest'])
+        # a count of everyone at least some age is taken to cover a quarter of them: a pass is cheaper
+        self.assertEqual(sorted(plan.walks), ['by-age', 'in-range', 'oldest'])
         self.assertEqual(plan.tasks['in-range'][0], 'O(log n + k)')
         self.assertEqual(plan.tasks['oldest'][0], 'O(log n)')
         self.assertEqual(plan.tasks['add'][0], 'O(log n) expected')
@@ -2740,15 +2741,32 @@ class TestOrderedIndex(TestNativeAgainstReference):
         self.assertEqual(plan.walks, {})
         self.assertEqual(plan.colls['customer'].orders, [])
 
-    def test_a_tree_rebuilt_as_often_as_it_is_read_is_not_kept(self):
-        _, plan = self.plan(BASE + 'Add a customer.\nx: show the customers sorted by age.\n'
-                            'For every customer, double their age.\n')
+    def test_the_workload_decides(self):
+        text = (BASE + 'Add a customer.\noldest: show the top 3 customers by age.\n'
+                'birthday: increase the age of customers by 1.\n')
+        adds = [f'add c{i},{i % 90},{i},c{i}@x' for i in range(2000)]
+        reads = adds + ['birthday' if i % 20 == 0 else 'oldest' for i in range(400)]
+        churn = adds + ['birthday' if i % 2 else 'oldest' for i in range(400)]
+        _, plan = self.plan(text, workload=reads)       # a read now and then: the tree, kept fresh
+        cp = plan.colls['customer']
+        self.assertEqual((cp.orders, sorted(plan.walks)), (['age'], ['oldest']))
+        self.assertIn('measured on 2,400 sample commands', cp.decisions[-1][1])
+        _, plan = self.plan(text, workload=churn)        # every read would rebuild it: one sort of everyone
         cp = plan.colls['customer']
         self.assertEqual(cp.orders, [])
-        self.assertIn('no ordered index on age', [d[0] for d in cp.decisions])
-        _, plan = self.plan(BASE + 'Add a customer.\nx: show the customers sorted by age.\n'
-                            'y: show the top 3 customers by age.\nFor every customer, double their age.\n')
-        self.assertEqual(plan.colls['customer'].orders, ['age'])
+        self.assertTrue(any(d[0] == 'no ordered index on age' and 'it would cost more than it saves' in d[1]
+                            for d in cp.decisions))
+
+    def test_how_many_to_expect(self):
+        for words, n in (('Expect about 1,000,000 customers.', 1000000), ('We expect up to 20 thousand customers.', 20000),
+                         ('Expect around 50 customers.', 50)):
+            prog, plan = self.plan(BASE + words + '\nAdd a customer.\nx: show the top 3 customers by age.\n')
+            self.assertEqual(prog.collections['customer'].expect, n)
+            self.assertIn(f'planned for {n:,} customers', plan.colls['customer'].decisions[-1][1])
+        for words in ('Expect about 1,000,000 orders.', 'Expect customers.',
+                      'Expect about 5 customers. Expect about 6 customers.'):
+            prog, diags, _ = understand(words + '\n')
+            self.assertTrue(diags, words)
 
     def test_a_rule_that_keeps_changing_it_means_no_tree(self):
         _, plan = self.plan(BASE + 'Add a customer.\nx: show the customers sorted by age.\n'
