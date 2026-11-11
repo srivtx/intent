@@ -50,6 +50,8 @@ class Collection:
     ordered_line: int = 0
     on_dup: str = None          # None | 'reject' | 'replace'
     on_dup_line: int = 0
+    expect: int = None          # "Expect about 1,000,000 customers.": how many the planner should plan for
+    expect_line: int = 0
 
     def unique_fields(self):
         return [f for f in self.fields.values() if f.unique]
