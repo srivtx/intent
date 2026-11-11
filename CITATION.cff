@@ -10,7 +10,8 @@ abstract: >-
   it on random commands.
 type: software
 authors:
-  - alias: srivtx
+  - given-names: Sribatsha
+    alias: srivtx
 repository-code: "https://github.com/srivtx/intent"
 url: "https://intent.srivtx.xyz"
 keywords:

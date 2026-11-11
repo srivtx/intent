@@ -25,6 +25,7 @@ from intentc import __version__  # noqa: E402
 OUT = os.path.join(ROOT, '_site')
 SITE = os.environ.get('INTENT_SITE', 'https://intent.srivtx.xyz/')     # INTENT_SITE=http://localhost:8017/ to preview
 REPO = 'https://github.com/srivtx/intent'
+AUTHOR = {'@type': 'Person', 'name': 'Sribatsha', 'alternateName': 'srivtx', 'url': 'https://github.com/srivtx'}
 NAME = 'Intent'
 TAGLINE = 'Plain English in, native code out'
 DESCRIPTION = ('Intent is an experimental programming language where you describe what information exists and '
@@ -58,7 +59,7 @@ def page(path, title, desc, body, kind='WebPage', extra_ld=None, wide=False):
 <title>{html.escape(full)}</title>
 <meta name="description" content="{html.escape(desc)}">
 <meta name="keywords" content="{html.escape(KEYWORDS)}">
-<meta name="author" content="srivtx">
+<meta name="author" content="Sribatsha (srivtx)">
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
 <link rel="canonical" href="{url}">
 <link rel="icon" href="{SITE}icon.svg" type="image/svg+xml">
@@ -98,7 +99,8 @@ def page(path, title, desc, body, kind='WebPage', extra_ld=None, wide=False):
 </main>
 <footer class="colophon"><div class="wrap">
 <p><a class="brand" href="{SITE}">intent<span>.</span></a> {__version__}, an experimental research prototype.
-A deterministic compiler from plain English to native code, with no AI inside.</p>
+A deterministic compiler from plain English to native code, with no AI inside.
+Made by Sribatsha (<a href="https://github.com/srivtx">srivtx</a>).</p>
 <p>{links} · <a href="{REPO}">source</a> · <a href="{REPO}/releases">releases</a> · <a href="{SITE}llms.txt">llms.txt</a></p>
 <p class="set">Set in Source Serif and IBM Plex Mono. Built from the repository by <code>site/build.py</code>; the
 pictures are drawn at build time by the programs beside them.</p>
@@ -578,7 +580,7 @@ Alice,20,alice@x.com'''
     body = f'''
 <section class="hero">
 <div>
-<p class="kicker">An experimental programming language · version {__version__}</p>
+<p class="kicker">An experimental programming language by Sribatsha · version {__version__}</p>
 <h1>Write what you <em>mean</em>.<br>Get native code.</h1>
 <p class="abstract"><b>Abstract</b>Describe what information exists and what should be possible with it, in plain
 English. A deterministic compiler, with no AI inside, chooses the data structures and algorithms and emits LLVM IR
@@ -659,7 +661,7 @@ Every 50 milliseconds, set the look of each dot to "@"
     ld = [{'@context': 'https://schema.org', '@type': 'SoftwareSourceCode', 'name': NAME,
            'description': DESCRIPTION, 'codeRepository': REPO, 'programmingLanguage': ['Python', 'LLVM IR'],
            'version': __version__, 'dateModified': TODAY, 'keywords': KEYWORDS,
-           'author': {'@type': 'Person', 'name': 'srivtx', 'url': 'https://github.com/srivtx'}},
+           'author': AUTHOR},
           {'@context': 'https://schema.org', '@type': 'SoftwareApplication', 'name': NAME,
            'applicationCategory': 'DeveloperApplication', 'operatingSystem': 'macOS, Linux',
            'softwareVersion': __version__, 'url': SITE, 'downloadUrl': REPO, 'description': DESCRIPTION,
@@ -774,7 +776,7 @@ background.</p></div>
 <div style="padding-top:80px">{listing('terminal', make, 'shell')}</div>
 </div>'''
     ld = [{'@context': 'https://schema.org', '@type': 'ImageObject', 'name': n.replace('-', ' '), 'description': what,
-           'contentUrl': f'{SITE}gallery/#{n}', 'creator': {'@type': 'Person', 'name': 'srivtx'}}
+           'contentUrl': f'{SITE}gallery/#{n}', 'creator': AUTHOR}
           for n, what, _, _, _, _ in pieces]
     return page('gallery/', 'Gallery: pictures drawn in plain English',
                 'Generative art written as plain English sentences and compiled to native code: halftone suns, '
