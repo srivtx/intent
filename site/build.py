@@ -25,7 +25,7 @@ from intentc import __version__  # noqa: E402
 OUT = os.path.join(ROOT, '_site')
 SITE = os.environ.get('INTENT_SITE', 'https://intent.srivtx.xyz/')     # INTENT_SITE=http://localhost:8017/ to preview
 REPO = 'https://github.com/srivtx/intent'
-AUTHOR = {'@type': 'Person', 'name': 'Sribatsha', 'alternateName': 'srivtx', 'url': 'https://github.com/srivtx'}
+AUTHOR = {'@type': 'Person', 'name': 'Sribatsha', 'alternateName': 'svx', 'url': 'https://github.com/srivtx'}
 NAME = 'Intent'
 TAGLINE = 'Plain English in, native code out'
 DESCRIPTION = ('Intent is an experimental programming language where you describe what information exists and '
@@ -59,7 +59,7 @@ def page(path, title, desc, body, kind='WebPage', extra_ld=None, wide=False):
 <title>{html.escape(full)}</title>
 <meta name="description" content="{html.escape(desc)}">
 <meta name="keywords" content="{html.escape(KEYWORDS)}">
-<meta name="author" content="Sribatsha (srivtx)">
+<meta name="author" content="Sribatsha (svx)">
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
 <link rel="canonical" href="{url}">
 <link rel="icon" href="{SITE}icon.svg" type="image/svg+xml">
@@ -100,7 +100,7 @@ def page(path, title, desc, body, kind='WebPage', extra_ld=None, wide=False):
 <footer class="colophon"><div class="wrap">
 <p><a class="brand" href="{SITE}">intent<span>.</span></a> {__version__}, an experimental research prototype.
 A deterministic compiler from plain English to native code, with no AI inside.
-Made by Sribatsha (<a href="https://github.com/srivtx">srivtx</a>).</p>
+Made by Sribatsha (svx), <a href="https://github.com/srivtx">@srivtx</a> on GitHub.</p>
 <p>{links} · <a href="{REPO}">source</a> · <a href="{REPO}/releases">releases</a> · <a href="{SITE}llms.txt">llms.txt</a></p>
 <p class="set">Set in Source Serif and IBM Plex Mono. Built from the repository by <code>site/build.py</code>; the
 pictures are drawn at build time by the programs beside them.</p>

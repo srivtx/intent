@@ -11,7 +11,8 @@ abstract: >-
 type: software
 authors:
   - given-names: Sribatsha
-    alias: srivtx
+    alias: svx
+    website: "https://github.com/srivtx"
 repository-code: "https://github.com/srivtx/intent"
 url: "https://intent.srivtx.xyz"
 keywords:
