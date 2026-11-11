@@ -3,13 +3,15 @@
 Intent is experimental. Until 1.0, any version may change what a sentence means; `./intent check`
 always shows the current reading.
 
-## Unreleased
+## 0.8.1 — 2026-11-11
 
-Pictures and maths: a grid of records from one sentence, sines and square roots, any colour,
-pictures drawn by hand, words, records that choose their own look, colour and drawing order, and
-`./intent svg`. Plus four fixes from
-building a 3D torus and a spinning cube in pure Intent. And the planner's first new data structure
-since hash indexes: an ordered index, chosen from what the program asks.
+The planner's first new data structure since hash indexes: an ordered index, chosen from what the
+program asks and from how it is used, with costs measured on native code. Pictures and maths: a
+grid of records from one sentence, sines and square roots, any colour, pictures drawn by hand,
+words, records that choose their own look, colour and drawing order, and `./intent svg`. Plus
+four fixes from building a 3D torus and a spinning cube in pure Intent.
+
+Versions now go up in small steps (0.8.1, 0.8.2, ...) until the language is called stable.
 
 ### Added
 - **Ordered indexes.** When a program asks for a range (`whose age is between ...`, `under`,
