@@ -5,6 +5,7 @@ So the planner minimises the per-call cost of every declared capability, and pay
 auxiliary structure only when some declared capability needs it. Every decision records the
 source lines that caused it.
 """
+import math
 from dataclasses import dataclass, field
 
 from .ir import STATE, conjuncts, lookups, looks_into, task_exprs, walk_cond_exprs, walk_expr
@@ -117,15 +118,107 @@ def unsettles(prog, t, c, prop):
     return False
 
 
-def choose_orders(prog, plan, c, cp, no_index):
-    """An ordered index is a balanced tree of row numbers sorted by one property. Keep one when the
-    commands that read through it outnumber those that would force it to be rebuilt."""
+# The cost model counts in steps of a plain pass: one step is looking at the next record in the
+# array (about 0.6 ns, as the loop runs over memory in order). The rest were measured against it
+# on native builds (bench/calibrate.py): a comparison in a sort with qsort, and a record reached
+# along the tree or a level down it, which follow pointers to wherever the rows happen to be.
+SORT = 21                   # per k log2 k, sorting k rows
+WALK = 4                    # per record visited along the tree (3 measured; more once rows outgrow the cache)
+DESCEND = 10                # per level down the tree, to find where a range starts or where a row goes
+REBUILD = 25                # per n log2 n, rebuilding the whole tree (one sort, then one pass)
+DEFAULT_N = 100_000         # how many records to plan for when nothing says
+
+
+def lg(n):
+    return math.log2(max(n, 2))
+
+
+def steps(x):
+    for size, word in ((1e9, 'billion'), (1e6, 'million'), (1e3, 'thousand')):
+        if x >= size:
+            return f'{x / size:.3g} {word}'
+    return f'{x:.0f}'
+
+
+@dataclass
+class Seen:
+    """What a sample of real commands shows about one command."""
+    calls: int = 0
+    size: int = 0           # the collection's size, added up over the calls
+    inside: int = 0         # the records within the walk's bounds, added up over the calls
+    rebuilds: int = 0       # calls that would have found the tree stale
+
+
+def within(w, row, args, m):
+    from .interp import ev
+    v = row[w.prop]
+    if w.lo:
+        lo = ev(w.lo[1], None, args, m)
+        if v < lo or (w.lo[0] and v == lo):
+            return False
+    if w.hi:
+        hi = ev(w.hi[1], None, args, m)
+        if v > hi or (w.hi[0] and v == hi):
+            return False
+    return True
+
+
+def measure(prog, lines, coll, readers, churns):
+    """Replay a sample of commands with the reference interpreter. For each command: how often it
+    runs, how big the collection is when it does, how many records its range holds, and how often
+    a tree on the property it reads would have been stale (changed wholesale since the last read)."""
+    from .interp import Machine, arguments
+    m = Machine(prog)
+    seen, total, stale = {}, 0, {}
+    props = {w.prop for w in readers.values()}
+    for line in lines:
+        line = line.rstrip('\r\n')
+        cmd, _, arg = line.partition(' ')
+        t = m.tasks.get(cmd)
+        if t is not None:
+            total += 1
+            s = seen.setdefault(t.name, Seen())
+            s.calls += 1
+            rows = m.data.get(coll, ())
+            s.size += len(rows)
+            w = readers.get(t.name)
+            if w is not None:
+                args = arguments(t, arg)
+                if not isinstance(args, str):
+                    s.inside += sum(1 for r in rows if within(w, r, args, m))
+                if stale.get(w.prop):
+                    s.rebuilds += 1
+                stale[w.prop] = False
+            for prop in props:
+                if churns(t, prop):
+                    stale[prop] = True
+        m.run(line)
+    return total, seen
+
+
+def choose_orders(prog, plan, c, cp, no_index, workload=None):
+    """An ordered index is a balanced tree of row numbers sorted by one property. Keep one when its
+    estimated cost (walks, upkeep and rebuilds) is below that of scanning and sorting without it.
+
+    The estimate comes from how often each command runs and how big the collection is: from a
+    sample of real commands when one is given, otherwise every command equally often and the
+    size the program expects ("Expect about 1,000,000 customers.") or 100,000.
+    """
     readers = {}
     for t in prog.tasks:
         if t.coll == c.name:
             w = order_wish(prog, plan, t)
             if w:
                 readers.setdefault(w.prop, []).append((t, w))
+    if not readers:
+        return
+
+    def churns(t, prop):
+        return unsettles(prog, t, c, prop) and \
+            not (t.kind == 'remove_key' and t.coll == c.name and c.fields[t.key].unique)
+
+    total, seen = (measure(prog, workload, c.name, {t.name: w for rs in readers.values() for t, w in rs}, churns)
+                   if workload is not None else (None, None))
     for prop, rs in readers.items():
         why = []
         for t, w in rs:
@@ -135,29 +228,93 @@ def choose_orders(prog, plan, c, cp, no_index):
             else:
                 why.append((t.line, f'"{t.name}" asks about a range of {prop}'))
         forever = [t for t in prog.rules + prog.events if unsettles(prog, t, c, prop)]
-        churn = [t for t in prog.tasks if unsettles(prog, t, c, prop) and
-                 not (t.kind == 'remove_key' and t.coll == c.name and c.fields[t.key].unique)]
+        churn = [t for t in prog.tasks if churns(t, prop)]
         if no_index:
             cp.decisions.append((f'no ordered index on {prop}', f'disabled with --no-{"index" if no_index is True else "order"}; '
                                  'these sort or scan', why))
-        elif forever:
-            t = forever[0]
-            cp.decisions.append((f'no ordered index on {prop}', 'it would be out of date almost all the time',
-                                 why + [(t.line, f'this changes {prop} again and again, by itself')]))
-        elif len(churn) >= len(rs):
-            cp.decisions.append((f'no ordered index on {prop}', 'it would be rebuilt as often as it is read',
-                                 why + [(t.line, f'"{t.name}" moves or changes many {c.label.lower()} at once')
-                                        for t in churn]))
-        else:
+            continue
+        users, cost, basis = estimate(prog, c, prop, rs, churn, forever, total, seen)
+        if forever:
+            why.append((forever[0].line, f'this changes {prop} again and again, by itself, so every read rebuilds it'))
+        if users:
             cp.orders.append(prop)
+            for t, w in rs:
+                if t in users:
+                    plan.walks[t.name] = w
+                else:
+                    why.append((t.line, f'"{t.name}" still scans: its range holds too many to walk'))
             cp.decisions.append((
                 f'ordered index on {prop}',
                 f'a balanced tree (treap) over the rows, sorted by {prop} then position: '
-                'O(log n) to add or remove one, O(log n + k) to read k in order',
-                why + [(t.line, f'"{t.name}" leaves it to be rebuilt at the next read, O(n log n)')
+                f'O(log n) to add or remove one, O(log n + k) to read k in order; {cost}; {basis}',
+                why + [(t.line, f'"{t.name}" leaves it to be rebuilt at the next read, one sort')
                        for t in churn]))
-            for t, w in rs:
-                plan.walks[t.name] = w
+        else:
+            cp.decisions.append((f'no ordered index on {prop}', f'it would cost more than it saves: {cost}; {basis}',
+                                 why + [(t.line, f'"{t.name}" moves or changes many {c.label.lower()} at once')
+                                        for t in churn]))
+
+
+def estimate(prog, c, prop, rs, churn, forever, total, seen):
+    """(keep the tree?, the two costs in words, what they are based on)"""
+    measured = seen is not None and total > 0
+
+    def calls(t):           # per 1000 commands
+        if not measured:
+            return 1000 / max(1, len(prog.tasks))
+        return 1000 * (seen[t.name].calls if t.name in seen else 0) / total
+
+    def size(t):
+        if c.expect:
+            return c.expect
+        if measured and seen.get(t.name) and seen[t.name].calls:
+            return max(1, seen[t.name].size / seen[t.name].calls)
+        return DEFAULT_N
+
+    with_, without, used = 0.0, 0.0, []
+    reads = sum(calls(t) for t, _ in rs)
+    for t, w in rs:
+        n, f = size(t), calls(t)
+        ranged = w.lo is not None or w.hi is not None
+        s = seen.get(t.name) if measured else None
+        # without a sample: a range with both ends is taken to hold 1% of the records, one with a
+        # single end a quarter, and no range all of them
+        guess = 0.01 if w.lo is not None and w.hi is not None else 0.25 if ranged else 1.0
+        frac = s.inside / s.size if s and s.size else guess
+        k = frac * n
+        mine = t.kind == 'list' and t.order is not None and t.order[0] == prop
+        visited = min(k, t.limit) if mine and t.limit is not None else k
+        scan = n + (SORT * k * lg(k) if t.kind == 'list' and t.order else 0)
+        walk = DESCEND * lg(n) + WALK * visited + (SORT * k * lg(k) if t.kind == 'list' and not mine and c.ordered else 0)
+        without += f * scan
+        if forever:
+            stale = 1.0
+        elif s:
+            stale = s.rebuilds / s.calls
+        else:
+            moves = sum(calls(x) for x in churn)
+            stale = moves / (moves + reads) if moves + reads else 0.0
+        walk += stale * REBUILD * n * lg(n)
+        if walk < scan:             # this one reads through the tree; the others still scan
+            used.append(t)
+        with_ += f * min(walk, scan)
+    for t in prog.tasks:            # keeping it up to date one record at a time
+        if t.coll != c.name or t in churn:
+            continue
+        unique_key = t.kind == 'remove_key' and c.fields[t.key].unique
+        keyed = t.kind == 'update' and any(name == prop for name, _ in t.assigns)
+        if t.kind in ('add', 'make') or unique_key or keyed:
+            n = size(t)
+            with_ += calls(t) * (DESCEND * lg(n) * (2 if keyed or c.on_dup == 'replace' else 1) +
+                                 (n if unique_key and c.ordered else 0))
+    label = c.label.lower()
+    if measured:
+        basis = f'measured on {total:,} sample commands' + (f', planned for {c.expect:,} {label}' if c.expect else '')
+    else:
+        basis = (f'planned for {c.expect:,} {label}' if c.expect else f'assuming {DEFAULT_N:,} {label}') + \
+            ', every command equally often'
+    cost = f'about {steps(with_)} steps per 1000 commands with it, {steps(without)} without'
+    return (used if used and with_ < without else []), cost, basis
 
 
 def walk_cost(c, t, w):
@@ -236,7 +393,7 @@ def narrow_settle(prog, plan, t):
     return 'all'
 
 
-def make_plan(prog, no_index=False):
+def make_plan(prog, no_index=False, workload=None):
     plan = Plan()
     for c in prog.collections.values():
         cp = CollPlan(c.name)
@@ -279,7 +436,7 @@ def make_plan(prog, no_index=False):
                 cp.decisions.append((f'no index on {t.key}', 'it is not unique, so a lookup may match many rows',
                                      [(t.line, f'"{t.name}" scans')]))
         if c.name != STATE:
-            choose_orders(prog, plan, c, cp, no_index)
+            choose_orders(prog, plan, c, cp, no_index, workload)
         single = [t for t in tasks if t.kind == 'remove_key' and c.fields[t.key].unique]
         if single:
             if c.ordered:
