@@ -483,6 +483,33 @@ What is the average age?
 Show the customers sorted by age, largest first.'''
 
 
+def chosen():
+    """What the planner really builds for the first example, said briefly, with the line that caused it."""
+    from intentc.check import check
+    from intentc.parser import parse
+    from intentc.plan import make_plan
+    prog, diags, p = parse(first_example())
+    diags += check(prog, p.src)
+    plan = make_plan(prog)
+    rows = []
+    marks = {'storage': '[]', 'index on': '#', 'ordered index on': '⌥', 'removal': '↯'}
+    names = {'storage': 'A growable array', 'removal swaps in the last row': 'Removal swaps in the last row'}
+    for title, detail, why in plan.colls['customer'].decisions:
+        if title.startswith('no '):
+            continue
+        mark = next((v for k, v in marks.items() if title.startswith(k)), '•')
+        if title.startswith('ordered index on'):
+            name, say = f'A balanced tree on {title.split()[-1]}', 'ranges and orderings without sorting'
+        elif title.startswith('index on'):
+            name, say = f'A hash index on {title.split()[-1]}', 'one probe finds a customer'
+        else:
+            name, say = names.get(title, title.capitalize()), detail.split(',')[0].split(';')[0]
+        because = f'line {why[0][0]}: {why[0][1]}' if why else 'every program starts here'
+        rows.append(f'<div><span class="ic" aria-hidden="true">{html.escape(mark)}</span><b>{html.escape(name)}</b>'
+                    f'<span>{html.escape(say)}</span><em>{html.escape(because)}</em></div>')
+    return ''.join(rows)
+
+
 FAQ = [
     ('Is Intent an AI code generator?',
      'No. There is no AI or machine learning in the compiler. It is a deterministic compiler: a lexicon of known '
@@ -493,13 +520,17 @@ FAQ = [
     ('What does it compile to?',
      'LLVM IR, which clang turns into a native executable. There is no C, Rust or JavaScript in between. A Python '
      'reference interpreter defines the meaning, and the native code is tested against it on random commands.'),
+    ('How does it choose data structures?',
+     'From what the program asks: a hash index when a unique property is looked up, a balanced tree when it asks '
+     'for ranges or orderings, and a removal strategy from whether order matters. Since 0.8.1 it weighs measured '
+     'costs, and can plan for a sample of real commands. ./intent explain shows every choice and the line behind it.'),
     ('What can I build with it?',
      'Small data services: customers, shops, to-do lists, leaderboards, orders with order lines. It can also build '
-     'terminal and browser games with time, keys, chance and a coloured board. Compiled programs can be served over '
-     'HTTP and keep a replayable journal.'),
+     'terminal and browser games with time, keys, chance and a coloured board, and pictures. Compiled programs can '
+     'be served over HTTP and keep a replayable journal.'),
     ('Does it handle money?',
-     'Yes, from version 0.8. Decimal numbers are kept exactly as whole hundredths, so 0.1 + 0.2 is 0.30. '
-     'Multiplication and division round to the nearest cent, halves away from zero.'),
+     'Yes. Decimal numbers are kept exactly as whole hundredths, so 0.1 + 0.2 is 0.30. Multiplication and division '
+     'round to the nearest cent, halves away from zero.'),
     ('Is it ready for production?',
      'No. It is an experimental research prototype. The language changes between versions, and it is tested on '
      'macOS and Linux only.'),
@@ -508,69 +539,97 @@ FAQ = [
 
 def home(pieces=()):
     feats = [('Deterministic', 'No AI in the compiler. The same sentences always mean the same program.'),
-             ('Asks, never guesses', 'Unknown words are errors; ambiguous sentences become pointed questions.'),
-             ('Chooses the algorithms', 'Hash indexes, fused passes and removal strategies come from what you declared.'),
-             ('Native via LLVM IR', 'Straight to LLVM IR and clang. Tested against a reference interpreter.'),
-             ('Money, exactly', 'Decimals kept as hundredths: 0.1 + 0.2 is 0.30, rounding is explicit.'),
-             ('Games and servers', 'Time, keys, chance and a board; serve any program over HTTP or in a window.'),
-             ('Pictures', 'Sines, square roots and grids of records: generative art, saved as SVG.')]
-    cards = ''.join(f'<div class="card"><h3>{t}</h3><p>{d}</p></div>' for t, d in feats)
-    strip = ''.join(f'<a href="{SITE}gallery/#{n}" aria-label="{n.replace("-", " ")}">{svg}</a>'
-                    for n, _, _, _, svg in pieces[:3])
+             ('Asks, never guesses', 'Unknown words are errors; a sentence with two readings becomes a pointed question.'),
+             ('Chooses the data structures', 'Arrays, hash indexes and balanced trees, chosen from what you asked and '
+                                             'how you use it, with the reasons shown.'),
+             ('Native, through LLVM IR', 'Straight to LLVM IR and clang, tested against a reference interpreter on '
+                                         'random commands.'),
+             ('Money, exactly', 'Decimals kept as whole hundredths: 0.1 + 0.2 is 0.30, and rounding is explicit.'),
+             ('Games, servers, pictures', 'Time, keys, chance and a board; HTTP and windows; sines and grids of '
+                                          'records drawn as art.')]
+    cards = ''.join(f'<div><span class="num">0{i + 1}</span><h3>{t}</h3><p>{d}</p></div>' for i, (t, d) in enumerate(feats))
+    strip = ''.join(f'<a class="frame" style="--paper:{paper}" href="{SITE}gallery/#{n}" aria-label="{n.replace("-", " ")}, '
+                    f'in the gallery">{svg}</a>' for n, _, _, _, svg, paper in pieces[:3])
     faq = ''.join(f'<details><summary>{html.escape(q)}</summary><p>{html.escape(a)}</p></details>' for q, a in FAQ)
+    try_it = f'''$ git clone {REPO}.git && cd intent
+$ ./intent check examples/customers.intent      # how every sentence was read
+$ ./intent explain examples/customers.intent    # what it built, and why
+$ ./intent build examples/customers.intent -o build/customers
+$ printf 'add Alice,20,alice@x.com\\nfind-by-email alice@x.com\\n' | ./build/customers
+Alice,20,alice@x.com'''
+    question = '''<span class="q">question:</span> is "code" text or a number?
+ <span class="c">--></span> shop.intent:1
+<span class="c">1 |</span> Each product has a code, a price (money) and a stock.
+<span class="c">  |</span> <span class="q">^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^</span> nothing in the program decides this
+<span class="c">  =</span> write <span class="s">"code (text)"</span> or <span class="s">"code (number)"</span>'''
     body = f'''
-<h1>Write what you mean.<br>Get native code.</h1>
-<p class="lede">Intent is an experimental programming language in plain English. You describe what information
-exists and what should be possible with it. A deterministic compiler works out the data structures, loops and
-algorithms and emits <strong>LLVM IR</strong> for a native program. No AI is involved.</p>
+<section class="hero">
+<div>
+<h1>Write what you <em>mean</em>.<br>Get native code.</h1>
+<p class="lede">Intent is an experimental programming language in plain English. You describe what information exists
+and what should be possible with it. A deterministic compiler works out the data structures and algorithms and emits
+<strong>LLVM IR</strong> for a native program.</p>
 <div class="cta"><a class="btn main" href="{REPO}">Get it on GitHub</a><a class="btn" href="{SITE}guide/">Read the guide</a>
-<a class="btn" href="{SITE}examples/">See examples</a></div>
-<pre><code>{html.escape(first_example())}</code></pre>
-<p>Nothing above says array, hash map, loop, index or sort algorithm. The compiler picks a growable array with a hash
-index on email, because emails are unique and are looked up, and <code>./intent explain</code> tells you which line
-caused each choice.</p>
-<div class="grid">{cards}</div>
+<a class="btn" href="{SITE}gallery/">See the gallery</a></div>
+<ul class="badges"><li>No AI in the compiler</li><li>LLVM IR, then clang</li><li>Version {__version__}</li></ul>
+</div>
+<div>
+{window('customers.intent', first_example())}
+<div class="win"><div class="title"><i></i><i></i><i></i><b>./intent explain customers.intent</b></div>
+<div class="chose">{chosen()}</div></div>
+</div>
+</section>
+
+<div class="feats">{cards}</div>
 
 <h2>Try it in a minute</h2>
-<p>Needs Python 3.10+ and <code>clang</code>. Nothing to install.</p>
-<pre><code>git clone {REPO}.git && cd intent
-./intent check examples/customers.intent      # how every sentence was read
-./intent explain examples/customers.intent    # the representation it chose, and why
-./intent build examples/customers.intent -o build/customers
-printf 'add Alice,20,alice@x.com\\nfind-by-email alice@x.com\\n' | ./build/customers</code></pre>
+<p class="dim">Needs Python 3.10+ and <code>clang</code>. Nothing to install.</p>
+<div class="win term"><div class="title"><i></i><i></i><i></i><b>terminal</b></div><pre><code>{highlight(try_it, 'shell')}</code></pre></div>
 
 <h2>It asks instead of guessing</h2>
-<pre><code>question: is "code" text or a number?
- --> shop.intent:1
-1 | Each product has a code, a price (money) and a stock.
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ nothing in the program decides this
-  = write "code (text)" or "code (number)"</code></pre>
-<p>Every word is a known concept, filler, or a name your program declared. Anything else stops compilation. A sentence
-that could be read two ways is a question, never a coin flip.</p>
+<p class="lede">Every word is a known concept, filler, or a name your program declared. Anything else stops
+compilation, pointing at the words. A sentence that could be read two ways is a question, never a coin flip.</p>
+<div class="win term"><div class="title"><i></i><i></i><i></i><b>./intent check shop.intent</b></div><pre><code>{question}</code></pre></div>
 
-<h2>Many phrasings, one meaning</h2>
-<p>All of these compile to the identical program <code>update customer: age = age * 2</code>:</p>
-<ul><li>For every customer, double their age.</li><li>Take the customer collection and make everyone's age twice as large.</li>
+<div class="split">
+<div><h2>Many phrasings, one meaning</h2>
+<p>All of these compile to the identical program. <code>./intent check</code> shows the reading of every sentence,
+so you can see what it understood.</p>
+<div class="canon"><p>Each one means</p><code>update customer: age = age * 2</code></div></div>
+<ul class="same"><li>For every customer, double their age.</li><li>Take the customer collection and make everyone's age twice as large.</li>
 <li>Customers: increase each person's age to two times its current value.</li><li>age = age * 2</li></ul>
+</div>
 
-<h2>A game in 26 sentences</h2>
+<h2>It plans for how you use it</h2>
+<p class="lede">Nothing in a program names a data structure. The compiler estimates what each choice costs, in steps
+measured on native code, and can plan for a sample of real commands with <code>--workload</code>.</p>
+<div class="numbers"><div><b>500×</b><span>faster ranges and orderings with the balanced tree it chose, at 80,000
+records (0.24 s against 124 s)</span></div>
+<div><b>2 plans</b><span>one program, two samples of commands: each plan wins on the workload it was made for</span></div></div>
+
+<div class="split start">
+<div><h2>A game in 26 sentences</h2>
 <p>Programs can run by themselves: time passes, keys are pressed, and a coloured board is drawn in a terminal or a
 browser window. Time, keys and chance are events, so every game can be replayed exactly.</p>
-<pre><code>Every 120 milliseconds, remove the segments whose age is at least the length.
+{window('snake.intent', """Every 120 milliseconds, remove the segments whose age is at least the length.
 The game is over when any segment's x is the column and its y is the row.
-Draw each segment at its x and y as a green "o".</code></pre>
-<p><img src="{SITE}window-shooter.jpg" width="560" height="350" alt="The shooter example written in Intent, running in a browser window" loading="lazy"></p>
+Draw each segment at its x and y as a green "o".""")}</div>
+<div><h2 style="visibility:hidden" aria-hidden="true">&nbsp;</h2>
+<img class="shot" src="{SITE}window-shooter.jpg" width="560" height="350" alt="The shooter example written in Intent, running in a browser window" loading="lazy"></div>
+</div>
 
 <h2>Draw with sentences</h2>
 <p>A picture is a grid of records, and sentences decide what each one looks like. One sentence makes the grid:</p>
-<pre><code>At the start there is a dot for every x from 1 to 60 and every y from 1 to 21, whose look is ".".
+{window('ripple.intent', """At the start there is a dot for every x from 1 to 60 and every y from 1 to 21, whose look is ".".
 Every 50 milliseconds, set the look of each dot to "@" if the absolute value of
-  (its y minus 11 minus 8 times the sine of (its x times 12 plus the phase)) is under 1, otherwise ".".</code></pre>
+  (its y minus 11 minus 8 times the sine of (its x times 12 plus the phase)) is under 1, otherwise ".".""")}
 <div class="strip">{strip}</div>
-<p><a href="{SITE}gallery/">See the gallery</a>: every picture there comes with the program that draws it.</p>
+
+<section class="band"><div><h2>Every picture comes with its program</h2><p>Halftones, cross-stitch, orbits and posters,
+each drawn by a few English sentences.</p></div><a class="btn main" href="{SITE}gallery/">Open the gallery</a></section>
 
 <h2>Questions</h2>
-{faq}
+<div class="faq">{faq}</div>
 '''
     ld = [{'@context': 'https://schema.org', '@type': 'SoftwareSourceCode', 'name': NAME,
            'description': DESCRIPTION, 'codeRepository': REPO, 'programmingLanguage': ['Python', 'LLVM IR'],
@@ -650,49 +709,84 @@ def art():
                 m.run(c.strip())
         svg = picture(m, opt.get('style', 'glyphs'), opt.get('paper', 'dark'), title=name.replace('-', ' '))
         svg = re.sub(r' width="\d+" height="\d+" role', ' role', svg, count=1)      # let the page size it
-        out.append((name, what, cmd, code, svg))
+        paper = re.search(r'<rect width="[\d.]+" height="[\d.]+" fill="(#[0-9a-fA-F]{6})"', svg).group(1)
+        out.append((name, what, cmd, code, svg, paper))
     return out
 
 
 def gallery(pieces):
-    cards = ''.join(f'''<figure class="piece" id="{n}">{svg}<figcaption class="say"><h3>{n.replace('-', ' ')}</h3>
-<p>{html.escape(what)}</p></figcaption><details><summary>The program</summary><pre><code>{html.escape(code)}</code></pre>
-<p><code>{html.escape(cmd)}</code> · <a href="{REPO}/blob/main/examples/art/{n}.intent">source</a></p></details></figure>'''
-                    for n, what, cmd, code, svg in pieces)
-    body = f'''<h1>Gallery</h1>
-<p class="lede">Pictures drawn by Intent programs. Each is a grid of records: where every dot sits, what character it
-is and what colour it has all come from a few English sentences with sines, square roots and distances. The same
-programs animate in a terminal; these are single frames saved with <code>./intent svg</code>.</p>
-<div class="art">{cards}</div>
-<h2>Make your own</h2>
-<pre><code>./intent run examples/art/ripple.intent          # play it in a terminal (q stops)
-./intent window examples/art/ripple.intent       # or in a window of its own
-./intent svg examples/art/ripple.intent --after "wait 500" --style dots -o ripple.svg</code></pre>
+    tiles, sheets = [], []
+    for n, what, cmd, code, svg, paper in pieces:
+        title = n.replace('-', ' ')
+        tiles.append(f'''<figure class="tile" id="{n}">
+<button class="frame" style="--paper:{paper}" data-open="sheet-{n}" aria-label="{title}: open the picture and its program">{svg}</button>
+<figcaption><h3>{title}</h3><p>{html.escape(what)}</p>
+<button class="linkbtn" data-open="sheet-{n}">The program →</button></figcaption></figure>''')
+        sheets.append(f'''<dialog class="sheet" id="sheet-{n}" aria-labelledby="sheet-{n}-t">
+<div class="head"><h2 id="sheet-{n}-t">{title}</h2><button class="x" aria-label="Close">×</button></div>
+<div class="body"><div class="pic" style="--paper:{paper}">{svg}</div>
+<div class="code"><pre><code id="code-{n}">{highlight(code)}</code></pre>
+<div class="tools"><button class="copy" data-copy="code-{n}">Copy the program</button>
+<a href="{REPO}/blob/main/examples/art/{n}.intent">{n}.intent on GitHub ↗</a></div>
+<p class="dim" style="font-size:13.5px;margin:12px 0 0">Saved with <code>{html.escape(cmd)}</code></p></div></div>
+</dialog>''')
+    make = '''$ ./intent run examples/art/ripple.intent      # play it in a terminal (q stops)
+$ ./intent window examples/art/ripple.intent   # or in a window of its own
+$ ./intent svg examples/art/ripple.intent --after "wait 500" --style dots -o ripple.svg'''
+    body = f'''<p class="eyebrow" style="margin-top:48px">Gallery</p>
+<h1 style="margin-top:0">Pictures drawn in plain English</h1>
+<p class="lede">Each picture is a grid of records. Where every dot sits, what character it is and what colour it has
+all come from a few sentences with sines, square roots and distances. The same programs animate in a terminal;
+these are single frames saved with <code>./intent svg</code>. Open any of them to read the program that draws it.</p>
+<div class="tiles">{''.join(tiles)}</div>
+{''.join(sheets)}
+<div class="split start">
+<div><h2>Make your own</h2>
 <p>Styles: <code>glyphs</code> (each cell as its character), <code>dots</code> (a halftone: "." is a small dot,
 "@" a full one) and <code>blocks</code>. The language guide has the
-<a href="{SITE}guide/#pictures">sentences that make pictures</a>.</p>'''
+<a href="{SITE}guide/#pictures">sentences that make pictures</a>: grids from ranges, colours by name or
+<code>#rrggbb</code>, pictures drawn by hand, words and a background.</p></div>
+<div><h2 style="visibility:hidden" aria-hidden="true">&nbsp;</h2>
+<div class="win term"><div class="title"><i></i><i></i><i></i><b>terminal</b></div><pre><code>{highlight(make, 'shell')}</code></pre></div></div>
+</div>'''
     ld = [{'@context': 'https://schema.org', '@type': 'ImageObject', 'name': n.replace('-', ' '), 'description': what,
            'contentUrl': f'{SITE}gallery/#{n}', 'creator': {'@type': 'Person', 'name': 'srivtx'}}
-          for n, what, _, _, _ in pieces]
+          for n, what, _, _, _, _ in pieces]
     return page('gallery/', 'Gallery: pictures drawn in plain English',
                 'Generative art written as plain English sentences and compiled to native code: halftone suns, '
                 'ripples, orbits and cross-stitch, drawn by Intent programs with sines and square roots.',
-                body, 'CollectionPage', ld)
+                body, 'CollectionPage', ld, wide=True)
 
 
 def examples():
-    parts = ['<h1>Examples</h1><p class="lede">Complete Intent programs from the repository. Each one compiles to a '
-             'native executable with <code>./intent build</code>.</p>']
+    found = []
     for path in sorted(glob.glob(os.path.join(ROOT, 'examples', '*.intent'))):
         name = os.path.splitext(os.path.basename(path))[0]
         with open(path) as fh:
             code = fh.read()
-        parts.append(f'<h2 id="{name}">{name}.intent</h2><p>{html.escape(EXAMPLE_TEXT.get(name, ""))} · '
-                     f'<a href="{REPO}/blob/main/examples/{name}.intent">source</a></p>'
-                     f'<pre><code>{html.escape(code)}</code></pre>')
+        sentences = sum(1 for l in code.split('\n') if l.strip() and not l.lstrip().startswith('#'))
+        found.append((name, code, sentences))
+    cards = ''.join(f'<a href="#{n}"><b>{n}</b><span>{html.escape(EXAMPLE_TEXT.get(n, ""))}</span>'
+                    f'<small>{k} lines of English</small></a>' for n, _, k in found)
+    parts = [f'<h1>Example programs</h1><p class="lede">Complete Intent programs from the repository. Each one compiles '
+             f'to a native executable with <code>./intent build</code>, and <code>./intent explain</code> shows what '
+             f'it built.</p><div class="cards">{cards}</div>']
+    for n, code, _ in found:
+        parts.append(f'<h2 id="{n}">{n}</h2><p class="dim">{html.escape(EXAMPLE_TEXT.get(n, ""))}</p>' +
+                     window(f'examples/{n}.intent', code, link=(f'{REPO}/blob/main/examples/{n}.intent', 'Source ↗')))
+    tokens = [{'level': 2, 'id': n, 'name': n, 'children': []} for n, _, _ in found]
     return page('examples/', 'Example programs', 'Complete programs written in Intent, a plain-English language that '
                 'compiles to native code: a shop with money, customers and orders, a to-do list, a leaderboard, and '
-                'games such as snake and a shooter.', '\n'.join(parts), 'CollectionPage')
+                'games such as snake and a shooter.', doc('\n'.join(parts), tokens, label='Examples'), 'CollectionPage')
+
+
+def missing():
+    body = f'''<section style="padding:64px 0 24px;max-width:640px">
+<p class="eyebrow">404</p><h1 style="margin-top:0">I don't know that page.</h1>
+<p class="lede">Like the compiler, this site doesn't guess. Try one of these instead:</p>
+<div class="cta"><a class="btn main" href="{SITE}">Home</a><a class="btn" href="{SITE}guide/">The guide</a>
+<a class="btn" href="{SITE}gallery/">The gallery</a></div></section>'''
+    return page('404', 'Page not found', 'This page does not exist.', body).replace('index, follow', 'noindex')
 
 
 def write(rel, text):
@@ -710,9 +804,7 @@ def main():
              'changelog/': changelog()}
     for path, text in pages.items():
         write(path + 'index.html', text)
-    write('404.html', page('404', 'Page not found', 'This page does not exist.',
-                           f'<h1>Not here.</h1><p>Try the <a href="{SITE}">home page</a> or the '
-                           f'<a href="{SITE}guide/">guide</a>.</p>').replace('index, follow', 'noindex'))
+    write('404.html', missing())
     for a in ('icon.svg', 'og.png', 'window-shooter.jpg', 'logo-light.svg', 'logo-dark.svg'):
         shutil.copy(os.path.join(ROOT, 'assets', a), os.path.join(OUT, a))
     for f in glob.glob(os.path.join(ROOT, 'site', 'static', '*')):
