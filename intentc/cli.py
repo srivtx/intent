@@ -38,14 +38,22 @@ def forbid(a):
     return True if a.no_index else 'order' if a.no_order else False
 
 
-def load(path, no_index=False):
+def sample(a):
+    """The commands of --workload FILE (one per line, as the program reads them), or None."""
+    if not getattr(a, 'workload', None):
+        return None
+    with open(a.workload) as fh:
+        return fh.read().splitlines()
+
+
+def load(path, no_index=False, workload=None):
     with open(path) as fh:
         text = fh.read()
     prog, diags, p = parse(text, path)
     diags += check(prog, p.src)
     diags.sort(key=lambda d: (d.line, d.start))
     blocking = [d for d in diags if d.level != 'note']
-    plan = None if blocking else make_plan(prog, no_index)
+    plan = None if blocking else make_plan(prog, no_index, workload)
     return prog, diags, p, plan
 
 
@@ -80,7 +88,7 @@ def cmd_check(a):
 
 
 def cmd_explain(a):
-    prog, diags, p, plan = load(a.file, forbid(a))
+    prog, diags, p, plan = load(a.file, forbid(a), sample(a))
     if not report(diags, p, quiet_notes=True):
         return 1
     for c in prog.collections.values():
@@ -119,15 +127,15 @@ def cmd_explain(a):
 
 
 def cmd_ir(a):
-    prog, diags, p, plan = load(a.file, forbid(a))
+    prog, diags, p, plan = load(a.file, forbid(a), sample(a))
     if not report(diags, p, quiet_notes=True):
         return 1
     print(emit(prog, plan, a.file))
     return 0
 
 
-def build(path, out, no_index=False, quiet=False):
-    prog, diags, p, plan = load(path, no_index)
+def build(path, out, no_index=False, quiet=False, workload=None):
+    prog, diags, p, plan = load(path, no_index, workload)
     if not report(diags, p, quiet_notes=quiet):
         return None
     ll = out + '.ll'
@@ -144,7 +152,7 @@ def build(path, out, no_index=False, quiet=False):
 
 def cmd_build(a):
     out = a.output or os.path.splitext(a.file)[0]
-    prog = build(a.file, out, forbid(a))
+    prog = build(a.file, out, forbid(a), workload=sample(a))
     if prog is None:
         return 1
     print(f'built {out}  (LLVM IR in {out}.ll)')
@@ -249,6 +257,8 @@ def main(argv=None):
         if name in ('explain', 'ir', 'build'):
             sp.add_argument('--no-index', action='store_true', help='experiment: forbid every index')
             sp.add_argument('--no-order', action='store_true', help='experiment: forbid ordered indexes only')
+            sp.add_argument('--workload', metavar='FILE',
+                            help='a sample of real commands, one per line: plan for how often each one runs')
         if name in ('build', 'svg'):
             sp.add_argument('-o', '--output')
         if name == 'svg':
